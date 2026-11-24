@@ -134,7 +134,7 @@ fn required_equality(
     required: &[Predicate<'_>],
     path: &[String],
 ) -> io::Result<Option<IndexValue>> {
-    let (mut lower, mut upper) = (None, None);
+    let mut bounds = RequiredBounds::default();
     for (filter, negated) in required_predicates(required) {
         match (filter, negated) {
             (DocumentFilter::Equal { path: field, value }, false) if field == path => {
@@ -166,12 +166,12 @@ fn required_equality(
                     comparison,
                     value,
                 },
-                false,
-            ) if field == path => tighten_range(&mut lower, &mut upper, value, *comparison)?,
+                negated,
+            ) if field == path => bounds.compare(value, *comparison, negated)?,
             _ => {}
         }
     }
-    match (lower, upper) {
+    match bounds.finish()? {
         (Some((lower, _)), Some((upper, _)))
             if lower.inclusive && upper.inclusive && lower.value == upper.value =>
         {
@@ -601,6 +601,48 @@ fn tighten(
 
 type EncodedBound = Option<(IndexBound, Vec<u8>)>;
 
+#[derive(Default)]
+struct RequiredBounds<'a> {
+    lower: EncodedBound,
+    upper: EncodedBound,
+    comparable: bool,
+    negated: Vec<(&'a IndexValue, Comparison)>,
+}
+
+impl<'a> RequiredBounds<'a> {
+    fn compare(
+        &mut self,
+        value: &'a IndexValue,
+        comparison: Comparison,
+        negated: bool,
+    ) -> io::Result<()> {
+        if negated {
+            self.negated.push((value, comparison));
+            Ok(())
+        } else {
+            self.comparable = true;
+            tighten_range(&mut self.lower, &mut self.upper, value, comparison)
+        }
+    }
+
+    fn finish(mut self) -> io::Result<(EncodedBound, EncodedBound)> {
+        // A positive comparison on this path rules out missing fields and
+        // non-indexable values. On that domain negation reverses the bound.
+        if self.comparable {
+            for (value, comparison) in self.negated {
+                let opposite = match comparison {
+                    Comparison::Greater => Comparison::LessOrEqual,
+                    Comparison::GreaterOrEqual => Comparison::Less,
+                    Comparison::Less => Comparison::GreaterOrEqual,
+                    Comparison::LessOrEqual => Comparison::Greater,
+                };
+                tighten_range(&mut self.lower, &mut self.upper, value, opposite)?;
+            }
+        }
+        Ok((self.lower, self.upper))
+    }
+}
+
 // UTF-8 preserves scalar order. Advance the last scalar that has a
 // representable successor and discard everything after it. If a wider
 // successor would exceed 256 bytes, no indexed string can use it there.
@@ -637,8 +679,7 @@ fn required_range(
     required: &[Predicate<'_>],
     path: &[String],
 ) -> io::Result<Option<(Option<IndexBound>, Option<IndexBound>)>> {
-    let mut lower = None;
-    let mut upper = None;
+    let mut bounds = RequiredBounds::default();
     for (filter, negated) in required_predicates(required) {
         match (filter, negated) {
             (
@@ -647,10 +688,8 @@ fn required_range(
                     comparison,
                     value,
                 },
-                false,
-            ) if field == path => {
-                tighten_range(&mut lower, &mut upper, value, *comparison)?;
-            }
+                negated,
+            ) if field == path => bounds.compare(value, *comparison, negated)?,
             (
                 DocumentFilter::StartsWith {
                     path: field,
@@ -658,14 +697,20 @@ fn required_range(
                 },
                 false,
             ) if field == path => {
-                tighten(&mut lower, &IndexValue::String(prefix.clone()), true, true)?;
+                tighten(
+                    &mut bounds.lower,
+                    &IndexValue::String(prefix.clone()),
+                    true,
+                    true,
+                )?;
                 if let Some(end) = string_prefix_end(prefix) {
-                    tighten(&mut upper, &IndexValue::String(end), false, false)?;
+                    tighten(&mut bounds.upper, &IndexValue::String(end), false, false)?;
                 }
             }
             _ => {}
         }
     }
+    let (lower, upper) = bounds.finish()?;
     if lower.is_none() && upper.is_none() {
         return Ok(None);
     }

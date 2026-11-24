@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Tighten planned document index ranges with negated comparisons when a
+  required positive comparison proves that the same field is indexable.
+
 - Verify checkpoint rollover suffixes with one packed probe array that
   borrows the committed overlay's keys and reserves memory fallibly.
 

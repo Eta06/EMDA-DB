@@ -103,6 +103,176 @@ fn prepare_mixed(db: &DocumentDatabase<'_>) {
 }
 
 #[test]
+fn required_scalar_comparison_makes_negated_bounds_safe_to_probe() {
+    on_backends(|db| {
+        prepare_mixed(db);
+        let at_least_null = range("score", Comparison::GreaterOrEqual, IndexValue::Null);
+        let at_most_five = range("score", Comparison::LessOrEqual, IndexValue::Integer(5));
+        let at_most_a = range(
+            "score",
+            Comparison::LessOrEqual,
+            IndexValue::String("a".into()),
+        );
+        for (positive, negated, expected) in [
+            (at_least_null.clone(), Comparison::GreaterOrEqual, 5),
+            (at_least_null, Comparison::Greater, 7),
+            (at_most_five, Comparison::Less, 2),
+            (at_most_a, Comparison::LessOrEqual, 1),
+        ] {
+            let predicate = DocumentFilter::And(vec![
+                DocumentFilter::Not(Box::new(range("score", negated, IndexValue::Integer(5)))),
+                positive,
+            ]);
+            let scan = db.query("c", &query(predicate.clone(), 20)).unwrap();
+            let plan = db
+                .query_planned("c", &query(predicate.clone(), expected))
+                .unwrap();
+            let expected_access = if negated == Comparison::Less {
+                DocumentQueryAccess::EqualityIndex {
+                    index: "score".into(),
+                }
+            } else {
+                access("score")
+            };
+            assert_eq!(plan.access, expected_access);
+            assert_eq!(plan.result.documents, scan.documents);
+            assert_eq!(plan.result.plan.scanned, expected);
+            assert_eq!(plan.result.documents.len(), expected);
+            if expected > 1 {
+                assert_eq!(
+                    db.query_planned("c", &query(predicate, expected - 1))
+                        .unwrap_err()
+                        .kind(),
+                    ErrorKind::InvalidInput
+                );
+            }
+        }
+
+        // An unrelated comparison doesn't rule out a missing score. Using
+        // the complement as a score probe here would omit document g.
+        let filter = DocumentFilter::And(vec![
+            range(
+                "handle",
+                Comparison::GreaterOrEqual,
+                IndexValue::String(String::new()),
+            ),
+            DocumentFilter::Not(Box::new(range(
+                "score",
+                Comparison::Less,
+                IndexValue::Integer(5),
+            ))),
+        ]);
+        compare(db, &query(filter.clone(), 20), access("handle"));
+        assert!(
+            db.query_planned("c", &query(filter, 20))
+                .unwrap()
+                .result
+                .documents
+                .iter()
+                .any(|doc| doc.id == "g")
+        );
+    });
+}
+
+#[test]
+fn negated_bound_can_complete_a_compound_equality_tuple() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index(
+            "c",
+            IndexDefinition {
+                name: "score_tenant".into(),
+                fields: vec![path("score"), path("tenant")],
+                unique: true,
+                partial: None,
+            },
+        )
+        .unwrap();
+        for (id, score, tenant) in [("a", 5, "x"), ("b", 5, "y"), ("c", 6, "x")] {
+            db.insert("c", id, &json!({"score":score,"tenant":tenant}))
+                .unwrap();
+        }
+        let filter = DocumentFilter::And(vec![
+            range("score", Comparison::GreaterOrEqual, IndexValue::Integer(5)),
+            DocumentFilter::Not(Box::new(range(
+                "score",
+                Comparison::Greater,
+                IndexValue::Integer(5),
+            ))),
+            equality("tenant", json!("x")),
+        ]);
+        let scan = db.query("c", &query(filter.clone(), 3)).unwrap();
+        let plan = db.query_planned("c", &query(filter, 1)).unwrap();
+        assert_eq!(
+            plan.access,
+            DocumentQueryAccess::UniqueCompoundEqualityIndex {
+                index: "score_tenant".into(),
+                fields: 2,
+            }
+        );
+        assert_eq!(plan.result.documents, scan.documents);
+        assert_eq!(plan.result.plan.scanned, 1);
+        assert_eq!(plan.result.documents[0].id, "a");
+    });
+}
+
+#[test]
+fn narrowed_negated_range_conflicts_only_with_writes_in_the_observed_range() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index("c", index("score", false)).unwrap();
+        let filter = DocumentFilter::And(vec![
+            range("score", Comparison::GreaterOrEqual, IndexValue::Integer(0)),
+            DocumentFilter::Not(Box::new(range(
+                "score",
+                Comparison::GreaterOrEqual,
+                IndexValue::Integer(5),
+            ))),
+        ]);
+        let request = query(filter, 2);
+        for (id, value, conflicts) in [("outside", 5, false), ("inside", 4, true)] {
+            let (start, ready) = mpsc::channel();
+            let (finished, wait) = mpsc::channel();
+            std::thread::scope(|scope| {
+                scope.spawn(move || {
+                    ready.recv_timeout(Duration::from_secs(10)).unwrap();
+                    finished
+                        .send(db.insert("c", id, &json!({"score":value})))
+                        .unwrap();
+                });
+                let result = db.transaction_with_read_set(|tx| {
+                    let plan = tx.query_planned("c", &request);
+                    start.send(()).unwrap();
+                    wait.recv_timeout(Duration::from_secs(10)).unwrap()?;
+                    let plan = plan?;
+                    assert_eq!(plan.access, access("score"));
+                    assert_eq!(plan.result.plan.scanned, 0);
+                    tx.put_raw(id.as_bytes(), b"committed")
+                });
+                if conflicts {
+                    assert_eq!(result.unwrap_err().kind(), ErrorKind::WouldBlock);
+                } else {
+                    result.unwrap();
+                }
+            });
+            let marker = db.transaction(|tx| tx.get_raw(id.as_bytes())).unwrap();
+            assert_eq!(
+                marker.as_deref(),
+                (!conflicts).then_some(b"committed".as_slice())
+            );
+        }
+        let plan = db.query_planned("c", &request).unwrap();
+        assert_eq!(plan.result.documents[0].id, "inside");
+        assert_eq!(plan.result.plan.scanned, 1);
+    });
+}
+
+#[test]
 fn scalar_ranges_match_scans_with_mixed_types_bounds_sort_and_projection() {
     on_backends(|db| {
         prepare_mixed(db);

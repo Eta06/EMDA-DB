@@ -178,6 +178,11 @@ The initial document interface is bounded and experimental. This checklist recor
   and can use scalar ranges. Tests compare indexed and scan results for
   Unicode boundaries, missing fields, partial compound indexes, and a
   concurrent phantom that rolls back a staged write.
+  A required positive scalar comparison allows a negated comparison on
+  the same field to tighten an index range or complete an equality tuple.
+  The [range tests](../tests/document_range_planner.rs) compare with scans,
+  exercise inclusive and exclusive endpoints on both writable backends,
+  and verify the narrowed range's read-set conflicts.
   Bounded integer and UTF-8 string fields use the same write and migration
   validation, with a version 2 collection archive. Tests check failed
   migration steps, update and index rollback, and reopens on both writable
