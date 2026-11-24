@@ -23,6 +23,7 @@ name: Filesystem EIO checks
       - "examples/reclamation_failure_probe.rs"
       - "examples/staging_cleanup_failure_probe.rs"
       - "scripts/sync_eio_campaign.py"
+      - "scripts/check_rebuild_witness_faults.py"
       - "scripts/campaign_report.py"
       - "scripts/campaign_fixtures.py"
       - "scripts/double_eio_campaign.py"
@@ -77,6 +78,7 @@ name: Filesystem EIO checks
       - "examples/reclamation_failure_probe.rs"
       - "examples/staging_cleanup_failure_probe.rs"
       - "scripts/sync_eio_campaign.py"
+      - "scripts/check_rebuild_witness_faults.py"
       - "scripts/campaign_report.py"
       - "scripts/campaign_fixtures.py"
       - "scripts/double_eio_campaign.py"
@@ -137,6 +139,7 @@ jobs:
       - name: Build and inject filesystem failures
         run: |
           cargo +stable build --release --locked --example sync_failure_probe --example concurrent_eio_probe --example handoff_failure_probe --example configuration_failure_probe --example reclamation_failure_probe --example staging_cleanup_failure_probe
+          python3 scripts/check_rebuild_witness_faults.py --binary target/release/examples/sync_failure_probe --directory "$RUNNER_TEMP" > "$RUNNER_TEMP/rebuild-witness-faults.jsonl"
           for error_name in EIO EAGAIN ENOSPC; do
             for group in sync namespace; do
               python3 scripts/staging_cleanup_eio_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/staging_cleanup_failure_probe --output "$RUNNER_TEMP/staging-cleanup-eio-$error_name-$group.json" --error "$error_name" --syscall-set "$group" --max-ordinals 3
@@ -259,6 +262,7 @@ jobs:
             ${{ runner.temp }}/eintr-concurrent-transaction.json
             ${{ runner.temp }}/witness-retry.json
             ${{ runner.temp }}/short-write.json
+            ${{ runner.temp }}/rebuild-witness-faults.jsonl
             ${{ runner.temp }}/short-write.json.progress.json
             ${{ runner.temp }}/sync-interrupt.json
             ${{ runner.temp }}/sync-interrupt.json.progress.json

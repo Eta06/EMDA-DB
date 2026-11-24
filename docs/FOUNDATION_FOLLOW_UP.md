@@ -224,6 +224,11 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   [Linux sync fault traces](../benchmarks/results/2026-11-24-retained-rotation-outcomes/README.md)
   and authority tests verify the previous or successor generation and
   acknowledged writes after each affected publication boundary.
+- [x] Inject errors during pending-tail witness updates and sync through
+  ordinary, full bounded and suffix bounded managed rebuilds. Both witness
+  formats report uncertain tail adoption, preserve the old checkpoint
+  selection, and recover the complete log before a verified clean retry.
+  The [Linux campaign](../scripts/check_rebuild_witness_faults.py) runs in CI.
 - [x] Add opt-in generic staging-cleanup outcomes distinguishing calls that
   began no removals from failures after removal may have started. The result
   does not certify directory durability, cleanup, source health or a backup.

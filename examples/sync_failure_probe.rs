@@ -1,7 +1,7 @@
 //! Disposable fixture operations for the Linux syscall EIO injection driver.
 use database_engine::{
-    BatchOperation, COMPACTED_CHECKPOINT_FILE, CheckpointStore, CheckpointView, Store,
-    cleanup_abandoned_staging,
+    BatchOperation, BoundedFullRebuildLimits, BoundedSuffixRebuildLimits,
+    COMPACTED_CHECKPOINT_FILE, CheckpointStore, CheckpointView, Store, cleanup_abandoned_staging,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -173,7 +173,7 @@ fn attempt_publication(root: &Path, operation: &str) -> ProbeResult<()> {
             | "checkpoint-managed-rebuild-tail"
             | "checkpoint-managed-rebuild-tail-existing"
     ) {
-        return attempt_rebuild_publication(root, operation);
+        return attempt_rebuild_publication(root, operation, "ordinary");
     }
     if matches!(
         operation,
@@ -239,12 +239,49 @@ fn attempt_publication(root: &Path, operation: &str) -> ProbeResult<()> {
     Ok(())
 }
 
-fn attempt_rebuild_publication(root: &Path, operation: &str) -> ProbeResult<()> {
+fn attempt_rebuild_publication(root: &Path, operation: &str, rebuild: &str) -> ProbeResult<()> {
     use database_engine::ManagedRebuildFailure;
-    let outcome = CheckpointStore::rebuild_managed_selection_detailed(
-        root.join("source"),
-        root.join("result"),
-    );
+    let source = root.join("source");
+    let target = root.join("result");
+    let outcome = match rebuild {
+        "ordinary" => CheckpointStore::rebuild_managed_selection_detailed(source, target),
+        "full-bounded" => CheckpointStore::rebuild_managed_selection_full_bounded(
+            source,
+            target,
+            BoundedFullRebuildLimits {
+                max_log_bytes: 4096,
+                max_operations: 16,
+                max_live_keys: 8,
+                max_live_key_bytes: 128,
+                max_chunk_keys: 1,
+                max_chunk_key_bytes: 16,
+                max_spill_bytes: 4096,
+                max_merge_fan_in: 2,
+            },
+        ),
+        "suffix-bounded" => {
+            let digest = std::fs::read(root.join("checkpoint.digest"))?
+                .try_into()
+                .map_err(|_| "invalid checkpoint digest")?;
+            CheckpointStore::rebuild_managed_selection_bounded_with_limits(
+                source,
+                target,
+                root.join("checkpoint"),
+                &digest,
+                BoundedSuffixRebuildLimits {
+                    max_log_bytes: 4096,
+                    max_operations: 16,
+                    max_chunk_keys: 1,
+                    max_chunk_key_bytes: 16,
+                    max_spill_bytes: 4096,
+                    max_merge_fan_in: 2,
+                    base_checkpoint: Default::default(),
+                    output_checkpoint: Default::default(),
+                },
+            )
+        }
+        _ => return Err("unknown rebuild path".into()),
+    };
     match outcome {
         Ok(_) => println!(
             "{}",
@@ -683,6 +720,7 @@ fn main() -> ProbeResult<()> {
         [command, root, operation] if command == "setup-managed-tail" => setup_managed_tail(Path::new(root), operation),
         [command, root, operation] if command == "attempt" => attempt(Path::new(root), operation),
         [command, root, operation] if command == "attempt-publication" => attempt_publication(Path::new(root), operation),
+        [command, root, operation, rebuild] if command == "attempt-rebuild-publication" => attempt_rebuild_publication(Path::new(root), operation, rebuild),
         [command, root, operation] if command == "attempt-with-handle-check" => attempt_with_handle_check(Path::new(root), operation),
         [command, root, operation, status, order] if command == "verify" => verify(Path::new(root), operation, status, order),
         [command, root, order] if command == "verify-rejected" => verify_rejected(Path::new(root), order),
