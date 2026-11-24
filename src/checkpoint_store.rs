@@ -1155,7 +1155,6 @@ impl CheckpointStore {
     ) -> io::Result<(u64, usize, crate::checkpoint::VerifiedLog)> {
         self.log.verify_witness()?;
         let view = &state.view;
-        let mut log_hasher = view.base.verify_for_rollover()?;
         let boundary = self.log.len()?;
         if boundary.checked_sub(view.base.log_boundary()) != Some(view.tail_bytes) {
             return Err(record::invalid_data("checkpoint suffix length changed"));
@@ -1197,28 +1196,24 @@ impl CheckpointStore {
             present: false,
             replayed: None,
         }));
-        // Resolve initial membership with one forward scan of the relevant
-        // checkpoint blocks instead of a separate lookup for every key.
-        if let Some((first, rest)) = probes.split_first_mut() {
-            first.present = view.base.location(first.key)?.is_some();
-            let mut pending = rest.iter_mut().peekable();
-            if pending.peek().is_some() {
-                view.base
-                    .visit_entries(Some(first.key), None, |base_key, _| {
-                        while pending.peek().is_some_and(|probe| probe.key < base_key) {
-                            pending.next();
-                        }
-                        if pending.peek().is_some_and(|probe| probe.key == base_key) {
-                            pending.next().expect("peeked probe").present = true;
-                        }
-                        if pending.peek().is_none() {
-                            Ok(std::ops::ControlFlow::Break(()))
-                        } else {
-                            Ok(std::ops::ControlFlow::Continue(()))
-                        }
-                    })?;
+        // Collect initial membership during the trusted index scan. Replay
+        // uses these private results only after the index and log prefix verify.
+        let mut pending = probes.iter_mut().peekable();
+        let mut log_hasher = view.base.verify_for_rollover(|base_key| {
+            while let Some(probe) = pending.peek_mut() {
+                match probe.key.cmp(base_key) {
+                    std::cmp::Ordering::Less => {
+                        pending.next();
+                    }
+                    std::cmp::Ordering::Equal => {
+                        probe.present = true;
+                        pending.next();
+                        break;
+                    }
+                    std::cmp::Ordering::Greater => break,
+                }
             }
-        }
+        })?;
         let mut operations = 0_u64;
         self.log.visit_records_with_digest(
             view.base.log_boundary(),

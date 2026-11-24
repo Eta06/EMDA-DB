@@ -81,13 +81,18 @@ fn streamed_rollover_clears_overlay_after_reopen_and_preserves_historical_peak()
 
 #[test]
 fn rollover_rejects_checkpoint_prefix_and_suffix_corruption_without_publication() {
-    for target in ["checkpoint", "prefix", "suffix"] {
+    for target in ["checkpoint", "checkpoint-key", "prefix", "suffix"] {
         let (dir, path, checkpoint, digest) = fixture();
         let prefix = fs::metadata(path.join("records.log")).unwrap().len();
         let store = CheckpointStore::open(&path, &checkpoint, &digest).unwrap();
         store.put(b"tail", b"value").unwrap();
+        store.delete(b"a").unwrap();
         let (damaged, offset) = match target {
             "checkpoint" => (checkpoint.clone(), 20),
+            // Change the first key from `a` to a missing, still-ordered key.
+            // The entry decodes and contributes to membership before the
+            // independently trusted index digest rejects it.
+            "checkpoint-key" => (checkpoint.clone(), 68 + 2),
             "prefix" => (path.join("records.log"), 28),
             _ => (path.join("records.log"), prefix),
         };
@@ -98,16 +103,21 @@ fn rollover_rejects_checkpoint_prefix_and_suffix_corruption_without_publication(
             .unwrap();
         let mut byte = [0];
         file.read_exact_at(&mut byte, offset).unwrap();
-        byte[0] ^= 0x40;
+        if target == "checkpoint-key" {
+            assert_eq!(byte, *b"a");
+            byte[0] = b'`';
+        } else {
+            byte[0] ^= 0x40;
+        }
         file.write_all_at(&byte, offset).unwrap();
         let next = dir.path().join("must-not-exist");
-        assert!(
-            store.checkpoint_to(&next).is_err(),
-            "{target} corruption was accepted"
-        );
+        let error = store.checkpoint_to(&next).expect_err(target);
+        if target == "checkpoint-key" {
+            assert_eq!(error.to_string(), "index checkpoint checksum mismatch");
+        }
         assert!(!next.exists());
         drop(store);
-        if target == "checkpoint" {
+        if target.starts_with("checkpoint") {
             assert_eq!(
                 Store::open(&path).unwrap().get(b"tail").unwrap().as_deref(),
                 Some(&b"value"[..])

@@ -529,13 +529,21 @@ impl CheckpointView {
 
     // Revalidate the original trusted checkpoint and its covered log bytes
     // before deriving another checkpoint from this long-lived view.
-    pub(crate) fn verify_for_rollover(&self) -> io::Result<Sha256> {
-        checkpoint::verify_log_prefix(&self.log, &self.verify_checkpoint_file()?)
+    pub(crate) fn verify_for_rollover(&self, visit_entry: impl FnMut(&[u8])) -> io::Result<Sha256> {
+        let verified = self.verify_checkpoint_entries(visit_entry)?;
+        checkpoint::verify_log_prefix(&self.log, &verified)
     }
 
     // Bounded rebuild separately binds the log to this verified checkpoint
     // and to the suffix bytes consumed during replay.
     pub(crate) fn verify_checkpoint_file(&self) -> io::Result<checkpoint::VerifiedCheckpoint> {
+        self.verify_checkpoint_entries(|_| {})
+    }
+
+    fn verify_checkpoint_entries(
+        &self,
+        mut visit_entry: impl FnMut(&[u8]),
+    ) -> io::Result<checkpoint::VerifiedCheckpoint> {
         let mut count = 0_u64;
         let verified = checkpoint::visit_index_file(
             &self.index.file,
@@ -547,8 +555,9 @@ impl CheckpointView {
                 max_view_blocks: Some(self.limits.max_blocks),
                 ..Default::default()
             },
-            |_, _, _, _, _| {
+            |_, _, key, _, _| {
                 count += 1;
+                visit_entry(key);
                 Ok(())
             },
         )?;

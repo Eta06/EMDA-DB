@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Resolve checkpoint suffix membership during the existing trusted index
+  verification pass when building a replacement checkpoint.
+
 - Reuse the same distinct batch keys for checkpoint suffix admission and
   automatic rollover. Single-key admission uses no heap scratch space.
 
