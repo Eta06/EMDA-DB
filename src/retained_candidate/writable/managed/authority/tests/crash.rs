@@ -4,6 +4,7 @@ use crate::{CollectionSchema, DocumentDatabase, IndexDefinition, IndexQuery};
 use serde_json::json;
 use std::{
     cell::Cell,
+    collections::BTreeMap,
     io::{BufRead, BufReader},
     process::{Command, Stdio},
     sync::mpsc,
@@ -244,6 +245,236 @@ fn recorded_backup_restore_survives_process_kills_around_publication() {
     }
 }
 
+fn prepare_document_catalog(fixture: &Fixture, authority_path: &Path) -> FileRetainedAuthority {
+    let mut authority = FileRetainedAuthority::create(authority_path).unwrap();
+    assert!(authority.compare_and_swap(None, fixture.initial).unwrap());
+    let mut store = AuthorizedRetainedStore::open(
+        &fixture.root,
+        CRASH_LIMITS,
+        FileRetainedAuthority::open(authority_path).unwrap(),
+    )
+    .unwrap();
+    let db = DocumentDatabase::with_authorized_retained_store(&mut store);
+    db.create_collection("items", CollectionSchema::default())
+        .unwrap();
+    for (field, unique) in [("rank", true), ("tag", false)] {
+        db.create_index(
+            "items",
+            IndexDefinition {
+                name: field.into(),
+                fields: vec![vec![field.into()]],
+                unique,
+                partial: None,
+            },
+        )
+        .unwrap();
+    }
+    db.insert("items", "a", &json!({"rank": 1, "tag": "old"}))
+        .unwrap();
+    authority
+}
+
+#[test]
+fn retirement_crash_child() {
+    let Some(root) = std::env::var_os("EMDA_RETIREMENT_CRASH_CATALOG") else {
+        return;
+    };
+    let authority = std::env::var_os("EMDA_RETIREMENT_CRASH_AUTHORITY").unwrap();
+    let boundary = std::env::var("EMDA_RETIREMENT_CRASH_BOUNDARY").unwrap();
+    if boundary == "before-move" {
+        BEFORE_RETIREMENT_MOVE.set(Some(pause));
+    }
+    let provider = FileRetainedAuthority::open(authority).unwrap();
+    let mut store = AuthorizedRetainedStore::open(root, CRASH_LIMITS, provider).unwrap();
+    store
+        .reclaim_inactive_using(&mut None, |path| {
+            if boundary == "after-move" {
+                pause()?;
+            }
+            sync_existing(path)
+        })
+        .unwrap();
+    panic!("the child should have paused before reporting retirement");
+}
+
+fn catalog_contents(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+    let mut contents = BTreeMap::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let file_type = entry.file_type().unwrap();
+            let bytes = if file_type.is_dir() {
+                pending.push(path.clone());
+                None
+            } else {
+                assert!(file_type.is_file());
+                Some(fs::read(&path).unwrap())
+            };
+            contents.insert(path, bytes);
+        }
+    }
+    contents
+}
+
+#[test]
+fn bounded_startup_recovers_document_commit_and_interrupted_retirement() {
+    for boundary in ["before-move", "after-move"] {
+        let fixture = Fixture::prepare_with_limits(CRASH_LIMITS);
+        let authority_path = fixture._tmp.path().join("authority");
+        let mut authority = prepare_document_catalog(&fixture, &authority_path);
+        let provider = || FileRetainedAuthority::open(&authority_path).unwrap();
+        let mut store =
+            AuthorizedRetainedStore::open(&fixture.root, CRASH_LIMITS, provider()).unwrap();
+        store.compact().unwrap();
+        let base = store.inner.active.expected.base_bytes();
+        let active = store.inner.active.slot;
+        let catalog = &fixture.root;
+        let slot = active.path(catalog);
+        let inactive = active.other().path(catalog);
+        let log_path = slot.join("records.log");
+        let witness_path = slot.join("commit.state");
+        let log_before = fs::read(&log_path).unwrap();
+        let witness_before = fs::read(&witness_path).unwrap();
+        let before_retirement = authority.read().unwrap().unwrap();
+        drop(store);
+
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "retained_candidate::writable::managed::authority::tests::crash::retirement_crash_child",
+                "--nocapture",
+            ])
+            .env("EMDA_RETIREMENT_CRASH_CATALOG", catalog)
+            .env("EMDA_RETIREMENT_CRASH_AUTHORITY", &authority_path)
+            .env("EMDA_RETIREMENT_CRASH_BOUNDARY", boundary);
+        kill_paused(&mut command, boundary);
+
+        let before_move = boundary == "before-move";
+        let fenced = before_retirement
+            .finalized(before_retirement.committed)
+            .unwrap();
+        assert_eq!(authority.read().unwrap(), Some(fenced));
+        assert_eq!(inactive.exists(), before_move);
+        assert!(crate::staging::has_retained_stage(catalog).unwrap());
+        // Plain open permits commits while retirement is awaiting explicit
+        // cleanup. Kill after the new transaction's log sync, before witness
+        // adoption, to put both interrupted operations on the startup path.
+        kill_at(catalog, &authority_path, "after-log-sync");
+        let pending = authority.read().unwrap().unwrap();
+        let proposed = pending.pending.unwrap();
+        assert_eq!(pending.committed, fenced.committed);
+        assert_eq!(pending.revision, fenced.revision + 1);
+        assert_eq!(fs::read(&witness_path).unwrap(), witness_before);
+        let complete_log = fs::read(&log_path).unwrap();
+        assert!(complete_log.starts_with(&log_before));
+        assert_eq!(
+            complete_log.len() - log_before.len(),
+            proposed.suffix_end as usize
+        );
+
+        let suffix = proposed.suffix_end;
+        let startup = base + 2 * suffix + (1 + u64::from(before_move)) * (base + suffix);
+        let open = |max_startup_scan_bytes| {
+            AuthorizedRetainedStore::open_with_bounded_startup(
+                catalog,
+                CRASH_LIMITS,
+                provider(),
+                RetainedStartupLimits {
+                    max_startup_scan_bytes,
+                    max_maintenance_scan_bytes: 0,
+                    suffix_threshold: NonZeroU64::MAX,
+                    storage_limits: None,
+                },
+            )
+        };
+        let intact = catalog_contents(catalog);
+        assert!(
+            matches!(
+                open(startup - 1),
+                Err(error) if error.kind() == io::ErrorKind::InvalidInput
+                    && error.to_string() == "retained startup scan byte limit exceeded"
+            ),
+            "{boundary}"
+        );
+        assert_eq!(authority.read().unwrap(), Some(pending));
+        assert_eq!(catalog_contents(catalog), intact);
+
+        let base_path = slot.join("base");
+        let mut base_image = fs::read(&base_path).unwrap();
+        // Damage the last byte of the record area, leaving the frame intact.
+        let last_record_byte = base_image.len() - 33;
+        base_image[last_record_byte] ^= 1;
+        fs::write(&base_path, &base_image).unwrap();
+        let damaged = catalog_contents(catalog);
+        assert!(matches!(open(startup), Err(error) if error.kind() == io::ErrorKind::InvalidData));
+        assert_eq!(authority.read().unwrap(), Some(pending));
+        assert_eq!(catalog_contents(catalog), damaged);
+        base_image[last_record_byte] ^= 1;
+        fs::write(&base_path, &base_image).unwrap();
+
+        let mut recovered = open(startup).unwrap_or_else(|error| panic!("{boundary}: {error}"));
+        assert!(!inactive.exists());
+        assert!(!crate::staging::has_retained_stage(catalog).unwrap());
+        let resolved = pending.finalized(proposed).unwrap();
+        let expected = if before_move {
+            resolved.finalized(proposed).unwrap()
+        } else {
+            resolved
+        };
+        assert_eq!(authority.read().unwrap(), Some(expected));
+        assert_eq!(
+            AuthorityPoint::from_store(recovered.inner.active.catalog, &recovered.inner.store),
+            proposed
+        );
+        assert_eq!(fs::read(&log_path).unwrap(), complete_log);
+        assert_ne!(fs::read(&witness_path).unwrap(), witness_before);
+        verify_document_commit(&mut recovered, true, boundary);
+        recovered.put(b"later", b"acknowledged").unwrap();
+        drop(recovered);
+        let mut clean = AuthorizedRetainedStore::open(catalog, CRASH_LIMITS, provider()).unwrap();
+        assert_eq!(clean.get(b"later", 12).unwrap().unwrap(), b"acknowledged");
+        eprintln!("{boundary}: verified bounded startup at {startup} logical bytes");
+    }
+}
+
+fn verify_document_commit(
+    store: &mut AuthorizedRetainedStore<FileRetainedAuthority>,
+    appended: bool,
+    boundary: &str,
+) {
+    let db = DocumentDatabase::with_authorized_retained_store(store);
+    let a = if appended {
+        json!({"rank": 2, "tag": "new"})
+    } else {
+        json!({"rank": 1, "tag": "old"})
+    };
+    assert_eq!(db.get("items", "a").unwrap(), Some(a), "{boundary}");
+    assert_eq!(
+        db.get("items", "b").unwrap(),
+        appended.then(|| json!({"rank": 3, "tag": "new"})),
+        "{boundary}",
+    );
+    for field in ["rank", "tag"] {
+        let page = db
+            .query_index("items", field, &IndexQuery::default())
+            .unwrap();
+        assert_eq!(
+            page.documents.len(),
+            if appended { 2 } else { 1 },
+            "{boundary}"
+        );
+    }
+    db.verify_collection("items").unwrap();
+    assert_eq!(
+        db.transaction(|tx| tx.get_raw(b"receipt")).unwrap(),
+        appended.then(|| b"committed".to_vec()),
+        "{boundary}"
+    );
+}
+
 #[test]
 fn process_kills_recover_document_indexes_and_raw_receipt_together() {
     for boundary in [
@@ -258,29 +489,7 @@ fn process_kills_recover_document_indexes_and_raw_receipt_together() {
     ] {
         let f = Fixture::prepare_with_limits(CRASH_LIMITS);
         let authority_path = f._tmp.path().join("authority");
-        let mut authority = FileRetainedAuthority::create(&authority_path).unwrap();
-        assert!(authority.compare_and_swap(None, f.initial).unwrap());
-        {
-            let file = FileRetainedAuthority::open(&authority_path).unwrap();
-            let mut store = AuthorizedRetainedStore::open(&f.root, CRASH_LIMITS, file).unwrap();
-            let db = DocumentDatabase::with_authorized_retained_store(&mut store);
-            db.create_collection("items", CollectionSchema::default())
-                .unwrap();
-            for (field, unique) in [("rank", true), ("tag", false)] {
-                db.create_index(
-                    "items",
-                    IndexDefinition {
-                        name: field.into(),
-                        fields: vec![vec![field.into()]],
-                        unique,
-                        partial: None,
-                    },
-                )
-                .unwrap();
-            }
-            db.insert("items", "a", &json!({"rank": 1, "tag": "old"}))
-                .unwrap();
-        }
+        let mut authority = prepare_document_catalog(&f, &authority_path);
         let before = authority.read().unwrap().unwrap();
         let generation = Slot::A.path(&f.root);
         let log_path = generation.join("records.log");
@@ -391,34 +600,7 @@ fn process_kills_recover_document_indexes_and_raw_receipt_together() {
             resolved.committed,
             "{boundary}"
         );
-        let db = DocumentDatabase::with_authorized_retained_store(&mut recovered);
-        let a = if appended {
-            json!({"rank": 2, "tag": "new"})
-        } else {
-            json!({"rank": 1, "tag": "old"})
-        };
-        assert_eq!(db.get("items", "a").unwrap(), Some(a), "{boundary}");
-        assert_eq!(
-            db.get("items", "b").unwrap(),
-            appended.then(|| json!({"rank": 3, "tag": "new"})),
-            "{boundary}",
-        );
-        for field in ["rank", "tag"] {
-            let page = db
-                .query_index("items", field, &IndexQuery::default())
-                .unwrap();
-            assert_eq!(
-                page.documents.len(),
-                if appended { 2 } else { 1 },
-                "{boundary}"
-            );
-        }
-        db.verify_collection("items").unwrap();
-        assert_eq!(
-            db.transaction(|tx| tx.get_raw(b"receipt")).unwrap(),
-            appended.then(|| b"committed".to_vec()),
-            "{boundary}"
-        );
+        verify_document_commit(&mut recovered, appended, boundary);
         recovered.put(b"subsequent", b"acknowledged").unwrap();
         drop(recovered);
         assert_eq!(

@@ -32,6 +32,15 @@ const ACTIVE_BYTES: usize = 256;
 const CATALOG_BYTES: usize = 56;
 const RETIREMENT_STAGE_ENTRIES: u64 = 2;
 
+#[cfg(test)]
+type RetirementMoveHook = fn() -> io::Result<()>;
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_RETIREMENT_MOVE: std::cell::Cell<Option<RetirementMoveHook>> =
+        const { std::cell::Cell::new(None) };
+}
+
 #[derive(Clone, Copy)]
 struct AutoReclaim {
     threshold: NonZeroU64,
@@ -1327,6 +1336,10 @@ impl ManagedRetainedStore {
             crate::staging::Stage::retained_directory(&self.root, &self.active.generation)?;
         let moved = stage.path().join("retired");
         stage.preserve_payload_on_drop();
+        #[cfg(test)]
+        if let Some(hook) = BEFORE_RETIREMENT_MOVE.get() {
+            hook()?;
+        }
         *removal_started = true;
         crate::backup::publish_noreplace(inactive, &moved)?;
         sync_retirement(stage.path())?;

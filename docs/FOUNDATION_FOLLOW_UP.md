@@ -592,6 +592,12 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   regression checks that the marker survives a failed payload-removal sync,
   then reopens and verifies the selected state and cleanup retry after either
   final sync boundary.
+  A process-kill regression interrupts retirement on both sides of its
+  rename and then interrupts a subsequent document commit before its witness
+  advances. Bounded startup checks both interrupted operations together.
+  A one-byte-short budget or a corrupt selected base preserves the catalog
+  and authority record. The exact budget recovers the entire document
+  transaction, resumes retirement and permits another durable write.
 - [x] Check the current readers against an `EMDALOG4` unknown-header fixture with a valid later record and `commit.state`, plus ordinary-store open without the sidecar, on macOS and Linux ARM64. They reject the fixture without changing the log; this does not implement the proposed format or prove a complete upgrade and downgrade protocol.
 - [x] Model selected future reclamation hazards: reused offset/length/CRC identities, split epoch and location publication, snapshot pins, and pin-counter overflow. The sequential model demonstrates counterexamples and checks candidate rules; it does not exercise the engine, concurrent memory ordering, crashes, ranges, or recovery.
 - [x] Test that checkpoint rollover retains existing log bytes and snapshot values, and that an observed value rewritten at another location conflicts with an in-flight read-set transaction. The V2 tests exercise manual and automatic rollover and reopening; they do not implement reclamation, bound recovery or establish power-loss behavior.
