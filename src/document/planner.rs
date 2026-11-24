@@ -198,13 +198,33 @@ fn required_equality(
             _ => {}
         }
     }
-    match bounds.finish()? {
-        (Some((lower, _)), Some((upper, _)))
-            if lower.inclusive && upper.inclusive && lower.value == upper.value =>
-        {
+    let (Some((lower, _)), Some((upper, _))) = bounds.finish()? else {
+        return Ok(None);
+    };
+    match (&lower.value, &upper.value) {
+        // The interval between two integer bounds excludes every other
+        // scalar type. Only inside that domain is adjacency sufficient.
+        (IndexValue::Integer(first), IndexValue::Integer(last)) => {
+            let first = inclusive_integer_endpoint(*first, lower.inclusive, true);
+            let last = inclusive_integer_endpoint(*last, upper.inclusive, false);
+            Ok(first
+                .filter(|first| Some(*first) == last)
+                .map(IndexValue::Integer))
+        }
+        _ if lower.inclusive && upper.inclusive && lower.value == upper.value => {
             Ok(Some(lower.value))
         }
         _ => Ok(None),
+    }
+}
+
+fn inclusive_integer_endpoint(value: i64, inclusive: bool, lower: bool) -> Option<i64> {
+    if inclusive {
+        Some(value)
+    } else if lower {
+        value.checked_add(1)
+    } else {
+        value.checked_sub(1)
     }
 }
 
@@ -390,8 +410,20 @@ fn requires_guard_bound(
             path: field,
             comparison,
             value,
-        } if !negated && field == path && value == expected => {
-            matches!(comparison, Comparison::Greater | Comparison::GreaterOrEqual) == lower
+        } if !negated && field == path => {
+            let is_lower = matches!(comparison, Comparison::Greater | Comparison::GreaterOrEqual);
+            let inclusive = matches!(
+                comparison,
+                Comparison::GreaterOrEqual | Comparison::LessOrEqual
+            );
+            is_lower == lower
+                && (value == expected
+                    || match (value, expected) {
+                        (IndexValue::Integer(value), IndexValue::Integer(expected)) => {
+                            inclusive_integer_endpoint(*value, inclusive, lower) == Some(*expected)
+                        }
+                        _ => false,
+                    })
         }
         _ => false,
     }

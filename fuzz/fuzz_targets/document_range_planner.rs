@@ -59,6 +59,40 @@ fn predicate(name: &str, byte: u8, bound: u8) -> DocumentFilter {
         value: value(bound),
     }
 }
+fn intersection_access(
+    lower_operator: Comparison,
+    lower: IndexValue,
+    upper: IndexValue,
+) -> DocumentQueryAccess {
+    let singleton = match lower_operator {
+        Comparison::Greater | Comparison::GreaterOrEqual => match (&lower, &upper) {
+            (IndexValue::Integer(lower), IndexValue::Integer(upper)) => {
+                // The generator only produces integer operands in -4..=4.
+                // Enumerate the domain rather than repeating the optimizer.
+                (-4..=4)
+                    .filter(|n| {
+                        n <= upper
+                            && (n > lower
+                                || (matches!(lower_operator, Comparison::GreaterOrEqual)
+                                    && n == lower))
+                    })
+                    .count()
+                    == 1
+            }
+            _ => matches!(lower_operator, Comparison::GreaterOrEqual) && lower == upper,
+        },
+        _ => false,
+    };
+    if singleton {
+        DocumentQueryAccess::EqualityIndex {
+            index: "score".into(),
+        }
+    } else {
+        DocumentQueryAccess::RangeIndex {
+            index: "score".into(),
+        }
+    }
+}
 fn document(id: u8, byte: u8) -> Value {
     let mut doc = json!({"handle":format!("id{id}"), "tags":[id % 3,"shared"]});
     if byte & 8 != 0 {
@@ -135,14 +169,18 @@ fuzz_target!(|data: &[u8]| {
             ),
             1 => (
                 DocumentFilter::And(vec![first, second]),
-                DocumentQueryAccess::RangeIndex {
-                    index: "score".into(),
-                },
+                intersection_access(comparison(bytes[1]), value(bytes[3]), value(bytes[2])),
             ),
-            2 => (
-                DocumentFilter::Or(vec![first, second]),
-                DocumentQueryAccess::CollectionScan,
-            ),
+            2 => {
+                let probes = if first == second { 1 } else { 2 };
+                (
+                    DocumentFilter::Or(vec![first, second]),
+                    DocumentQueryAccess::DisjunctionIndex {
+                        indexes: vec!["score".into()],
+                        probes,
+                    },
+                )
+            }
             3 => (
                 DocumentFilter::Not(Box::new(first)),
                 DocumentQueryAccess::CollectionScan,

@@ -1606,7 +1606,7 @@ fn empty_membership_prefix_ranges_detect_matching_phantoms() {
                     cmp(
                         "score",
                         Comparison::GreaterOrEqual,
-                        IndexValue::Integer(if runs == 0 { 3 } else { 0 }),
+                        IndexValue::Integer(if runs == 0 { 2 } else { 0 }),
                     ),
                     cmp(
                         "score",

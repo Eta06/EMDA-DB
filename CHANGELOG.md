@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Plan exact document index probes and prove partial equality guards when
+  adjacent integer bounds leave one possible value.
+
 - Reuse checkpoint lookup and output key buffers during bounded managed
   rebuilds.
 

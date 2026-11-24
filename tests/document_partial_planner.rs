@@ -522,6 +522,232 @@ fn partial_index_detects_phantoms_after_multiple_pages() {
 }
 
 #[test]
+fn adjacent_integer_bounds_select_a_guarded_exact_tuple() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index(
+            "c",
+            index(
+                "score_active",
+                &["tenant", "score"],
+                true,
+                PartialFilter::Equals {
+                    path: path("state"),
+                    value: IndexValue::Integer(5),
+                },
+            ),
+        )
+        .unwrap();
+        for (id, doc) in [
+            ("max", json!({"tenant":"t","score":i64::MAX,"state":5})),
+            ("min", json!({"tenant":"t","score":i64::MIN,"state":5})),
+            ("other", json!({"tenant":"t","score":i64::MAX,"state":4})),
+            ("string", json!({"tenant":"t","score":"z","state":5})),
+            ("missing", json!({"tenant":"t","state":5})),
+        ] {
+            db.insert("c", id, &doc).unwrap();
+        }
+
+        let guard = || {
+            and(vec![
+                cmp("state", Comparison::Greater, IndexValue::Integer(4)),
+                cmp("state", Comparison::Less, IndexValue::Integer(6)),
+            ])
+        };
+        let request = |lower, upper, guard, budget| {
+            query(
+                and(vec![eq("tenant", json!("t")), lower, upper, guard]),
+                budget,
+            )
+        };
+        let exact = DocumentQueryAccess::PartialUniqueEqualityIndex {
+            index: "score_active".into(),
+            fields: 2,
+        };
+        for (id, lower, upper) in [
+            (
+                "min",
+                (Comparison::GreaterOrEqual, i64::MIN),
+                (Comparison::Less, i64::MIN + 1),
+            ),
+            (
+                "max",
+                (Comparison::Greater, i64::MAX - 1),
+                (Comparison::LessOrEqual, i64::MAX),
+            ),
+        ] {
+            let query_for_budget = |budget| {
+                request(
+                    cmp("score", lower.0, IndexValue::Integer(lower.1)),
+                    cmp("score", upper.0, IndexValue::Integer(upper.1)),
+                    guard(),
+                    budget,
+                )
+            };
+            compare(db, &query_for_budget(10), exact.clone());
+            let planned = db.query_planned("c", &query_for_budget(1)).unwrap();
+            assert_eq!(planned.access, exact);
+            assert_eq!(planned.result.plan.scanned, 1);
+            assert_eq!(planned.result.documents[0].id, id);
+        }
+
+        // A strict bound above the last integer can still match strings.
+        compare(
+            db,
+            &request(
+                cmp("score", Comparison::Greater, IndexValue::Integer(i64::MAX)),
+                cmp(
+                    "score",
+                    Comparison::LessOrEqual,
+                    IndexValue::String("z".into()),
+                ),
+                guard(),
+                10,
+            ),
+            DocumentQueryAccess::PartialCompoundRangeIndex {
+                index: "score_active".into(),
+                equality_fields: 1,
+            },
+        );
+        // A weaker guard must not omit the otherwise matching row in state 4.
+        compare(
+            db,
+            &request(
+                cmp(
+                    "score",
+                    Comparison::Greater,
+                    IndexValue::Integer(i64::MAX - 1),
+                ),
+                cmp(
+                    "score",
+                    Comparison::LessOrEqual,
+                    IndexValue::Integer(i64::MAX),
+                ),
+                and(vec![
+                    cmp("state", Comparison::Greater, IndexValue::Integer(3)),
+                    cmp("state", Comparison::Less, IndexValue::Integer(6)),
+                ]),
+                10,
+            ),
+            DocumentQueryAccess::CollectionScan,
+        );
+    });
+}
+
+#[test]
+fn singleton_integer_prefix_reaches_a_later_range_under_its_candidate_limit() {
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index(
+            "c",
+            index(
+                "position",
+                &["tenant", "score", "position"],
+                false,
+                PartialFilter::Exists {
+                    path: path("flag"),
+                    exists: true,
+                },
+            ),
+        )
+        .unwrap();
+        for position in 0..16 {
+            db.insert(
+                "c",
+                &position.to_string(),
+                &json!({"tenant":"t", "score":5, "position":position, "flag":null}),
+            )
+            .unwrap();
+        }
+        let predicate = and(vec![
+            eq("tenant", json!("t")),
+            exists("flag", true),
+            cmp("score", Comparison::Greater, IndexValue::Integer(4)),
+            cmp("score", Comparison::Less, IndexValue::Integer(6)),
+            cmp(
+                "position",
+                Comparison::GreaterOrEqual,
+                IndexValue::Integer(15),
+            ),
+        ]);
+        let access = DocumentQueryAccess::PartialCompoundRangeIndex {
+            index: "position".into(),
+            equality_fields: 2,
+        };
+        compare(db, &query(predicate.clone(), 16), access.clone());
+        let planned = db.query_planned("c", &query(predicate, 1)).unwrap();
+        assert_eq!(planned.access, access);
+        assert_eq!(planned.result.plan.scanned, 1);
+        assert_eq!(planned.result.documents[0].id, "15");
+    });
+}
+
+#[test]
+fn empty_guarded_integer_tuple_detects_a_matching_concurrent_insert() {
+    use std::{sync::mpsc, time::Duration};
+    on_backends(|db| {
+        db.create_collection("c", CollectionSchema::default())
+            .unwrap();
+        db.create_index(
+            "c",
+            index(
+                "by_score",
+                &["score"],
+                true,
+                PartialFilter::Equals {
+                    path: path("state"),
+                    value: IndexValue::Integer(5),
+                },
+            ),
+        )
+        .unwrap();
+        let between = |field| {
+            and(vec![
+                cmp(field, Comparison::Greater, IndexValue::Integer(4)),
+                cmp(field, Comparison::Less, IndexValue::Integer(6)),
+            ])
+        };
+        let request = query(and(vec![between("score"), between("state")]), 1);
+        let access = DocumentQueryAccess::PartialUniqueEqualityIndex {
+            index: "by_score".into(),
+            fields: 1,
+        };
+        let (read, observed) = mpsc::channel();
+        let (written, committed) = mpsc::channel();
+        let result = std::thread::scope(|scope| {
+            let writer = scope.spawn(move || {
+                observed.recv_timeout(Duration::from_secs(10)).unwrap();
+                written
+                    .send(db.insert("c", "new", &json!({"score":5,"state":5})))
+                    .unwrap();
+            });
+            let result = db.transaction_with_read_set(|tx| {
+                let plan = tx.query_planned("c", &request)?;
+                assert_eq!(plan.access, access);
+                assert!(plan.result.documents.is_empty());
+                read.send(()).unwrap();
+                committed.recv_timeout(Duration::from_secs(10)).unwrap()?;
+                tx.put_raw(b"guarded-integer-phantom", b"committed")
+            });
+            drop(read);
+            writer.join().unwrap();
+            result
+        });
+        assert!(database_engine::is_transaction_conflict(
+            &result.unwrap_err()
+        ));
+        assert_eq!(
+            db.transaction(|tx| tx.get_raw(b"guarded-integer-phantom"))
+                .unwrap(),
+            None
+        );
+        compare(db, &request, access);
+    });
+}
+
+#[test]
 fn partial_unique_compound_index_requires_full_tuple_and_its_guard() {
     on_backends(|db| {
         db.create_collection("c", CollectionSchema::default())

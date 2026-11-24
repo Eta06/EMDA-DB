@@ -190,6 +190,10 @@ The initial document interface is bounded and experimental. This checklist recor
   The [range tests](../tests/document_range_planner.rs) compare with scans,
   exercise inclusive and exclusive endpoints on both writable backends,
   and verify the narrowed range's read-set conflicts.
+  Adjacent integer bounds also qualify exact tuple probes and partial
+  equality guards. The [partial planner tests](../tests/document_partial_planner.rs)
+  cover signed endpoints, mixed scalar types, exact candidate budgets,
+  and inserts into an empty guarded tuple on both writable backends.
   Bounded integer and UTF-8 string fields use the same write and migration
   validation, with a version 2 collection archive. Tests check failed
   migration steps, update and index rollback, and reopens on both writable
