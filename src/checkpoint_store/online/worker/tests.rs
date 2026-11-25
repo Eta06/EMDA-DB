@@ -29,6 +29,34 @@ fn wait_for(
     }
 }
 
+// A scheduled check holds the maintenance gate, so a concurrent limit
+// change is refused with exactly `MaintenanceBusy`. Retry only that refusal,
+// for a bounded time, while the worker keeps running without an error.
+fn raise_limit_while_running(
+    online: &OnlineCheckpointStore,
+    worker: &OnlineReclamationWorker,
+    limit: u64,
+) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        match online.set_disk_budget(Some(limit)) {
+            Ok(()) => return,
+            Err(error)
+                if error.kind() == io::ErrorKind::WouldBlock
+                    && error
+                        .get_ref()
+                        .is_some_and(|cause| cause.is::<super::super::MaintenanceBusy>()) =>
+            {
+                let status = worker.status();
+                assert!(status.last_error.is_none(), "{status:?}");
+                assert!(Instant::now() < deadline, "maintenance stayed busy");
+                thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => panic!("raising the disk budget failed: {error}"),
+        }
+    }
+}
+
 fn start(
     online: &Arc<OnlineCheckpointStore>,
     fixture: &Fixture,
@@ -190,7 +218,7 @@ fn defers_when_the_disk_budget_cannot_fit_a_replacement() {
     );
     assert!(!fixture.previous.exists());
     assert_eq!(parent_entries(&fixture), ["base", "live", "managed"]);
-    online.set_disk_budget(Some(u64::MAX)).unwrap();
+    raise_limit_while_running(&online, &worker, u64::MAX);
     worker.request_check().unwrap();
     wait_for(
         &worker,
