@@ -406,6 +406,7 @@ fn proves_presence(
         }
         DocumentFilter::Equal { path: field, .. }
         | DocumentFilter::StartsWith { path: field, .. }
+        | DocumentFilter::EndsWith { path: field, .. }
         | DocumentFilter::In { path: field, .. }
         | DocumentFilter::Compare { path: field, .. }
         | DocumentFilter::ArrayContains { path: field, .. }

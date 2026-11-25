@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add `DocumentFilter::EndsWith` for case-sensitive UTF-8 string suffix
+  filters, with the same 256-byte operand cap and string-only semantics as
+  `StartsWith`. A suffix alone does not select an index.
+
 - Validate a managed checkpoint store's disk-budget record, and its
   compatibility with automatic checkpoints, before the open adopts a
   pending tail or cleans automatic stages. A damaged or incompatible record

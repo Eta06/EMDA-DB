@@ -41,6 +41,10 @@ pub enum DocumentFilter {
     /// Match a string beginning with the given UTF-8 prefix. An empty prefix
     /// matches every string. The prefix may contain up to 256 bytes.
     StartsWith { path: Vec<String>, prefix: String },
+    /// Match a string ending with the given UTF-8 suffix, case-sensitively.
+    /// An empty suffix matches every string. The suffix may contain up to 256
+    /// bytes. Missing, null and non-string values never match.
+    EndsWith { path: Vec<String>, suffix: String },
     /// Match a present path equal to any listed JSON value. Empty never matches.
     In {
         path: Vec<String>,
@@ -301,6 +305,14 @@ pub(super) fn validate_filter(filter: &DocumentFilter) -> io::Result<()> {
                 value_budget.charge_value()?;
                 value_budget.charge_encoded_value(prefix)?;
             }
+            DocumentFilter::EndsWith { path, suffix } => {
+                schema::validate_path(path)?;
+                if suffix.len() > MAX_INDEX_STRING_BYTES {
+                    return Err(key::invalid("string suffix exceeds 256 bytes"));
+                }
+                value_budget.charge_value()?;
+                value_budget.charge_encoded_value(suffix)?;
+            }
             DocumentFilter::In { path, values } | DocumentFilter::NotIn { path, values } => {
                 schema::validate_path(path)?;
                 value_budget.add_values(values)?;
@@ -366,6 +378,7 @@ pub(super) fn may_retry_in_id_order(filter: &DocumentFilter) -> bool {
         | DocumentFilter::Exists { .. }
         | DocumentFilter::Equal { .. }
         | DocumentFilter::StartsWith { .. }
+        | DocumentFilter::EndsWith { .. }
         | DocumentFilter::In { .. }
         | DocumentFilter::NotIn { .. }
         | DocumentFilter::ArrayLength { .. }
@@ -417,6 +430,14 @@ fn matches(
             if let Some(actual) = schema::field(document, path).and_then(Value::as_str) {
                 value_budget.charge_comparison()?;
                 actual.starts_with(prefix)
+            } else {
+                false
+            }
+        }
+        DocumentFilter::EndsWith { path, suffix } => {
+            if let Some(actual) = schema::field(document, path).and_then(Value::as_str) {
+                value_budget.charge_comparison()?;
+                actual.ends_with(suffix.as_str())
             } else {
                 false
             }
