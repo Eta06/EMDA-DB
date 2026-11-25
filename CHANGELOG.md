@@ -4,6 +4,17 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Allow automatic checkpoints on a disk-budgeted managed store. Enabling
+  and each rollover are admitted before they remove or write anything,
+  including the exact checkpoint, staging markers, the selection
+  replacement and the triggering append. A refusal returns `StorageFull`
+  with the store unchanged. Under a budget, pinned slots are never reused,
+  and a deselected external checkpoint stays charged while a snapshot reads
+  it. Appends are now charged just before they are written, after any
+  suffix refusal. A budgeted open also removes abandoned stages from the
+  store directory. `DiskBudgetStatus` reports `automatic_reserved`. Older
+  versions refuse to open a budgeted store with automatic checkpoints.
+
 - Add `update_matching` and `delete_matching` to `DocumentDatabase` and
   `DocumentTransaction`. Each applies update operators to, or deletes,
   every document matching a `DocumentFilter` in one transaction and

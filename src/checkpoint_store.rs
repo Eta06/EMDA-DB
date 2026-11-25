@@ -663,9 +663,9 @@ impl CheckpointStore {
             max_tail_operations,
         )?;
         // Read and validate the persisted disk budget under the exclusive
-        // lock before any durable step. Its compatibility with automatic
-        // checkpoints is checked against the stabilized configuration before
-        // stage cleanup, and its accounting is built after cleanup but
+        // lock before any durable step. Its accounting is built after the
+        // stabilized configuration's stage cleanup, so every leftover
+        // automatic stage is gone and every remaining slot is measured, and
         // before tail adoption. Every checkpoint-store open enforces it.
         let budget_record = disk_budget::read(&path)?;
         if budget_record.is_some() && selection.is_none() {
@@ -704,16 +704,15 @@ impl CheckpointStore {
                     "automatic checkpointing requires a managed selection",
                 ));
             }
-            if budget_record.is_some() && config == Some(true) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "a disk-budgeted store cannot use automatic checkpoints",
-                ));
+            // Only a verified, stabilized selection can authorize this
+            // cleanup. A cleanup failure must precede witness adoption. A
+            // budgeted store cleans its directory even without automatic
+            // configuration: a first enable killed before publishing its
+            // root leaves a marked stage there that would stay charged.
+            if config.is_some() || budget_record.is_some() {
+                crate::cleanup_abandoned_staging(&path)?;
             }
             if config.is_some() {
-                // Only a verified, stabilized selection can authorize this
-                // cleanup. A cleanup failure must precede witness adoption.
-                crate::cleanup_abandoned_staging(&path)?;
                 crate::cleanup_abandoned_staging(automatic::root(&path))?;
             }
             Ok(config)

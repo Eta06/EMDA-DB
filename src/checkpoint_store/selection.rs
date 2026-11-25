@@ -40,6 +40,11 @@ impl Selection {
         Ok(Self { checkpoint, digest })
     }
 
+    /// Exact length of the encoded selection file.
+    pub(super) fn encoded_len(&self) -> u64 {
+        (FIXED_BYTES + self.checkpoint.as_os_str().len()) as u64
+    }
+
     fn encode(&self) -> Vec<u8> {
         let path = self.checkpoint.as_os_str().as_bytes();
         let mut output = Vec::with_capacity(FIXED_BYTES + path.len());

@@ -138,10 +138,10 @@ impl CheckpointStore {
         if self.max_log_bytes.is_some_and(|max| next_log > max) {
             return Err(io::Error::other("configured log byte limit would be exceeded").into());
         }
-        // Charge the complete next log length before appending anything.
-        if let Some(budget) = self.disk_budget()? {
-            budget.admit_log(next_log)?;
-        }
+        // The disk budget charges the next log length just before the append,
+        // after any suffix refusal or rollover, so a refused mutation leaves
+        // nothing charged. A rollover's reservation carries the growth.
+        let mut reservation = None;
         let operations = mutation.operations();
         let can_rollover = state.automatic
             && state.view.tail_bytes > 0
@@ -166,16 +166,20 @@ impl CheckpointStore {
         let (next_tail, next_operations, new_key_bytes) = match admitted {
             Ok(value) => value,
             Err(_) if can_rollover && self.fits_empty_suffix_keys(keys) => {
-                state = self.automatic_rollover(state).map_err(|failure| {
-                    if tracker.is_some() {
-                        io::Error::new(
-                            failure.io_error().kind(),
-                            AutomaticRolloverRejection(failure),
-                        )
-                    } else {
-                        failure.into_io_error()
-                    }
-                })?;
+                let rolled;
+                (rolled, reservation) = self
+                    .automatic_rollover_for_append(state, next_log)
+                    .map_err(|failure| {
+                        if tracker.is_some() {
+                            io::Error::new(
+                                failure.io_error().kind(),
+                                AutomaticRolloverRejection(failure),
+                            )
+                        } else {
+                            failure.into_io_error()
+                        }
+                    })?;
+                state = rolled;
                 (
                     length as u64,
                     operations,
@@ -185,6 +189,13 @@ impl CheckpointStore {
             Err(error) => return Err(error.into()),
         };
         drop(distinct);
+        // Refuse a predictably over-budget append before detaching the
+        // overlay or encoding. It is charged just before the append.
+        if reservation.is_none() {
+            if let Some(budget) = self.disk_budget()? {
+                budget.check_log(next_log)?;
+            }
+        }
         let owned_key = (operation != Operation::Batch && !state.view.overlay.contains_key(key))
             .then(|| Arc::<[u8]>::from(key));
         // A snapshot can pin this overlay. Detach before submission, keeping
@@ -231,6 +242,12 @@ impl CheckpointStore {
             return Err(crate::TimedTransactionError::DeadlineExceeded);
         }
         crate::cancellation::check(cancellation)?;
+        if let Some(budget) = self.disk_budget()? {
+            match reservation.take() {
+                Some(reserved) => budget.admit_log_reserved(next_log, reserved)?,
+                None => budget.admit_log(next_log)?,
+            }
+        }
         // Past this point a returned error may follow an append. The tracker
         // records only this transaction, not effects of automatic maintenance.
         if let Some(tracker) = tracker {

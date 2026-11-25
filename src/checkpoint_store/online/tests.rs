@@ -577,6 +577,7 @@ fn process_kill_at_handoff_and_retirement_boundaries_preserves_acknowledged_data
     }
 }
 
+mod automatic_budget;
 mod budget;
 mod copy_budget;
 mod maintenance_reads;

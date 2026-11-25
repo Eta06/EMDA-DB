@@ -1,4 +1,5 @@
 //! On-demand managed checkpoint rollover using two owned checkpoint slots.
+use super::disk_budget::{AutomaticReservation, DiskBudget};
 use super::{CheckpointStore, State, StateWrite, selection};
 use crate::ManagedRolloverFailure;
 use crate::publication_outcome::{ManagedTracker, track_managed};
@@ -7,6 +8,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const DIRECTORY: &str = ".emda-auto-checkpoints-v1";
 const OWNER: &str = "owner";
@@ -242,6 +244,8 @@ impl CheckpointStore {
     /// the snapshot holding the view to free it.
     /// This setting affects future slot reuse. It does not recover space from
     /// already unlinked files or impose a byte quota on the log or checkpoints.
+    /// Under a disk budget pinned slots are always protected, whatever this
+    /// setting says.
     pub fn set_automatic_checkpoint_slot_protection(&self, enabled: bool) -> io::Result<()> {
         self.write()?.protect_pinned_automatic_slots = enabled;
         Ok(())
@@ -279,7 +283,15 @@ impl CheckpointStore {
     /// append. Rollover pauses writes and lets readers use the committed view
     /// during checkpoint preparation. It may fail before the user's mutation
     /// is submitted. A selection-publication error poisons the store until
-    /// it is reopened. This does not bound total memory or disk usage.
+    /// it is reopened. Without a disk budget this does not bound disk usage.
+    ///
+    /// Under a persistent disk budget, enabling and each rollover are
+    /// admitted against the budget before they remove or write anything.
+    /// A rollover admits its exact checkpoint file, staging markers,
+    /// selection replacement and the triggering append, credits the
+    /// inactive slot it replaces, and never reuses a slot a reader still
+    /// holds. A refusal returns `StorageFull` and leaves the store healthy
+    /// and unchanged. This does not bound memory.
     pub fn enable_automatic_checkpoints(&self) -> io::Result<()> {
         self.enable_automatic_checkpoints_tracked(None, || Ok(()), crate::directory::sync_existing)
     }
@@ -306,7 +318,6 @@ impl CheckpointStore {
         before_publish: impl FnOnce() -> io::Result<()>,
         sync_parent: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<()> {
-        self.reject_under_disk_budget("automatic checkpointing")?;
         let mut state = self.write()?;
         if state.selection.is_none() {
             return Err(io::Error::new(
@@ -323,9 +334,13 @@ impl CheckpointStore {
                 ));
             }
         } else {
-            if let Err(error) =
-                initialize_with_hooks_tracked(&self.path, before_publish, sync_parent, tracker)
-            {
+            // A budget refusal precedes every write and leaves the store
+            // healthy; only a failed publication fences it.
+            let charge = self.reserve_configuration(&state)?;
+            let changed =
+                initialize_with_hooks_tracked(&self.path, before_publish, sync_parent, tracker);
+            let settled = charge.map_or(Ok(()), |charge| charge.settle(&mut state));
+            if let Err(error) = changed {
                 state.failed = true;
                 return Err(io::Error::new(
                     error.kind(),
@@ -334,6 +349,7 @@ impl CheckpointStore {
                     ),
                 ));
             }
+            settled?;
             state.automatic = true;
         }
         Ok(())
@@ -385,9 +401,13 @@ impl CheckpointStore {
                     "automatic checkpoint configuration is missing, invalid or changed",
                 ));
             }
-            if let Err(error) =
-                publish_configuration(&self.path, false, before_rename, sync_parent, tracker)
-            {
+            // A budget refusal precedes every write and leaves the store
+            // healthy; only a failed publication fences it.
+            let charge = self.reserve_configuration(&state)?;
+            let changed =
+                publish_configuration(&self.path, false, before_rename, sync_parent, tracker);
+            let settled = charge.map_or(Ok(()), |charge| charge.settle(&mut state));
+            if let Err(error) = changed {
                 state.failed = true;
                 return Err(io::Error::new(
                     error.kind(),
@@ -396,9 +416,35 @@ impl CheckpointStore {
                     ),
                 ));
             }
+            settled?;
             state.automatic = false;
         }
         Ok(())
+    }
+
+    // Under a disk budget, admits a configuration change before it writes:
+    // a new root needs a directory stage marker and its marker, and a
+    // replacement needs a file stage marker and its temporary copy. The
+    // refusal is the typed `BudgetExceeded` and changes nothing.
+    fn reserve_configuration(&self, state: &State) -> io::Result<Option<ConfigurationCharge>> {
+        let Some(budget) = self.disk_budget()? else {
+            return Ok(None);
+        };
+        let marker = ROOT_DISABLED.len().max(ROOT_ENABLED.len()) as u64;
+        let bytes = crate::staging::Stage::DIRECTORY_MARKER_BYTES
+            + crate::staging::Stage::FILE_MARKER_BYTES
+            + 2 * marker;
+        let log_length = self.log.len()?;
+        let reservation = budget.reserve_automatic(bytes, 0, None)?;
+        Ok(Some(ConfigurationCharge {
+            budget,
+            reservation,
+            selected: state
+                .selection
+                .as_ref()
+                .map(|selected| selected.checkpoint.clone()),
+            log_length,
+        }))
     }
 
     /// Whether automatic checkpointing is enabled for this managed store.
@@ -417,6 +463,30 @@ impl CheckpointStore {
             || Ok(()),
             selection::sync_ancestors,
         )
+    }
+
+    /// Rolls over before an append that will grow the log to `next_log`.
+    /// Under a disk budget the rollover's peak includes that growth, and the
+    /// growth stays reserved in the returned reservation until the append is
+    /// admitted with it.
+    pub(super) fn automatic_rollover_for_append<'a>(
+        &'a self,
+        state: StateWrite<'a>,
+        next_log: u64,
+    ) -> Result<(StateWrite<'a>, Option<AutomaticReservation>), ManagedRolloverFailure> {
+        track_managed(|tracker| {
+            self.automatic_rollover_tracked(
+                state,
+                (
+                    || Ok(()),
+                    crate::directory::sync_existing,
+                    || Ok(()),
+                    selection::sync_ancestors,
+                ),
+                Some(next_log),
+                tracker,
+            )
+        })
     }
 
     fn validate_automatic_selection(&self, state: &mut State) -> io::Result<()> {
@@ -441,24 +511,32 @@ impl CheckpointStore {
         track_managed(|tracker| {
             self.automatic_rollover_tracked(
                 state,
-                before_slot_publish,
-                sync_slot_parent,
-                before_selection_rename,
-                sync_selection_parent,
+                (
+                    before_slot_publish,
+                    sync_slot_parent,
+                    before_selection_rename,
+                    sync_selection_parent,
+                ),
+                None,
                 tracker,
             )
+            .map(|(state, _)| state)
         })
     }
 
     fn automatic_rollover_tracked<'a>(
         &'a self,
         mut state: StateWrite<'a>,
-        before_slot_publish: impl FnOnce() -> io::Result<()>,
-        sync_slot_parent: impl FnOnce(&Path) -> io::Result<()>,
-        before_selection_rename: impl FnOnce() -> io::Result<()>,
-        sync_selection_parent: impl FnOnce(&Path) -> io::Result<()>,
+        (before_slot_publish, sync_slot_parent, before_selection_rename, sync_selection_parent): (
+            impl FnOnce() -> io::Result<()>,
+            impl FnOnce(&Path) -> io::Result<()>,
+            impl FnOnce() -> io::Result<()>,
+            impl FnOnce(&Path) -> io::Result<()>,
+        ),
+        next_log: Option<u64>,
         tracker: &ManagedTracker,
-    ) -> io::Result<StateWrite<'a>> {
+    ) -> io::Result<(StateWrite<'a>, Option<AutomaticReservation>)> {
+        let budget = self.disk_budget()?;
         if !state.automatic {
             return Err(invalid("automatic checkpointing is not enabled"));
         }
@@ -488,8 +566,11 @@ impl CheckpointStore {
         }
         // Captured readers can only clone the current view. Once an inactive
         // slot's last owner goes away, it cannot acquire a new owner here.
+        // Under a disk budget an unlinked but still open slot would hold
+        // uncharged space, so a pinned slot is never reused.
+        let protect = state.protect_pinned_automatic_slots || budget.is_some();
         let pinned = |slot: usize| {
-            state.protect_pinned_automatic_slots
+            protect
                 && state
                     .automatic_checkpoint
                     .as_ref()
@@ -513,9 +594,36 @@ impl CheckpointStore {
         let StateWrite { state, _writer } = state;
         drop(state);
         let state = self.read()?;
+        let (count, peak, verified_log) = self.verify_for_checkpoint(&state)?;
+        let previous = state
+            .selection
+            .as_ref()
+            .expect("managed selection")
+            .checkpoint
+            .clone();
+        let next_selection_path = indexes[next_slot].clone();
+        // Admit the whole peak before the first removal or allocation.
+        let mut limits = self.checkpoint_view_limits;
+        let mut settle = match &budget {
+            Some(budget) => {
+                let checkpoint_bytes = checkpoint_file_bytes(&state, count)?;
+                limits.max_file_bytes = limits.max_file_bytes.min(checkpoint_bytes);
+                Some(self.reserve_slot(
+                    budget,
+                    checkpoint_bytes,
+                    &destination,
+                    &next_selection_path,
+                    &previous,
+                    next_log,
+                )?)
+            }
+            None => None,
+        };
         crate::cleanup_abandoned_staging(&root)?;
         remove_inactive_slot(&root, &destination)?;
-        let (count, peak, verified_log) = self.verify_for_checkpoint(&state)?;
+        if let Some(settle) = &settle {
+            settle.refresh(&previous, false)?;
+        }
         let mut stage = crate::staging::Stage::directory(&root)?;
         write_marker(stage.path(), SLOT_OWNER)?;
         let digest = crate::checkpoint::create_streaming_in_private_stage(
@@ -524,7 +632,7 @@ impl CheckpointStore {
             peak,
             stage.path(),
             crate::checkpoint::StreamingOptions {
-                limits: Some(self.checkpoint_view_limits),
+                limits: Some(limits),
                 verified_log,
                 tracker: None,
                 pending_tail: None,
@@ -546,6 +654,7 @@ impl CheckpointStore {
             )
         })?;
         stage.publication_synchronized();
+        let previous_pin = state.view.base.checkpoint_pin();
         let next_view = self.rollover_view(&state, &indexes[next_slot], &digest)?;
         let pin = next_view.base.checkpoint_pin();
         let next = selection::Selection::new(indexes[next_slot].clone(), digest)?;
@@ -561,7 +670,164 @@ impl CheckpointStore {
             .automatic_checkpoint
             .get_or_insert_with(Default::default)
             .slot_pins[next_slot] = Some(pin);
-        Ok(StateWrite { state, _writer })
+        // Remove the slot stage's marker before the final measurement. On
+        // a failed exit it drops before `settle`, which measures after it.
+        drop(stage);
+        let reservation = match settle.take() {
+            Some(settle) => match settle.finish(&self.path, &next_selection_path, previous_pin) {
+                Ok(reservation) => Some(reservation),
+                Err(error) => {
+                    // The rollover is durable but its charge is unknown.
+                    state.failed = true;
+                    return Err(error);
+                }
+            },
+            None => None,
+        };
+        Ok((StateWrite { state, _writer }, reservation))
+    }
+
+    // Reserves a slot rollover's peak: the exact checkpoint file, the outer
+    // stage's directory marker, the slot's ownership marker, the selection
+    // replacement's file marker and temporary copy, and the append's log
+    // growth. The inactive slot is removed before anything is allocated, so
+    // its measured bytes are credited. Every other remaining file, including
+    // the previously selected slot, stays charged.
+    fn reserve_slot(
+        &self,
+        budget: &Arc<DiskBudget>,
+        checkpoint_bytes: u64,
+        destination: &Path,
+        next_selection_path: &Path,
+        previous: &Path,
+        next_log: Option<u64>,
+    ) -> io::Result<Settle> {
+        let next = selection::Selection::new(next_selection_path.to_path_buf(), [0; 32])?;
+        let bytes = [
+            crate::staging::Stage::DIRECTORY_MARKER_BYTES,
+            SLOT_OWNER.len() as u64,
+            crate::staging::Stage::FILE_MARKER_BYTES,
+            next.encoded_len(),
+        ]
+        .into_iter()
+        .try_fold(checkpoint_bytes, u64::checked_add)
+        .ok_or_else(|| io::Error::other("automatic checkpoint reservation overflow"))?;
+        let credit = crate::staging::tree_bytes(destination)?;
+        // An external selection stays charged while old readers keep it.
+        let external = if previous.starts_with(&self.path) {
+            0
+        } else {
+            crate::staging::tree_bytes(previous)?
+        };
+        let log_length = self.log.len()?;
+        let reservation = budget.reserve_automatic(bytes, credit, next_log)?;
+        Ok(Settle {
+            budget: Arc::clone(budget),
+            reservation: Some(reservation),
+            external,
+            previous: previous.to_path_buf(),
+            log_length,
+        })
+    }
+}
+
+/// A configuration change's reservation. Settling re-measures the live
+/// files whatever the change did; if that fails the store is fenced,
+/// because its charge is unknown.
+struct ConfigurationCharge {
+    budget: Arc<DiskBudget>,
+    reservation: AutomaticReservation,
+    selected: Option<PathBuf>,
+    log_length: u64,
+}
+
+impl ConfigurationCharge {
+    fn settle(self, state: &mut State) -> io::Result<()> {
+        let refreshed = self.budget.refresh_automatic(
+            &self.reservation,
+            self.log_length,
+            self.selected.as_deref(),
+            true,
+            None,
+        );
+        if refreshed.is_err() {
+            state.failed = true;
+        }
+        refreshed
+    }
+}
+
+// Exact length of the checkpoint a rollover of this view writes.
+fn checkpoint_file_bytes(state: &State, count: u64) -> io::Result<u64> {
+    let mut key_bytes = 0_u64;
+    state.view.visit_entries(None, None, |key, _| {
+        key_bytes += key.len() as u64;
+        Ok(std::ops::ControlFlow::Continue(()))
+    })?;
+    crate::checkpoint::file_bytes(count, key_bytes)
+        .ok_or_else(|| io::Error::other("automatic checkpoint size overflow"))
+}
+
+/// Holds an automatic rollover's reservation and re-measures the live files
+/// on every exit. A failed exit measures whatever the rollover left, then
+/// releases the reservation. A measurement failure marks the budget
+/// uncertain, so later admissions fail closed until reopen. The writer gate
+/// is held throughout, so the log length cannot change.
+struct Settle {
+    budget: Arc<DiskBudget>,
+    reservation: Option<AutomaticReservation>,
+    external: u64,
+    previous: PathBuf,
+    log_length: u64,
+}
+
+impl Settle {
+    fn refresh(&self, selected: &Path, published: bool) -> io::Result<()> {
+        let reservation = self.reservation.as_ref().expect("armed reservation");
+        self.budget.refresh_automatic(
+            reservation,
+            self.log_length,
+            Some(selected),
+            published,
+            None,
+        )
+    }
+
+    fn finish(
+        mut self,
+        store_path: &Path,
+        selected: &Path,
+        previous_pin: crate::checkpoint_view::CheckpointPin,
+    ) -> io::Result<AutomaticReservation> {
+        let reservation = self.reservation.take().expect("armed reservation");
+        let deselected =
+            (!self.previous.starts_with(store_path)).then_some((previous_pin, self.external));
+        self.budget.refresh_automatic(
+            &reservation,
+            self.log_length,
+            Some(selected),
+            true,
+            deselected,
+        )?;
+        Ok(reservation)
+    }
+}
+
+impl Drop for Settle {
+    fn drop(&mut self) {
+        let Some(reservation) = self.reservation.take() else {
+            return;
+        };
+        // A failed rollover may have removed the inactive slot or published
+        // a new one. Measure what remains with the old selection, which
+        // keeps an external checkpoint charged, before releasing.
+        let _ = self.budget.refresh_automatic(
+            &reservation,
+            self.log_length,
+            Some(&self.previous),
+            false,
+            None,
+        );
     }
 }
 

@@ -12,7 +12,13 @@
 //!   marked retired stage owned by the live generation, measured while a
 //!   retirement is pending;
 //! - retired generations that owned snapshots in this process still hold
-//!   open, at their logical length when retired.
+//!   open, at their logical length when retired, and an external checkpoint
+//!   an automatic rollover deselected while a snapshot still reads it;
+//! - while an automatic checkpoint is prepared under the writer gate, an
+//!   in-memory reservation for its slot, staging markers, selection
+//!   replacement and the append that triggered it. Restart needs no record
+//!   of it: the open removes automatic stages and measures every remaining
+//!   file before admitting anything.
 //!
 //! Log appends and online maintenance are admitted against this sum before
 //! they allocate. The record is persisted inside the store directory and is
@@ -69,6 +75,8 @@ pub struct DiskBudgetStatus {
     pub retired_bytes: u64,
     /// Bytes of removed generations still held open by owned snapshots.
     pub pinned_bytes: u64,
+    /// In-memory reservation of an automatic checkpoint being prepared.
+    pub automatic_reserved: u64,
     /// Outstanding maintenance recorded on disk.
     pub pending: DiskBudgetPending,
 }
@@ -90,11 +98,20 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
+/// The refusal of an admission that would exceed the disk budget.
+#[derive(Debug)]
+pub(crate) struct BudgetExceeded;
+
+impl std::fmt::Display for BudgetExceeded {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("managed store disk budget would be exceeded")
+    }
+}
+
+impl std::error::Error for BudgetExceeded {}
+
 pub(crate) fn exceeded() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::StorageFull,
-        "managed store disk budget would be exceeded",
-    )
+    io::Error::new(io::ErrorKind::StorageFull, BudgetExceeded)
 }
 
 impl Record {
@@ -294,6 +311,11 @@ struct Accounting {
     // A generation's token is its store's last field, so its release is
     // ordered after the log, checkpoint and lock descriptors are dropped.
     pinned: Vec<(Weak<GenerationToken>, u64)>,
+    // External checkpoints deselected by an automatic rollover, charged
+    // while a reader of the old view keeps their index alive.
+    deselected: Vec<(crate::checkpoint_view::CheckpointPin, u64)>,
+    // Reservation held by an automatic rollover under the writer gate.
+    automatic: u64,
     // The generation being retired in this process. While it is also named
     // or staged it is charged once, at the larger of the two measures.
     retiring: Option<(Weak<GenerationToken>, u64)>,
@@ -310,6 +332,26 @@ pub(crate) struct DiskBudget {
     store: PathBuf,
     parent: PathBuf,
     state: Mutex<Accounting>,
+}
+
+/// An automatic rollover's in-memory share of the budget. It is released
+/// when dropped, including on every failure path.
+pub(crate) struct AutomaticReservation {
+    budget: Option<Arc<DiskBudget>>,
+    bytes: u64,
+    growth: u64,
+}
+
+impl Drop for AutomaticReservation {
+    fn drop(&mut self) {
+        if let Some(budget) = self.budget.take() {
+            let mut state = budget
+                .state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            state.automatic = 0;
+        }
+    }
 }
 
 fn poisoned() -> io::Error {
@@ -376,6 +418,8 @@ impl DiskBudget {
                 live_log: log_length,
                 maintenance,
                 pinned: Vec::new(),
+                deselected: Vec::new(),
+                automatic: 0,
                 retiring: None,
                 uncertain: false,
                 pending: record.pending,
@@ -411,10 +455,13 @@ impl DiskBudget {
 
     fn pinned_locked(state: &mut Accounting) -> io::Result<u64> {
         state.pinned.retain(|(token, _)| token.strong_count() != 0);
+        state.deselected.retain(|(pin, _)| pin.is_live());
         state
             .pinned
             .iter()
-            .try_fold(0_u64, |total, (_, bytes)| total.checked_add(*bytes))
+            .map(|(_, bytes)| *bytes)
+            .chain(state.deselected.iter().map(|(_, bytes)| *bytes))
+            .try_fold(0_u64, u64::checked_add)
             .ok_or_else(|| io::Error::other("pinned generation byte count overflow"))
     }
 
@@ -425,10 +472,15 @@ impl DiskBudget {
             .live_other
             .checked_add(state.live_log)
             .ok_or_else(|| io::Error::other("disk budget charge overflow"))?;
-        let charged = [state.maintenance, retired_bytes, pinned_bytes]
-            .into_iter()
-            .try_fold(live_bytes, u64::checked_add)
-            .ok_or_else(|| io::Error::other("disk budget charge overflow"))?;
+        let charged = [
+            state.maintenance,
+            retired_bytes,
+            pinned_bytes,
+            state.automatic,
+        ]
+        .into_iter()
+        .try_fold(live_bytes, u64::checked_add)
+        .ok_or_else(|| io::Error::other("disk budget charge overflow"))?;
         Ok(DiskBudgetStatus {
             limit: state.limit,
             charged,
@@ -436,6 +488,7 @@ impl DiskBudget {
             maintenance_reserved: state.maintenance,
             retired_bytes,
             pinned_bytes,
+            automatic_reserved: state.automatic,
             pending: match state.pending {
                 Pending::Idle => DiskBudgetPending::None,
                 Pending::Compacting { .. } => DiskBudgetPending::Compaction,
@@ -455,7 +508,25 @@ impl DiskBudget {
     /// length stays charged even if the append then fails.
     pub(crate) fn admit_log(&self, next_log: u64) -> io::Result<()> {
         let mut state = lock_reliable(&self.state)?;
-        let status = self.status_locked(&mut state)?;
+        self.admit_log_locked(&mut state, next_log)
+    }
+
+    /// Reports whether `next_log` would be admitted now, without charging
+    /// it, so a predictably refused append is rejected before it is encoded.
+    pub(crate) fn check_log(&self, next_log: u64) -> io::Result<()> {
+        let mut state = lock_reliable(&self.state)?;
+        let charged = self.status_locked(&mut state)?.charged;
+        if (charged - state.live_log)
+            .checked_add(next_log.max(state.live_log))
+            .is_none_or(|total| total > state.limit)
+        {
+            return Err(exceeded());
+        }
+        Ok(())
+    }
+
+    fn admit_log_locked(&self, state: &mut Accounting, next_log: u64) -> io::Result<()> {
+        let status = self.status_locked(state)?;
         // `charged` includes `live_log`, so this cannot underflow.
         let others = status.charged - state.live_log;
         if others
@@ -466,6 +537,92 @@ impl DiskBudget {
         }
         state.live_log = state.live_log.max(next_log);
         Ok(())
+    }
+
+    /// Reserves an automatic rollover's peak before it writes anything:
+    /// `bytes` of new files, less `credit` bytes of measured files it removes
+    /// first, plus growth of the live log to `next_log` for the append that
+    /// follows. The caller holds the writer gate, so no other automatic
+    /// rollover or append runs, and online maintenance admits against the
+    /// same charge. Dropping the reservation releases it.
+    pub(crate) fn reserve_automatic(
+        self: &Arc<Self>,
+        bytes: u64,
+        credit: u64,
+        next_log: Option<u64>,
+    ) -> io::Result<AutomaticReservation> {
+        let mut state = lock_reliable(&self.state)?;
+        if state.automatic != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "another automatic checkpoint reservation is outstanding",
+            ));
+        }
+        let charged = self.status_locked(&mut state)?.charged;
+        let growth = next_log.map_or(0, |next| next.saturating_sub(state.live_log));
+        let peak = charged
+            .checked_sub(credit)
+            .ok_or_else(|| io::Error::other("automatic checkpoint credit exceeds the charge"))?
+            .checked_add(bytes)
+            .and_then(|total| total.checked_add(growth));
+        if peak.is_none_or(|total| total > state.limit) {
+            return Err(exceeded());
+        }
+        state.automatic = bytes.saturating_sub(credit) + growth;
+        Ok(AutomaticReservation {
+            budget: Some(Arc::clone(self)),
+            bytes,
+            growth,
+        })
+    }
+
+    /// Re-measures live files after an automatic rollover's removal or
+    /// publication. With `removed`, the reservation becomes its full byte
+    /// count plus log growth; otherwise only log growth stays reserved. A
+    /// measurement failure marks the accounting uncertain, refusing every
+    /// later admission until reopen.
+    pub(crate) fn refresh_automatic(
+        &self,
+        reservation: &AutomaticReservation,
+        log_length: u64,
+        selected: Option<&Path>,
+        published: bool,
+        deselected: Option<(crate::checkpoint_view::CheckpointPin, u64)>,
+    ) -> io::Result<()> {
+        let mut state = self.state.lock().map_err(|_| poisoned())?;
+        match live_other_bytes(&self.store, log_length, selected) {
+            Ok(live_other) => {
+                state.live_other = live_other;
+                state.automatic = if published {
+                    reservation.growth
+                } else {
+                    reservation.bytes + reservation.growth
+                };
+                state.deselected.extend(deselected);
+                Ok(())
+            }
+            Err(error) => {
+                state.uncertain = true;
+                Err(io::Error::new(
+                    error.kind(),
+                    format!("disk budget accounting could not be refreshed: {error}"),
+                ))
+            }
+        }
+    }
+
+    /// Admits the append that follows an automatic rollover, converting
+    /// its reserved log growth in the same critical section.
+    pub(crate) fn admit_log_reserved(
+        &self,
+        next_log: u64,
+        mut reservation: AutomaticReservation,
+    ) -> io::Result<()> {
+        let mut state = lock_reliable(&self.state)?;
+        // Disarm the guard; its release happens here under the same lock.
+        let _budget = reservation.budget.take();
+        state.automatic = 0;
+        self.admit_log_locked(&mut state, next_log)
     }
 
     /// Reserves `bytes` for a replacement at `previous` and records the

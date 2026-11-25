@@ -483,9 +483,12 @@ impl OnlineCheckpointStore {
     /// by [`DiskBudgetStatus`](crate::DiskBudgetStatus). It is stored in the
     /// store directory and enforced by every later checkpoint-store open.
     /// Ordinary `Store` opens and managed rebuilds refuse a budgeted
-    /// directory. Installing requires automatic checkpoints to be disabled
-    /// and no open snapshots, so no unaccounted retired generation can be
-    /// held. A limit below the current charge returns `WouldBlock` unchanged.
+    /// directory. Installing requires no open snapshots, so no unaccounted
+    /// retired generation, unlinked automatic slot or deselected checkpoint
+    /// can be held. Automatic checkpoints may be enabled before or after
+    /// installation; their slots are measured and every later rollover is
+    /// admitted against the budget. A limit below the current charge returns
+    /// `WouldBlock` unchanged.
     /// Removing requires no outstanding maintenance or pinned generations.
     pub fn set_disk_budget(&self, limit: Option<u64>) -> io::Result<()> {
         Access::check_not_active(self.id())?;
@@ -512,21 +515,15 @@ impl OnlineCheckpointStore {
             }
             (None, None) => Ok(()),
             (None, Some(limit)) => {
-                let (selected, automatic) = {
-                    let view = current.read()?;
-                    (
-                        view.selection
-                            .as_ref()
-                            .map(|selection| selection.checkpoint.clone()),
-                        view.automatic,
-                    )
-                };
-                if automatic {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        "disable automatic checkpoints before installing a disk budget",
-                    ));
-                }
+                // An automatic store may be budgeted too: the writer gate
+                // held here excludes rollovers, both slots and the selected
+                // checkpoint are measured below, and no snapshot can hold a
+                // slot or checkpoint that is no longer named.
+                let selected = current
+                    .read()?
+                    .selection
+                    .as_ref()
+                    .map(|selection| selection.checkpoint.clone());
                 if current.snapshot_budget_status()?.active != 0 {
                     return Err(io::Error::new(
                         io::ErrorKind::WouldBlock,

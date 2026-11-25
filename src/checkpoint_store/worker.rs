@@ -212,10 +212,13 @@ impl CheckpointStore {
         }
         match self.automatic_rollover(state) {
             Ok(_) => Ok(true),
+            // A pinned slot or a disk budget that cannot fit the rollover is
+            // refused before any write; try again on a later check.
             Err(ManagedRolloverFailure::NotPublished(error))
-                if error
-                    .get_ref()
-                    .is_some_and(|cause| cause.is::<super::automatic::PinnedSlot>()) =>
+                if error.get_ref().is_some_and(|cause| {
+                    cause.is::<super::automatic::PinnedSlot>()
+                        || cause.is::<super::disk_budget::BudgetExceeded>()
+                }) =>
             {
                 Ok(false)
             }

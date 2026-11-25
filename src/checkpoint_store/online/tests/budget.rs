@@ -91,11 +91,6 @@ fn unbudgeted_writers_and_unreserved_allocations_are_refused() {
     );
     unsupported(
         online
-            .with_store(CheckpointStore::enable_automatic_checkpoints)
-            .unwrap_err(),
-    );
-    unsupported(
-        online
             .compact_and_replace(&fixture.previous, &Default::default())
             .unwrap_err(),
     );
@@ -725,20 +720,13 @@ fn a_valid_budgeted_store_still_adopts_its_tail() {
 }
 
 #[test]
-fn a_budget_with_automatic_checkpoints_is_refused_before_adoption_and_cleanup() {
-    let (fixture, online, _model) = budgeted(u64::MAX);
-    let record_path = fixture
-        .source
-        .join(crate::checkpoint_store::disk_budget::BUDGET_FILE);
-    let record = fs::read(&record_path).unwrap();
-    online.set_disk_budget(None).unwrap();
+fn a_budget_with_automatic_checkpoints_adopts_its_tail_and_charges_every_file() {
+    let (fixture, online, mut model) = budgeted(u64::MAX);
     online
         .with_store(CheckpointStore::enable_automatic_checkpoints)
         .unwrap();
     drop(online);
-    // An incompatible configuration: the saved record next to automatic
-    // checkpoints, with a complete unwitnessed tail.
-    fs::write(&record_path, &record).unwrap();
+    // A complete unwitnessed tail next to the budget and the automatic root.
     let tail = crate::record::encode(crate::record::Operation::Put, b"tail", b"value").unwrap();
     use std::io::Write;
     fs::OpenOptions::new()
@@ -747,17 +735,8 @@ fn a_budget_with_automatic_checkpoints_is_refused_before_adoption_and_cleanup() 
         .unwrap()
         .write_all(&tail)
         .unwrap();
-    let automatic = crate::checkpoint_store::automatic::root(&fixture.source);
-    let listing = |path: &Path| {
-        let mut names = fs::read_dir(path)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect::<Vec<_>>();
-        names.sort();
-        names
-    };
-    let before = (durable_state(&fixture), listing(&automatic));
-    let failure = retry_lock(|| match open_with_recovery(&fixture) {
+    model.insert(b"tail".to_vec(), b"value".to_vec());
+    let reopened = retry_lock(|| match open_with_recovery(&fixture) {
         Err(crate::RecoveryOpenFailure::NotAdopted(error))
             if error.kind() == io::ErrorKind::WouldBlock =>
         {
@@ -765,12 +744,28 @@ fn a_budget_with_automatic_checkpoints_is_refused_before_adoption_and_cleanup() 
         }
         other => Ok(other),
     })
+    .unwrap()
     .unwrap();
+    let online = OnlineCheckpointStore::from_store(reopened).unwrap();
     assert!(
-        matches!(&failure, Err(crate::RecoveryOpenFailure::NotAdopted(error))
-            if error.to_string().contains("automatic checkpoints")),
-        "{:?}",
-        failure.as_ref().err()
+        online
+            .with_store(CheckpointStore::automatic_checkpoints_enabled)
+            .unwrap()
     );
-    assert_eq!((durable_state(&fixture), listing(&automatic)), before);
+    assert_eq!(live(&online), model);
+    // Every file is measured: the store tree, the external selection and
+    // one spare record length.
+    let selected = crate::checkpoint_store::selection::load(&fixture.source)
+        .unwrap()
+        .unwrap()
+        .checkpoint;
+    let external = if selected.starts_with(fs::canonicalize(&fixture.source).unwrap()) {
+        0
+    } else {
+        crate::staging::tree_bytes(&selected).unwrap()
+    };
+    let measured = crate::staging::tree_bytes(&fixture.source).unwrap()
+        + external
+        + crate::checkpoint_store::disk_budget::RECORD_BYTES as u64;
+    assert_eq!(status(&online).charged, measured);
 }
