@@ -4,6 +4,11 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Admit online checkpoint compaction's initial source-log pass against
+  its read ceiling before reading the prefix or reserving disk-budget
+  space. Previously an under-budget attempt verified the whole prefix, and
+  on a budgeted store reserved space, before refusing.
+
 - Add `OnlineCheckpointStore::cleanup_retired_staging_with_scan_limit`.
   It bounds the verification that finishes an interrupted retirement by
   the same combined checkpoint and log scan as a bounded recovery open. It

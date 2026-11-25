@@ -166,8 +166,11 @@ pub struct OnlineCheckpointCompactionOptions {
     /// replacement's log limit until the exchange. Ignored without a budget.
     pub max_catchup_bytes: u64,
     /// Ceilings for the initial copy of the captured view, as for
-    /// [`CheckpointStore::compact_to_with_limits_detailed`]. Catch-up and
-    /// final verification reads are not charged.
+    /// [`CheckpointStore::compact_to_with_limits_detailed`]. The source read
+    /// ceiling first admits one pass over the captured log prefix, before it
+    /// is read and before any disk-budget reservation, then charges each
+    /// live value copied. The checkpoint read, catch-up replay and final
+    /// verification are not charged.
     pub copy_limits: CheckpointCompactionLimits,
 }
 
@@ -885,6 +888,17 @@ impl OnlineCheckpointStore {
             let snapshot = current.snapshot()?;
             (snapshot, boundary_locked(&current)?)
         };
+        let mut copy = crate::store::CheckpointCopyOptions {
+            checkpoint_limits: Some(current.checkpoint_view_limits),
+            source_value_read_bytes: options.copy_limits.max_source_log_read_bytes,
+            target_log_bytes: options.copy_limits.max_target_log_bytes,
+        };
+        // Admit the initial pass over the captured log prefix before reading
+        // it or reserving disk space. Live value reads during the copy are
+        // charged against the remainder; catch-up and final checks are not.
+        if copy.source_value_read_bytes.is_some() {
+            copy.charge_source_reads(initial)?;
+        }
         // Verify the captured view against the immutable log prefix, then
         // copy it. Commits continue; the witness is checked at the barrier.
         let (count, mut digest) = snapshot.with_captured(|view, key_bytes| {
@@ -898,11 +912,6 @@ impl OnlineCheckpointStore {
                 )
                 .map(|(count, _, digest)| (count, digest))
         })?;
-        let mut copy = crate::store::CheckpointCopyOptions {
-            checkpoint_limits: Some(current.checkpoint_view_limits),
-            source_value_read_bytes: options.copy_limits.max_source_log_read_bytes,
-            target_log_bytes: options.copy_limits.max_target_log_bytes,
-        };
         // Reserve the complete replacement durably before allocating any of
         // it, then cap each part at its reserved size.
         let mut reservation = ReservationGuard(None);
@@ -929,9 +938,6 @@ impl OnlineCheckpointStore {
             let mut limits = current.checkpoint_view_limits;
             limits.max_file_bytes = limits.max_file_bytes.min(checkpoint_bytes);
             copy.checkpoint_limits = Some(limits);
-        }
-        if copy.source_value_read_bytes.is_some() {
-            copy.charge_source_reads(initial)?;
         }
         copy.charge_target_log(crate::witness::LOG_HEADER_SIZE as u64)?;
         let checkpoint_digest = snapshot.with_captured(|view, _| {
