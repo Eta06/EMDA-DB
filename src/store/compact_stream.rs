@@ -92,12 +92,14 @@ fn copy_live(
     view: &RecoveredCheckpointView,
     target: &Log,
     options: &mut CheckpointCopyOptions,
+    reads: &mut crate::store::source_read_budget::SourceReadBudget,
 ) -> io::Result<(u64, [u8; 32])> {
     let mut copy = GroupedCopy::new(target, None)?;
     let mut count = 0_u64;
     let mut hash = Sha256::new();
     view.visit_entries(None, None, |key, location| {
         options.charge_source_reads(location.length as u64)?;
+        reads.charge(location.length as u64)?;
         options.charge_target_log(
             (record::HEADER_SIZE + key.len() + location.length + record::CHECKSUM_SIZE) as u64,
         )?;
@@ -146,18 +148,21 @@ pub(crate) fn compact_checkpoint_with_hooks(
         target_path,
         (sync_parent, before_publish, after_copy),
         true,
+        &mut crate::store::source_read_budget::SourceReadBudget(None),
     )
 }
 
 /// Copies a captured view while the source may still accept commits. A
 /// concurrent commit can advance the source witness, so the caller must
-/// verify it later while excluding writers.
+/// verify it later while excluding writers. `reads` is charged each live
+/// value's length before that value is read.
 pub(crate) fn compact_checkpoint_concurrent(
     source: &Log,
     view: &RecoveredCheckpointView,
     expected_count: u64,
     target_path: (&Path, CheckpointCopyOptions),
     before_publish: impl FnOnce() -> io::Result<()>,
+    reads: &mut crate::store::source_read_budget::SourceReadBudget,
 ) -> io::Result<[u8; 32]> {
     compact_checkpoint_copy(
         source,
@@ -170,6 +175,7 @@ pub(crate) fn compact_checkpoint_concurrent(
             |_: &Path| Ok(()),
         ),
         false,
+        reads,
     )
 }
 
@@ -184,12 +190,13 @@ fn compact_checkpoint_copy(
         impl FnOnce(&Path) -> io::Result<()>,
     ),
     verify_source_witness: bool,
+    reads: &mut crate::store::source_read_budget::SourceReadBudget,
 ) -> io::Result<[u8; 32]> {
     let (destination, mut options) = target_path;
     let parent = backup::parent_directory(destination)?;
     let mut staging = crate::staging::Stage::directory(parent)?;
     let target = Store::open(staging.path())?;
-    let copied = copy_live(source, view, &target.log, &mut options);
+    let copied = copy_live(source, view, &target.log, &mut options, reads);
     let closed = target.close_private_store();
     let (copied_count, source_digest) = copied?;
     closed?;

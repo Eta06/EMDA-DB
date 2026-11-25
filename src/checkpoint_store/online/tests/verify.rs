@@ -2,6 +2,10 @@
 //! windows and streamed values. These check detection, not elapsed time.
 use super::*;
 
+fn verify_unlimited(source: &CheckpointStore, candidate: &CheckpointStore) -> io::Result<()> {
+    verify_candidate(source, candidate, &mut SourceReadBudget(None))
+}
+
 type Changes = Vec<(Vec<u8>, Option<Vec<u8>>)>;
 
 // A checkpoint store whose live set is split between the checkpoint and the
@@ -82,8 +86,8 @@ fn identical_live_sets_match_across_count_and_byte_windows() {
             &flattened,
             &[],
         );
-        verify_candidate(&source, &candidate).unwrap();
-        verify_candidate(&candidate, &source).unwrap();
+        verify_unlimited(&source, &candidate).unwrap();
+        verify_unlimited(&candidate, &source).unwrap();
     }
 }
 
@@ -118,17 +122,17 @@ fn key_count_and_value_differences_are_mismatches_in_every_window() {
     ];
     for (name, change) in cases {
         let candidate = store(root.path(), name, &base, &change);
-        assert!(is_mismatch(verify_candidate(&source, &candidate)), "{name}");
+        assert!(is_mismatch(verify_unlimited(&source, &candidate)), "{name}");
         assert!(
-            is_mismatch(verify_candidate(&candidate, &source)),
+            is_mismatch(verify_unlimited(&candidate, &source)),
             "{name} reversed"
         );
     }
     let empty = store(root.path(), "empty", &[], &[]);
-    assert!(is_mismatch(verify_candidate(&source, &empty)));
-    assert!(is_mismatch(verify_candidate(&empty, &source)));
+    assert!(is_mismatch(verify_unlimited(&source, &empty)));
+    assert!(is_mismatch(verify_unlimited(&empty, &source)));
     let also_empty = store(root.path(), "also-empty", &[], &[]);
-    verify_candidate(&empty, &also_empty).unwrap();
+    verify_unlimited(&empty, &also_empty).unwrap();
 }
 
 #[test]
@@ -147,13 +151,13 @@ fn large_values_stream_and_detect_late_differences_and_corruption() {
     ];
     let source = store(root.path(), "source", &base, &[]);
     let same = store(root.path(), "same", &base, &[]);
-    verify_candidate(&source, &same).unwrap();
+    verify_unlimited(&source, &same).unwrap();
 
     // A difference in the last chunk only.
     let mut late = large(2);
     *late.last_mut().unwrap() ^= 1;
     let changed = store(root.path(), "late", &base, &[(b"b".to_vec(), Some(late))]);
-    assert!(is_mismatch(verify_candidate(&source, &changed)));
+    assert!(is_mismatch(verify_unlimited(&source, &changed)));
 
     // A first-chunk difference followed by corruption later in the same value
     // is still reported as corruption, on either side.
@@ -197,15 +201,15 @@ fn large_values_stream_and_detect_late_differences_and_corruption() {
             (file, byte)
         };
         assert!(
-            is_corruption(verify_candidate(&source, &differing)),
+            is_corruption(verify_unlimited(&source, &differing)),
             "{name}"
         );
         assert!(
-            is_corruption(verify_candidate(&differing, &source)),
+            is_corruption(verify_unlimited(&differing, &source)),
             "{name} reversed"
         );
         use std::os::unix::fs::FileExt;
         original.0.write_all_at(&original.1, offset).unwrap();
     }
-    verify_candidate(&source, &same).unwrap();
+    verify_unlimited(&source, &same).unwrap();
 }

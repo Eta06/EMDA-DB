@@ -8,6 +8,7 @@ use super::{
     CheckpointCompactionLimits, CheckpointSnapshot, CheckpointStore, automatic, selection,
 };
 use crate::record::batch::BatchOperation;
+use crate::store::source_read_budget::SourceReadBudget;
 use crate::{
     MAX_ATOMIC_BATCH_BYTES, OnlineCompactionReport, OnlineReclaimError, OnlineReclaimFailure,
 };
@@ -112,6 +113,7 @@ enum RetirePoint {
 struct State {
     store: Arc<CheckpointStore>,
     failed: bool,
+    maintenance_source_read_limit: Option<u64>,
 }
 
 /// A guarded managed checkpoint-backed store that can compact its log while
@@ -283,19 +285,24 @@ impl<'a> Writer<'a> {
 fn replay(
     source: &CheckpointStore,
     target: &CheckpointStore,
-    start: u64,
-    end: u64,
+    (start, end): (u64, u64),
     digest: &mut Sha256,
+    budget: &mut SourceReadBudget,
 ) -> io::Result<()> {
     if end < start {
         return Err(io::Error::other("source log boundary moved backward"));
     }
+    // The range is scanned once, and each put value is read again.
+    budget.charge(end - start)?;
     let mut writer = Writer::new(target);
     source
         .log
         .visit_records_with_digest(start, end, end, digest, |key, location| {
             let value = location
-                .map(|location| source.log.read(location))
+                .map(|location| {
+                    budget.charge(location.length as u64)?;
+                    source.log.read(location)
+                })
                 .transpose()?;
             writer.push(key.into_owned(), value)
         })?;
@@ -319,7 +326,11 @@ fn mismatch() -> io::Error {
 // streamed through two fixed buffers. Scratch is bounded by the window caps
 // plus two chunk buffers, independently of value sizes. Elapsed time still
 // grows with the store.
-fn verify_candidate(source: &CheckpointStore, candidate: &CheckpointStore) -> io::Result<()> {
+fn verify_candidate(
+    source: &CheckpointStore,
+    candidate: &CheckpointStore,
+    budget: &mut SourceReadBudget,
+) -> io::Result<()> {
     let source_state = source.read()?;
     let candidate_state = candidate.read()?;
     let mut keys = Vec::new();
@@ -357,14 +368,17 @@ fn verify_candidate(source: &CheckpointStore, candidate: &CheckpointStore) -> io
                         _ => Err(mismatch()),
                     };
                 };
-                if key != &keys[start..start + length]
-                    || !source.log.value_equals(
-                        expected,
-                        &candidate.log,
-                        location,
-                        (&mut buffer, &mut other_buffer),
-                    )?
-                {
+                if key != &keys[start..start + length] {
+                    return Err(mismatch());
+                }
+                // Only the source value is charged; candidate reads are not.
+                budget.charge(expected.length as u64)?;
+                if !source.log.value_equals(
+                    expected,
+                    &candidate.log,
+                    location,
+                    (&mut buffer, &mut other_buffer),
+                )? {
                     return Err(mismatch());
                 }
                 matched += 1;
@@ -406,6 +420,7 @@ impl OnlineCheckpointStore {
             state: RwLock::new(State {
                 store: Arc::new(store),
                 failed: false,
+                maintenance_source_read_limit: None,
             }),
             maintenance: Mutex::new(()),
             reclamation_worker: std::sync::atomic::AtomicBool::new(false),
@@ -581,6 +596,29 @@ impl OnlineCheckpointStore {
         };
         budget.reconcile()?;
         budget.status().map(Some)
+    }
+
+    /// Sets an optional inclusive ceiling on logical source reads for each
+    /// online compaction of this handle, including scheduled ones. It counts
+    /// one pass over the captured log prefix, each copied live value, each
+    /// catch-up and final replay range and the values reread from it, each
+    /// source value in the final comparison, and the final complete source
+    /// confirmation. Each charge is admitted before its read. A refusal
+    /// before the copy is published returns `NotPublished`; a later one is
+    /// classified as for any failure before the exchange. A call captures
+    /// the setting when it selects its source, and the limit resets on
+    /// reopen. Checkpoint index reads, candidate reads, witness and identity
+    /// checks, physical retries and the scan ceiling of
+    /// [`Self::cleanup_retired_staging_with_scan_limit`] are separate. It
+    /// must not be called from a callback of this handle.
+    pub fn set_maintenance_source_read_limit(&self, limit: Option<u64>) -> io::Result<()> {
+        Access::check_not_active(self.id())?;
+        let mut state = self.state.write().map_err(|_| uncertain())?;
+        if state.failed {
+            return Err(uncertain());
+        }
+        state.maintenance_source_read_limit = limit;
+        Ok(())
     }
 
     /// Releases idle expired views, including views of retired generations.
@@ -864,12 +902,17 @@ impl OnlineCheckpointStore {
         options.validate()?;
         let (source, previous, parent) =
             crate::store::compact_exchange::paths(&self.path, previous)?;
-        let current = {
+        // One maintenance budget covers this whole handoff. The setting is
+        // captured when the source is selected.
+        let (current, mut reads) = {
             let state = self.state.read().map_err(|_| uncertain())?;
             if state.failed {
                 return Err(uncertain());
             }
-            Arc::clone(&state.store)
+            (
+                Arc::clone(&state.store),
+                SourceReadBudget(state.maintenance_source_read_limit),
+            )
         };
         let original_lock = current.read()?.view.base.share_store_lock()?;
         original_lock.verify_identity(&source)?;
@@ -899,6 +942,7 @@ impl OnlineCheckpointStore {
         if copy.source_value_read_bytes.is_some() {
             copy.charge_source_reads(initial)?;
         }
+        reads.charge(initial)?;
         // Verify the captured view against the immutable log prefix, then
         // copy it. Commits continue; the witness is checked at the barrier.
         let (count, mut digest) = snapshot.with_captured(|view, key_bytes| {
@@ -952,6 +996,7 @@ impl OnlineCheckpointStore {
                     }
                     Ok(())
                 },
+                &mut reads,
             )
         })?;
         let mut candidate = CheckpointStore::open_using(
@@ -979,7 +1024,7 @@ impl OnlineCheckpointStore {
             if end == offset {
                 break;
             }
-            replay(&current, &candidate, offset, end, &mut digest)?;
+            replay(&current, &candidate, (offset, end), &mut digest, &mut reads)?;
             offset = end;
         }
         let concurrent_replay_bytes = offset - initial;
@@ -1000,7 +1045,15 @@ impl OnlineCheckpointStore {
                 "final compaction suffix exceeds configured limit",
             ));
         }
-        replay(&current, &candidate, offset, final_boundary, &mut digest)?;
+        // Reserve the complete source confirmation before the final replay.
+        reads.charge(final_boundary)?;
+        replay(
+            &current,
+            &candidate,
+            (offset, final_boundary),
+            &mut digest,
+            &mut reads,
+        )?;
         let (original_selection, enabled, protect_pinned_slots, automatic_scan_limit) = {
             let view = current.read()?;
             (
@@ -1019,7 +1072,7 @@ impl OnlineCheckpointStore {
                 "automatic checkpoint configuration changed",
             ));
         }
-        verify_candidate(&current, &candidate)?;
+        verify_candidate(&current, &candidate, &mut reads)?;
         candidate.log.verify_witness()?;
         // Confirm that no replayed source byte changed after it was read.
         crate::checkpoint::VerifiedLog::from_replay(final_boundary, digest)

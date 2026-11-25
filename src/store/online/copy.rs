@@ -22,21 +22,7 @@ pub(super) enum Point {
 
 type OwnedOperation = (Vec<u8>, Option<Vec<u8>>);
 
-pub(super) struct SourceReadBudget(pub(super) Option<u64>);
-
-impl SourceReadBudget {
-    pub(super) fn charge(&mut self, bytes: u64) -> io::Result<()> {
-        if let Some(remaining) = &mut self.0 {
-            *remaining = remaining.checked_sub(bytes).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "online maintenance source read byte limit exceeded",
-                )
-            })?;
-        }
-        Ok(())
-    }
-}
+pub(super) use crate::store::source_read_budget::SourceReadBudget;
 
 pub(super) fn boundary_locked(source: &Store) -> io::Result<u64> {
     if source.commits.failed() {

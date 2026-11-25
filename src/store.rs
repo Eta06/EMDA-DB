@@ -25,6 +25,7 @@ pub(crate) mod online;
 mod point_read;
 mod read_set;
 mod retained_export;
+pub(crate) mod source_read_budget;
 
 mod snapshot;
 mod transaction;

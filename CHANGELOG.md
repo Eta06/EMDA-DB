@@ -4,6 +4,12 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add `OnlineCheckpointStore::set_maintenance_source_read_limit`, a
+  per-handle ceiling on the logical source reads of each online checkpoint
+  handoff, including scheduled ones. Every source read of the handoff is
+  admitted before it happens, including the final comparison and the
+  final source confirmation.
+
 - Admit online checkpoint compaction's initial source-log pass against
   its read ceiling before reading the prefix or reserving disk-budget
   space. Previously an under-budget attempt verified the whole prefix, and
