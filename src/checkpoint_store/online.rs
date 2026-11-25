@@ -496,11 +496,11 @@ impl OnlineCheckpointStore {
             }
             Err(TryLockError::Poisoned(_)) => return Err(uncertain()),
         };
-        let state = self.state.write().map_err(|_| uncertain())?;
+        let mut state = self.state.write().map_err(|_| uncertain())?;
         if state.failed {
             return Err(uncertain());
         }
-        let current = &state.store;
+        let current = Arc::clone(&state.store);
         let _writer = current.writers.write().map_err(|_| uncertain())?;
         let existing = current.disk_budget()?;
         match (existing, limit) {
@@ -558,10 +558,27 @@ impl OnlineCheckpointStore {
                         "disk budget limit is below the charged bytes",
                     ));
                 }
-                super::disk_budget::write(&self.path, &record)?;
-                *current.disk_budget.write().map_err(|_| uncertain())? =
-                    Some(Arc::new(open(record)?));
-                Ok(())
+                // Take the budget slot before publishing, so a poisoned lock
+                // fails with nothing published. Any failure at or after
+                // publication, including rebuilding the accounting, fences the
+                // whole handle until reopen, which loads the visible record.
+                let mut slot = current.disk_budget.write().map_err(|_| uncertain())?;
+                let published =
+                    super::disk_budget::write_tracked(&self.path, &record).and_then(|()| {
+                        open(record).map_err(super::disk_budget::WriteFailure::Uncertain)
+                    });
+                match published {
+                    Ok(budget) => {
+                        *slot = Some(Arc::new(budget));
+                        Ok(())
+                    }
+                    Err(super::disk_budget::WriteFailure::NotPublished(error)) => Err(error),
+                    Err(failure) => {
+                        drop(slot);
+                        state.failed = true;
+                        Err(failure.into_io())
+                    }
+                }
             }
         }
     }

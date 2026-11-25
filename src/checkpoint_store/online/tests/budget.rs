@@ -472,3 +472,158 @@ fn retired_generation_charge_outlives_its_descriptors() {
     // log, checkpoint and lock descriptors were already dropped.
     drop(snapshot);
 }
+
+fn with_failed_record_sync<T>(action: impl FnOnce() -> T) -> T {
+    use crate::checkpoint_store::disk_budget::FAIL_RECORD_DIRECTORY_SYNC;
+    FAIL_RECORD_DIRECTORY_SYNC.set(true);
+    let result = action();
+    FAIL_RECORD_DIRECTORY_SYNC.set(false);
+    result
+}
+
+fn visible_limit(fixture: &Fixture) -> u64 {
+    crate::checkpoint_store::disk_budget::read(&fixture.source)
+        .unwrap()
+        .expect("record is visible")
+        .limit
+}
+
+// After an uncertain record publication the open handle admits nothing:
+// no append, no compaction and no further limit change. A fenced handle
+// also refuses reads; a fenced budget alone still serves them.
+fn assert_fails_closed(
+    online: &OnlineCheckpointStore,
+    fixture: &Fixture,
+    model: &Model,
+    handle_fenced: bool,
+) {
+    let write = online.with_store(|store| store.put(b"blocked", b"write"));
+    assert!(
+        write
+            .as_ref()
+            .is_err_and(|error| error.to_string().contains("uncertain")),
+        "{write:?}"
+    );
+    let compaction = online.compact_and_reclaim_detailed(&fixture.previous, &Default::default());
+    assert!(
+        matches!(&compaction, Err(OnlineReclaimFailure::Compaction(
+            OnlineHandoffFailure::NotPublished(error))) if error.to_string().contains("uncertain")),
+        "{compaction:?}"
+    );
+    assert!(!fixture.previous.exists());
+    assert!(online.set_disk_budget(Some(u64::MAX)).is_err());
+    assert!(
+        online.disk_budget_status().is_err(),
+        "no authoritative status"
+    );
+    if handle_fenced {
+        assert!(online.with_store(|store| store.get(b"k")).is_err());
+    } else {
+        assert_eq!(live(online), *model);
+    }
+}
+
+#[test]
+fn an_uncertain_first_install_blocks_writes_until_reopen() {
+    let (fixture, online, model) = fixture(false);
+    online.set_disk_budget(Some(u64::MAX)).unwrap();
+    let charged = status(&online).charged;
+    online.set_disk_budget(None).unwrap();
+    let step = record_bytes(b"k", b"v");
+    let limit = charged + step;
+    let error = with_failed_record_sync(|| online.set_disk_budget(Some(limit))).unwrap_err();
+    assert!(error.to_string().contains("uncertain"), "{error}");
+    // The record is visible, though its directory sync failed.
+    assert_eq!(visible_limit(&fixture), limit);
+    assert_fails_closed(&online, &fixture, &model, true);
+    drop(online);
+    // Reopen selects the visible record and enforces exactly its limit.
+    let mut model = model;
+    let online = retry_lock(|| OnlineCheckpointStore::open_managed(&fixture.source)).unwrap();
+    assert_eq!(status(&online).limit, limit);
+    write(&online, &mut model, b"k", b"v");
+    assert!(is_full(
+        &online
+            .with_store(|store| store.put(b"x", b"y"))
+            .unwrap_err()
+    ));
+    drop(online);
+    assert_eq!(reopened(&fixture.source), model);
+}
+
+#[test]
+fn an_uncertain_lowered_limit_blocks_writes_until_reopen() {
+    let (fixture, online, model) = budgeted(u64::MAX);
+    let charged = status(&online).charged;
+    let step = record_bytes(b"k", b"v");
+    let lowered = charged + step;
+    let error = with_failed_record_sync(|| online.set_disk_budget(Some(lowered))).unwrap_err();
+    assert!(error.to_string().contains("uncertain"), "{error}");
+    assert_eq!(visible_limit(&fixture), lowered);
+    // The old, larger limit must not keep admitting writes.
+    assert_fails_closed(&online, &fixture, &model, false);
+    drop(online);
+    let mut model = model;
+    let online = retry_lock(|| OnlineCheckpointStore::open_managed(&fixture.source)).unwrap();
+    assert_eq!(status(&online).limit, lowered);
+    write(&online, &mut model, b"k", b"v");
+    assert!(is_full(
+        &online
+            .with_store(|store| store.put(b"x", b"y"))
+            .unwrap_err()
+    ));
+    drop(online);
+    assert_eq!(reopened(&fixture.source), model);
+}
+
+#[test]
+fn a_limit_below_the_charge_is_still_an_ordinary_refusal() {
+    let (fixture, online, mut model) = budgeted(u64::MAX);
+    let charged = status(&online).charged;
+    let error = with_failed_record_sync(|| online.set_disk_budget(Some(charged - 1))).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    // Nothing was published, and the handle keeps working.
+    assert_eq!(visible_limit(&fixture), u64::MAX);
+    write(&online, &mut model, b"still", b"admitted");
+    drop(online);
+    assert_eq!(reopened(&fixture.source), model);
+}
+
+#[test]
+fn an_uncertain_reservation_fences_the_budget_until_reopen() {
+    let (fixture, online, model) = budgeted(u64::MAX);
+    let start = status(&online).charged;
+    let result = with_failed_record_sync(|| {
+        online.compact_and_reclaim_detailed(&fixture.previous, &Default::default())
+    });
+    assert!(
+        matches!(&result, Err(OnlineReclaimFailure::Compaction(
+            OnlineHandoffFailure::NotPublished(error))) if error.to_string().contains("uncertain")),
+        "{result:?}"
+    );
+    // The reservation is visible, but no candidate was created.
+    let record = crate::checkpoint_store::disk_budget::read(&fixture.source)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        record.pending,
+        crate::checkpoint_store::disk_budget::Pending::Compacting { .. }
+    ));
+    assert!(!fixture.previous.exists());
+    assert_fails_closed(&online, &fixture, &model, false);
+    drop(online);
+    // Reopen charges the visible reservation until it is reconciled.
+    let online = retry_lock(|| OnlineCheckpointStore::open_managed(&fixture.source)).unwrap();
+    let held = status(&online);
+    assert_eq!(held.pending, DiskBudgetPending::Compaction);
+    assert!(held.charged > start);
+    let released = online.reconcile_disk_budget().unwrap().unwrap();
+    assert_eq!(
+        (released.pending, released.charged),
+        (DiskBudgetPending::None, start)
+    );
+    online
+        .compact_and_reclaim(&fixture.previous, &Default::default())
+        .unwrap();
+    assert_eq!(live(&online), model);
+}

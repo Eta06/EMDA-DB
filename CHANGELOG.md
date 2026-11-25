@@ -4,6 +4,11 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Fail closed when a managed checkpoint disk-budget record publication is
+  uncertain. A directory sync error after the record rename no longer
+  leaves an installed budget detached or an old, larger limit in force.
+  Writes and maintenance are refused until the store is reopened.
+
 - Add `OnlineCheckpointStore::set_maintenance_source_read_limit`, a
   per-handle ceiling on the logical source reads of each online checkpoint
   handoff, including scheduled ones. Every source read of the handoff is

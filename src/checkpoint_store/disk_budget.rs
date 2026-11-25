@@ -185,22 +185,67 @@ pub(crate) fn read(store: &Path) -> io::Result<Option<Record>> {
     Record::decode(&bytes).map(Some)
 }
 
+/// A record replacement that did not complete.
+pub(crate) enum WriteFailure {
+    /// Failed before the rename: the previous record is still the visible one.
+    NotPublished(io::Error),
+    /// Failed at or after the rename: either record may be visible and
+    /// durable, so in-memory accounting can no longer be trusted.
+    Uncertain(io::Error),
+}
+
+impl WriteFailure {
+    pub(crate) fn into_io(self) -> io::Error {
+        match self {
+            Self::NotPublished(error) => error,
+            Self::Uncertain(error) => io::Error::new(
+                error.kind(),
+                format!("disk budget record publication is uncertain; reopen the store: {error}"),
+            ),
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    // Injects a directory sync failure after the record rename.
+    pub(crate) static FAIL_RECORD_DIRECTORY_SYNC: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
 /// Durably replaces a store's budget record. The temporary copy has the
 /// same fixed length and is charged as live spare space.
 pub(crate) fn write(store: &Path, record: &Record) -> io::Result<()> {
-    let bytes = record.encode()?;
+    write_tracked(store, record).map_err(WriteFailure::into_io)
+}
+
+/// Like [`write`], distinguishing a failure before the rename from one at or
+/// after it, when the new record may already be visible.
+pub(crate) fn write_tracked(store: &Path, record: &Record) -> Result<(), WriteFailure> {
+    let not_published = WriteFailure::NotPublished;
+    let bytes = record.encode().map_err(not_published)?;
     let temp = store.join(BUDGET_TEMP);
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(&temp)?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
+        .open(&temp)
+        .map_err(not_published)?;
+    file.write_all(&bytes).map_err(not_published)?;
+    file.sync_all().map_err(not_published)?;
     drop(file);
-    fs::rename(&temp, store.join(BUDGET_FILE))?;
-    File::open(store)?.sync_all()
+    let uncertain = WriteFailure::Uncertain;
+    fs::rename(&temp, store.join(BUDGET_FILE)).map_err(uncertain)?;
+    #[cfg(test)]
+    if FAIL_RECORD_DIRECTORY_SYNC.get() {
+        return Err(uncertain(io::Error::other(
+            "injected record directory sync failure",
+        )));
+    }
+    File::open(store)
+        .and_then(|directory| directory.sync_all())
+        .map_err(uncertain)
 }
 
 /// Refuses an operation that would write a budgeted store without enforcing
@@ -254,6 +299,9 @@ struct Accounting {
     retiring: Option<(Weak<GenerationToken>, u64)>,
     pending: Pending,
     live_id: Option<[u8; 16]>,
+    // Set when a record publication became uncertain. The accounting may not
+    // match the visible record, so every admission fails until reopen.
+    uncertain: bool,
 }
 
 /// Shared by every generation of an online store, so pinned retired
@@ -266,6 +314,22 @@ pub(crate) struct DiskBudget {
 
 fn poisoned() -> io::Error {
     io::Error::other("disk budget accounting poisoned; reopen the store")
+}
+
+fn unreliable() -> io::Error {
+    io::Error::other(
+        "disk budget record publication is uncertain; reopen the store to load the visible record",
+    )
+}
+
+// Locks the accounting, refusing every admission after an uncertain
+// record publication.
+fn lock_reliable(state: &Mutex<Accounting>) -> io::Result<std::sync::MutexGuard<'_, Accounting>> {
+    let state = state.lock().map_err(|_| poisoned())?;
+    if state.uncertain {
+        return Err(unreliable());
+    }
+    Ok(state)
 }
 
 /// Live bytes other than the log: every file in the store directory except
@@ -313,6 +377,7 @@ impl DiskBudget {
                 maintenance,
                 pinned: Vec::new(),
                 retiring: None,
+                uncertain: false,
                 pending: record.pending,
                 live_id: log_id,
             }),
@@ -380,7 +445,8 @@ impl DiskBudget {
     }
 
     pub(crate) fn status(&self) -> io::Result<DiskBudgetStatus> {
-        let mut state = self.state.lock().map_err(|_| poisoned())?;
+        // After an uncertain publication no charge or limit is authoritative.
+        let mut state = lock_reliable(&self.state)?;
         self.status_locked(&mut state)
     }
 
@@ -388,7 +454,7 @@ impl DiskBudget {
     /// store's writer gate, so at most one append is in flight. The admitted
     /// length stays charged even if the append then fails.
     pub(crate) fn admit_log(&self, next_log: u64) -> io::Result<()> {
-        let mut state = self.state.lock().map_err(|_| poisoned())?;
+        let mut state = lock_reliable(&self.state)?;
         let status = self.status_locked(&mut state)?;
         // `charged` includes `live_log`, so this cannot underflow.
         let others = status.charged - state.live_log;
@@ -405,7 +471,7 @@ impl DiskBudget {
     /// Reserves `bytes` for a replacement at `previous` and records the
     /// reservation durably before any of it is allocated.
     pub(crate) fn reserve_compaction(&self, previous: &Path, bytes: u64) -> io::Result<()> {
-        let mut state = self.state.lock().map_err(|_| poisoned())?;
+        let mut state = lock_reliable(&self.state)?;
         if state.pending != Pending::Idle {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -424,13 +490,19 @@ impl DiskBudget {
             previous: previous.to_path_buf(),
             reserved: bytes,
         };
-        write(
-            &self.store,
-            &Record {
-                limit: state.limit,
-                pending: pending.clone(),
-            },
-        )?;
+        let record = Record {
+            limit: state.limit,
+            pending: pending.clone(),
+        };
+        match write_tracked(&self.store, &record) {
+            Ok(()) => {}
+            Err(WriteFailure::NotPublished(error)) => return Err(error),
+            Err(failure) => {
+                // A visible reservation would not match idle accounting.
+                state.uncertain = true;
+                return Err(failure.into_io());
+            }
+        }
         state.maintenance = bytes;
         state.pending = pending;
         Ok(())
@@ -470,9 +542,11 @@ impl DiskBudget {
     }
 
     /// Clears outstanding maintenance once nothing it could have allocated
-    /// remains. Returns whether the record is now idle.
+    /// remains. Returns whether the record is now idle. If writing the idle
+    /// record fails, the in-memory charge is kept, which is never less than
+    /// either visible record charges.
     pub(crate) fn reconcile(&self) -> io::Result<bool> {
-        let mut state = self.state.lock().map_err(|_| poisoned())?;
+        let mut state = lock_reliable(&self.state)?;
         let clean = match &state.pending {
             Pending::Idle => return Ok(true),
             // Copy stages record no owner, so any one keeps the charge.
@@ -505,27 +579,36 @@ impl DiskBudget {
     /// Changes the persistent limit. A limit below the charged total returns
     /// `WouldBlock` and leaves the record unchanged.
     pub(crate) fn set_limit(&self, limit: u64) -> io::Result<()> {
-        let mut state = self.state.lock().map_err(|_| poisoned())?;
+        let mut state = lock_reliable(&self.state)?;
         if self.status_locked(&mut state)?.charged > limit {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
                 "disk budget limit is below the charged bytes",
             ));
         }
-        write(
-            &self.store,
-            &Record {
-                limit,
-                pending: state.pending.clone(),
-            },
-        )?;
-        state.limit = limit;
-        Ok(())
+        let record = Record {
+            limit,
+            pending: state.pending.clone(),
+        };
+        match write_tracked(&self.store, &record) {
+            Ok(()) => {
+                state.limit = limit;
+                Ok(())
+            }
+            Err(WriteFailure::NotPublished(error)) => Err(error),
+            Err(failure) => {
+                // Either limit may be the durable one; admit nothing more.
+                state.uncertain = true;
+                Err(failure.into_io())
+            }
+        }
     }
 
-    /// Removes the record when nothing is outstanding or pinned.
+    /// Removes the record when nothing is outstanding or pinned. If removal
+    /// fails, the budget stays attached and enforced, which is never less
+    /// restrictive than a removed record.
     pub(crate) fn remove(&self) -> io::Result<()> {
-        let mut state = self.state.lock().map_err(|_| poisoned())?;
+        let mut state = lock_reliable(&self.state)?;
         if state.pending != Pending::Idle || Self::pinned_locked(&mut state)? != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
