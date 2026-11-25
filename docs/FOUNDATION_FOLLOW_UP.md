@@ -564,6 +564,14 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   fit the replacement. It stops on a leftover previous path or an uncertain
   handoff. It does not bound reclamation latency or recovery, persist
   across reopen, or remove leftovers.
+  Bounded reopen of the selected generation after a clean reclamation and
+  after interrupted publication and retirement is exercised through
+  `open_managed_with_total_recovery_scan_limit`. One byte below the
+  checkpoint and log scan is refused with every file unchanged. The exact
+  budget recovers every acknowledged value and keeps disk-budget charges.
+  Scoped cleanup after an interrupted retirement now has the same ceiling.
+  Recovery still scans the complete covered log, so the bound grows with
+  the store.
 - [x] Implement opt-in authority-backed retained cutover with a witnessed base and suffix, original-path older-reader rejection for the tested binaries and authority-checked selection. The [format specification](STREAMING_RETAINED_BASE_SPEC.md) defines the supported protocol and trust assumptions. The [buffered cutover campaign](../benchmarks/results/2026-11-19-buffered-retained-export/README.md) verified the complete base and exercised kernel failures before the original-path fence on Linux V2 and V3.
 - [x] Screen successor block and anchor limits against the rebased totals
   before creating the base file. Rotation checks the actual layout as it

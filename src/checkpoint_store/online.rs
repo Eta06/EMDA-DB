@@ -732,6 +732,30 @@ impl OnlineCheckpointStore {
     pub fn cleanup_retired_staging_detailed(
         &self,
     ) -> Result<crate::StagingCleanup, crate::StagingCleanupFailure> {
+        self.cleanup_retired_staging_using(None)
+    }
+
+    /// Like [`Self::cleanup_retired_staging_detailed`], with an inclusive
+    /// ceiling on the logical bytes its verification reads: the open
+    /// generation's pinned checkpoint file plus its complete log, the same
+    /// scan as a clean bounded recovery open. It is admitted against that
+    /// checkpoint descriptor after reading only its header, and against the
+    /// log length under the writer gate, which is the verified boundary. Verification, and so the
+    /// ceiling, applies only when a matching stage is about to be removed. A
+    /// larger scan returns `NotStarted(InvalidInput)` before any removal and
+    /// preserves every stage. Physical retries and other operations' reads
+    /// are separate.
+    pub fn cleanup_retired_staging_with_scan_limit(
+        &self,
+        max_scan_bytes: u64,
+    ) -> Result<crate::StagingCleanup, crate::StagingCleanupFailure> {
+        self.cleanup_retired_staging_using(Some(max_scan_bytes))
+    }
+
+    fn cleanup_retired_staging_using(
+        &self,
+        max_scan_bytes: Option<u64>,
+    ) -> Result<crate::StagingCleanup, crate::StagingCleanupFailure> {
         use crate::StagingCleanupFailure::NotStarted;
 
         Access::check_not_active(self.id()).map_err(NotStarted)?;
@@ -778,7 +802,12 @@ impl OnlineCheckpointStore {
         let report = crate::staging::cleanup_retired_detailed(
             parent,
             &id,
-            || current.verify_for_checkpoint(&view).map(|_| ()),
+            || match max_scan_bytes {
+                // Admitted from the pinned checkpoint descriptor and the
+                // log length under the writer gate, before any entry is read.
+                Some(max) => current.verify_with_total_scan_limit(&view, max),
+                None => current.verify_for_checkpoint(&view).map(|_| ()),
+            },
             fs::File::sync_all,
             fs::File::sync_all,
         )?;
@@ -860,7 +889,13 @@ impl OnlineCheckpointStore {
         // copy it. Commits continue; the witness is checked at the barrier.
         let (count, mut digest) = snapshot.with_captured(|view, key_bytes| {
             current
-                .verify_view_at(view, key_bytes, initial, false)
+                .verify_view_at(
+                    view,
+                    key_bytes,
+                    initial,
+                    false,
+                    crate::checkpoint::RecoveryScanLimits::default(),
+                )
                 .map(|(count, _, digest)| (count, digest))
         })?;
         let mut copy = crate::store::CheckpointCopyOptions {

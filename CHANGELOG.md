@@ -4,6 +4,12 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add `OnlineCheckpointStore::cleanup_retired_staging_with_scan_limit`.
+  It bounds the verification that finishes an interrupted retirement by
+  the same combined checkpoint and log scan as a bounded recovery open. It
+  is admitted from the pinned checkpoint descriptor and the
+  witness-verified log length, and refuses before any removal.
+
 - Add opt-in `query_planned_estimated` and `explain_query_estimated` for
   documents. They choose among eligible range-class index paths by bounded
   index-entry counts, under total entry and scan-call budgets that charge

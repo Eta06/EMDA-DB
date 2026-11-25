@@ -604,8 +604,20 @@ impl CheckpointView {
 
     // Revalidate the original trusted checkpoint and its covered log bytes
     // before deriving another checkpoint from this long-lived view.
-    pub(crate) fn verify_for_rollover(&self, visit_entry: impl FnMut(&[u8])) -> io::Result<Sha256> {
-        let verified = self.verify_checkpoint_entries(visit_entry)?;
+    /// Verifies the checkpoint entries and log prefix for rollover, first
+    /// admitting `scan` against this view's pinned checkpoint descriptor and
+    /// its log length after reading only the checkpoint header.
+    ///
+    /// `witnessed` replaces the boundary captured at open when the caller has
+    /// just verified the witness for the current log length while excluding
+    /// writers. Acknowledged appends since open are then charged as one pass.
+    pub(crate) fn verify_for_rollover_admitted(
+        &self,
+        scan: checkpoint::RecoveryScanLimits,
+        witnessed: Option<u64>,
+        visit_entry: impl FnMut(&[u8]),
+    ) -> io::Result<Sha256> {
+        let verified = self.verify_checkpoint_entries_admitted(scan, witnessed, visit_entry)?;
         checkpoint::verify_log_prefix(&self.log, &verified)
     }
 
@@ -617,18 +629,37 @@ impl CheckpointView {
 
     fn verify_checkpoint_entries(
         &self,
+        visit_entry: impl FnMut(&[u8]),
+    ) -> io::Result<checkpoint::VerifiedCheckpoint> {
+        self.verify_checkpoint_entries_admitted(
+            checkpoint::RecoveryScanLimits::default(),
+            None,
+            visit_entry,
+        )
+    }
+
+    fn verify_checkpoint_entries_admitted(
+        &self,
+        scan: checkpoint::RecoveryScanLimits,
+        witnessed: Option<u64>,
         mut visit_entry: impl FnMut(&[u8]),
     ) -> io::Result<checkpoint::VerifiedCheckpoint> {
+        // A freshly witnessed boundary is never below the one captured at
+        // open; otherwise keep the captured boundary and its checks.
+        let witnessed_boundary = witnessed
+            .filter(|boundary| *boundary >= self.witnessed_boundary)
+            .unwrap_or(self.witnessed_boundary);
         let mut count = 0_u64;
         let verified = checkpoint::visit_index_file(
             &self.index.file,
             self.log.len()?,
-            self.witnessed_boundary,
+            witnessed_boundary,
             &self.trusted_digest,
             checkpoint::IndexAdmission {
                 max_file_bytes: Some(self.limits.max_file_bytes),
                 max_view_blocks: Some(self.limits.max_blocks),
                 read_budget: self.index.read_budget.as_ref(),
+                recovery_scan: scan,
                 ..Default::default()
             },
             |_, _, key, _, _| {

@@ -1534,13 +1534,36 @@ impl CheckpointStore {
         state: &State,
     ) -> io::Result<(u64, usize, crate::checkpoint::VerifiedLog)> {
         let boundary = self.log.len()?;
-        let (count, peak, log_hasher) =
-            self.verify_view_at(&state.view, state.overlay_key_bytes, boundary, true)?;
+        let (count, peak, log_hasher) = self.verify_view_at(
+            &state.view,
+            state.overlay_key_bytes,
+            boundary,
+            true,
+            crate::checkpoint::RecoveryScanLimits::default(),
+        )?;
         Ok((
             count,
             peak,
             crate::checkpoint::VerifiedLog::from_replay(boundary, log_hasher),
         ))
+    }
+
+    /// Verifies the committed state, including the complete log, under a
+    /// combined scan ceiling. The caller holds the writer gate, so the
+    /// admitted log length is the verified boundary.
+    fn verify_with_total_scan_limit(&self, state: &State, max_scan_bytes: u64) -> io::Result<()> {
+        let boundary = self.log.len()?;
+        self.verify_view_at(
+            &state.view,
+            state.overlay_key_bytes,
+            boundary,
+            true,
+            crate::checkpoint::RecoveryScanLimits {
+                total_bytes: Some(max_scan_bytes),
+                ..Default::default()
+            },
+        )
+        .map(|_| ())
     }
 
     /// Verifies a captured view against the log prefix ending at `boundary`.
@@ -1555,7 +1578,15 @@ impl CheckpointStore {
         overlay_key_bytes: usize,
         boundary: u64,
         check_witness: bool,
+        scan: crate::checkpoint::RecoveryScanLimits,
     ) -> io::Result<(u64, usize, sha2::Sha256)> {
+        // A scan ceiling is admitted against the view's own log length; it
+        // must be the boundary verified below. Callers hold the writer gate.
+        if scan.total_bytes.is_some() && view.base.log.len()? != boundary {
+            return Err(record::invalid_data(
+                "log length changed before bounded verification",
+            ));
+        }
         if check_witness {
             self.log.verify_witness()?;
         }
@@ -1602,21 +1633,26 @@ impl CheckpointStore {
         // Collect initial membership during the trusted index scan. Replay
         // uses these private results only after the index and log prefix verify.
         let mut pending = probes.iter_mut().peekable();
-        let mut log_hasher = view.base.verify_for_rollover(|base_key| {
-            while let Some(probe) = pending.peek_mut() {
-                match probe.key.cmp(base_key) {
-                    std::cmp::Ordering::Less => {
-                        pending.next();
+        // On the bounded path the witness was just verified for `boundary`
+        // under the writer gate, so the scan is one pass over the log.
+        let witnessed = (check_witness && scan.total_bytes.is_some()).then_some(boundary);
+        let mut log_hasher =
+            view.base
+                .verify_for_rollover_admitted(scan, witnessed, |base_key| {
+                    while let Some(probe) = pending.peek_mut() {
+                        match probe.key.cmp(base_key) {
+                            std::cmp::Ordering::Less => {
+                                pending.next();
+                            }
+                            std::cmp::Ordering::Equal => {
+                                probe.present = true;
+                                pending.next();
+                                break;
+                            }
+                            std::cmp::Ordering::Greater => break,
+                        }
                     }
-                    std::cmp::Ordering::Equal => {
-                        probe.present = true;
-                        pending.next();
-                        break;
-                    }
-                    std::cmp::Ordering::Greater => break,
-                }
-            }
-        })?;
+                })?;
         let mut operations = 0_u64;
         self.log.visit_records_with_digest(
             view.base.log_boundary(),
