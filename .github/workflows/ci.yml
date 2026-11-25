@@ -218,3 +218,47 @@ jobs:
           name: writable-recovery-memory-ceiling
           path: ${{ runner.temp }}/benchmark-attempts/writable-recovery-memory-ceiling/
           if-no-files-found: ignore
+      - name: Verify an online checkpoint handoff and reclamation under a 48 MiB address-space limit
+        run: |
+          source scripts/benchmarks/record_case.sh
+          cargo +stable build --release --locked --example online_checkpoint_verify_rss
+          binary=target/release/examples/online_checkpoint_verify_rss
+          fixture="$RUNNER_TEMP/online-handoff-memory"
+          mkdir -p "$fixture"
+          # The fixture is prepared without a ceiling, in its own process.
+          record_benchmark online-checkpoint-handoff-prepare "$binary" prepare "$fixture" 64
+          limit=$((48 * 1024 * 1024))
+          record_benchmark online-checkpoint-handoff-memory-ceiling prlimit --as="$limit:$limit" -- \
+            sh -c 'echo "rlimit_as_kib=$(ulimit -v)"; exec /usr/bin/time -v "$0" handoff "$1" 64' "$binary" "$fixture"
+          python3 - "$RUNNER_TEMP/benchmark-attempts/online-checkpoint-handoff-memory-ceiling" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          attempt = json.loads(next(root.rglob("attempt.json")).read_text())
+          log = next(root.rglob("command.log")).read_text()
+          if attempt["returncode"] != 0:
+              raise SystemExit("online handoff under the ceiling failed")
+          if "rlimit_as_kib=49152" not in log:
+              raise SystemExit("the 48 MiB address-space limit was not applied")
+          row = json.loads(next(line for line in log.splitlines() if line.startswith("{")))
+          if (row["mode"], row["values"], row["verified_entries"], row["checked"]) != ("handoff", 64, 72, True):
+              raise SystemExit(f"incomplete handoff verification: {row}")
+          if not row["compacted_log_bytes"] < row["original_log_bytes"]:
+              raise SystemExit(f"the log was not compacted: {row}")
+          peak = int(re.search(r"Maximum resident set size \(kbytes\): (\d+)", log).group(1)) * 1024
+          if peak > 48 * 1024**2:
+              raise SystemExit(f"peak RSS {peak} exceeded the address-space limit")
+          print(row, "peak_rss_bytes", peak)
+          PY
+      - name: Preserve the online handoff attempts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: online-checkpoint-handoff-memory-ceiling
+          path: |
+            ${{ runner.temp }}/benchmark-attempts/online-checkpoint-handoff-prepare/
+            ${{ runner.temp }}/benchmark-attempts/online-checkpoint-handoff-memory-ceiling/
+          if-no-files-found: ignore
