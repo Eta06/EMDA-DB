@@ -627,3 +627,150 @@ fn an_uncertain_reservation_fences_the_budget_until_reopen() {
         .unwrap();
     assert_eq!(live(&online), model);
 }
+
+// A managed, budgeted store whose log has a complete unwitnessed tail.
+fn budgeted_with_pending_tail() -> (Fixture, Model) {
+    let (fixture, online, mut model) = budgeted(u64::MAX);
+    drop(online);
+    let tail = crate::record::encode(crate::record::Operation::Put, b"tail", b"value").unwrap();
+    use std::io::Write;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(fixture.source.join("records.log"))
+        .unwrap()
+        .write_all(&tail)
+        .unwrap();
+    model.insert(b"tail".to_vec(), b"value".to_vec());
+    (fixture, model)
+}
+
+// The anchor or V2 witness file, selection and checkpoint bytes, plus the
+// witnessed log boundary read without adoption. On Linux V3 the boundary is
+// held in an extended attribute, not in `commit.state`.
+fn durable_state(fixture: &Fixture) -> (Vec<u8>, Vec<u8>, Vec<u8>, u64) {
+    let selected = crate::checkpoint_store::selection::load(&fixture.source)
+        .unwrap()
+        .unwrap()
+        .checkpoint;
+    let (_, witnessed) = crate::log::Log::open_checkpoint_view(&fixture.source).unwrap();
+    (
+        fs::read(fixture.source.join("commit.state")).unwrap(),
+        fs::read(crate::checkpoint_store::selection::path(&fixture.source)).unwrap(),
+        fs::read(selected).unwrap(),
+        witnessed,
+    )
+}
+
+fn open_with_recovery(fixture: &Fixture) -> Result<CheckpointStore, crate::RecoveryOpenFailure> {
+    CheckpointStore::open_managed_with_recovery_limits(
+        &fixture.source,
+        crate::CheckpointStoreLimits::default(),
+        crate::CheckpointRecoveryLimits::default(),
+    )
+}
+
+#[test]
+fn an_invalid_budget_record_is_refused_before_tail_adoption() {
+    let (fixture, model) = budgeted_with_pending_tail();
+    let record = fixture
+        .source
+        .join(crate::checkpoint_store::disk_budget::BUDGET_FILE);
+    let original = fs::read(&record).unwrap();
+    let mut damaged = original.clone();
+    damaged[9] ^= 1;
+    fs::write(&record, &damaged).unwrap();
+    let before = durable_state(&fixture);
+    let failure = retry_lock(|| match open_with_recovery(&fixture) {
+        Err(crate::RecoveryOpenFailure::NotAdopted(error))
+            if error.kind() == io::ErrorKind::WouldBlock =>
+        {
+            Err(error)
+        }
+        other => Ok(other),
+    })
+    .unwrap();
+    assert!(
+        matches!(&failure, Err(crate::RecoveryOpenFailure::NotAdopted(error))
+            if error.kind() == io::ErrorKind::InvalidData),
+        "{:?}",
+        failure.as_ref().err()
+    );
+    // Neither the witness nor the selection or checkpoint advanced.
+    assert_eq!(durable_state(&fixture), before);
+    // With the record repaired, the same tail is adopted.
+    fs::write(&record, &original).unwrap();
+    assert_eq!(reopened(&fixture.source), model);
+}
+
+#[test]
+fn a_valid_budgeted_store_still_adopts_its_tail() {
+    let (fixture, model) = budgeted_with_pending_tail();
+    let before = durable_state(&fixture);
+    let store = retry_lock(|| {
+        open_with_recovery(&fixture).map_err(|failure| match failure {
+            crate::RecoveryOpenFailure::NotAdopted(error) => error,
+            other => panic!("{other:?}"),
+        })
+    })
+    .unwrap();
+    // The tail was adopted, so the witnessed boundary advanced, and the
+    // budget is enforced.
+    drop(store);
+    let after = durable_state(&fixture);
+    assert!(after.3 > before.3, "{} -> {}", before.3, after.3);
+    let store = retry_lock(|| CheckpointStore::open_managed(&fixture.source)).unwrap();
+    assert!(store.disk_budget_status().unwrap().is_some());
+    drop(store);
+    assert_eq!(reopened(&fixture.source), model);
+}
+
+#[test]
+fn a_budget_with_automatic_checkpoints_is_refused_before_adoption_and_cleanup() {
+    let (fixture, online, _model) = budgeted(u64::MAX);
+    let record_path = fixture
+        .source
+        .join(crate::checkpoint_store::disk_budget::BUDGET_FILE);
+    let record = fs::read(&record_path).unwrap();
+    online.set_disk_budget(None).unwrap();
+    online
+        .with_store(CheckpointStore::enable_automatic_checkpoints)
+        .unwrap();
+    drop(online);
+    // An incompatible configuration: the saved record next to automatic
+    // checkpoints, with a complete unwitnessed tail.
+    fs::write(&record_path, &record).unwrap();
+    let tail = crate::record::encode(crate::record::Operation::Put, b"tail", b"value").unwrap();
+    use std::io::Write;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(fixture.source.join("records.log"))
+        .unwrap()
+        .write_all(&tail)
+        .unwrap();
+    let automatic = crate::checkpoint_store::automatic::root(&fixture.source);
+    let listing = |path: &Path| {
+        let mut names = fs::read_dir(path)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    };
+    let before = (durable_state(&fixture), listing(&automatic));
+    let failure = retry_lock(|| match open_with_recovery(&fixture) {
+        Err(crate::RecoveryOpenFailure::NotAdopted(error))
+            if error.kind() == io::ErrorKind::WouldBlock =>
+        {
+            Err(error)
+        }
+        other => Ok(other),
+    })
+    .unwrap();
+    assert!(
+        matches!(&failure, Err(crate::RecoveryOpenFailure::NotAdopted(error))
+            if error.to_string().contains("automatic checkpoints")),
+        "{:?}",
+        failure.as_ref().err()
+    );
+    assert_eq!((durable_state(&fixture), listing(&automatic)), before);
+}

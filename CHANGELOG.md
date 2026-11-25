@@ -4,6 +4,11 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Validate a managed checkpoint store's disk-budget record, and its
+  compatibility with automatic checkpoints, before the open adopts a
+  pending tail or cleans automatic stages. A damaged or incompatible record
+  is now refused with the witness unchanged instead of after adoption.
+
 - Fail closed when a managed checkpoint disk-budget record publication is
   uncertain. A directory sync error after the record rename no longer
   leaves an installed budget detached or an old, larger limit in force.

@@ -662,6 +662,35 @@ impl CheckpointStore {
             max_tail_key_bytes,
             max_tail_operations,
         )?;
+        // Read and validate the persisted disk budget under the exclusive
+        // lock before any durable step. Its compatibility with automatic
+        // checkpoints is checked against the stabilized configuration before
+        // stage cleanup, and its accounting is built after cleanup but
+        // before tail adoption. Every checkpoint-store open enforces it.
+        let budget_record = disk_budget::read(&path)?;
+        if budget_record.is_some() && selection.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "a disk-budgeted store must be opened as a managed store",
+            ));
+        }
+        let build_budget = |log_id| -> io::Result<_> {
+            budget_record
+                .clone()
+                .map(|record| {
+                    disk_budget::DiskBudget::new(
+                        &path,
+                        record,
+                        length,
+                        log_id,
+                        selection
+                            .as_ref()
+                            .map(|selected| selected.checkpoint.as_path()),
+                    )
+                    .map(Arc::new)
+                })
+                .transpose()
+        };
         let stabilize_configuration = || {
             // A previous selection rename may have succeeded even if its
             // directory sync failed. Stabilize the visible selection before
@@ -673,6 +702,12 @@ impl CheckpointStore {
             if config.is_some() && selection.is_none() {
                 return Err(record::invalid_data(
                     "automatic checkpointing requires a managed selection",
+                ));
+            }
+            if budget_record.is_some() && config == Some(true) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "a disk-budgeted store cannot use automatic checkpoints",
                 ));
             }
             if config.is_some() {
@@ -687,6 +722,7 @@ impl CheckpointStore {
             let log = open_writer(&path, boundary, length)?;
             let base = prepared.verify_for_adoption(&log, &suffix_digest)?;
             let config = stabilize_configuration()?;
+            let disk_budget = build_budget(log.id())?;
             if let Some(tracker) = adoption_tracker {
                 log.sync_validated_boundary_tracked(length, Some(tracker))?;
             } else {
@@ -699,13 +735,16 @@ impl CheckpointStore {
                     )
                 })?;
             }
-            (base, log, config)
+            (base, log, (config, disk_budget))
         } else {
             let (base, _) = prepared.verify()?;
             let log = open_writer(&path, boundary, length)?;
             log.require_same_checkpoint_log(&base.log)?;
-            (base, log, stabilize_configuration()?)
+            let config = stabilize_configuration()?;
+            let disk_budget = build_budget(log.id())?;
+            (base, log, (config, disk_budget))
         };
+        let (automatic_config, disk_budget) = automatic_config;
         let mut view = suffix.attach(base);
         let automatic = automatic_config.unwrap_or(false);
         if let Some(view_log) = Arc::get_mut(&mut view.base.log) {
@@ -713,32 +752,6 @@ impl CheckpointStore {
         }
         let overlay_key_bytes = view.overlay.keys().map(|key| key.len()).sum();
         let log_generation = log.id().map(GenerationId);
-        // The record is read under the exclusive store lock, so every
-        // checkpoint-store open of this directory enforces it.
-        let disk_budget = match disk_budget::read(&path)? {
-            None => None,
-            Some(record) => {
-                let Some(selected) = &selection else {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        "a disk-budgeted store must be opened as a managed store",
-                    ));
-                };
-                if automatic {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "a disk-budgeted store cannot use automatic checkpoints",
-                    ));
-                }
-                Some(Arc::new(disk_budget::DiskBudget::new(
-                    &path,
-                    record,
-                    log.len()?,
-                    log.id(),
-                    Some(&selected.checkpoint),
-                )?))
-            }
-        };
         let automatic_checkpoint = match &selection {
             Some(selected) if automatic_config.is_some() => {
                 let pins = automatic::indexes(&automatic::root(&path)).map(|index| {
