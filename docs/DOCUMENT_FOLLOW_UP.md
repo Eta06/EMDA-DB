@@ -213,6 +213,16 @@ remain open.
   equality guards. The [partial planner tests](../tests/document_partial_planner.rs)
   cover signed endpoints, mixed scalar types, exact candidate budgets,
   and inserts into an empty guarded tuple on both writable backends.
+  Opt-in `query_planned_estimated` and `explain_query_estimated` choose
+  among eligible range-class paths by counting each candidate's index
+  entries. A total entry budget and a total scan-call budget bound the
+  counts across all candidates, and every seek is charged, including
+  empty ones. Ties and exhausted budgets keep the default order, and the
+  default planner is unchanged. The [cost planner tests](../tests/document_cost_planner.rs)
+  compare with scans on ordinary, checkpoint and retained stores. They
+  cover staged rows, read-limit charging and a read-set conflict on an
+  unchosen index. Broader cost modelling, statistics and other access
+  classes remain open.
   Bounded integer and UTF-8 string fields use the same write and migration
   validation, with a version 2 collection archive. Tests check failed
   migration steps, update and index rollback, and reopens on both writable

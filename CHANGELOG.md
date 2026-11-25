@@ -4,6 +4,12 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add opt-in `query_planned_estimated` and `explain_query_estimated` for
+  documents. They choose among eligible range-class index paths by bounded
+  index-entry counts, under total entry and scan-call budgets that charge
+  every seek, and report the estimate work. Estimate reads join the
+  transaction's read set and read limits. Default planning is unchanged.
+
 - Add an opt-in scheduled reclamation worker for `OnlineCheckpointStore`.
   It runs the online handoff on an interval or on request, with size and
   growth thresholds. Under the maintenance lease it defers while a replaced

@@ -119,6 +119,53 @@ pub struct DocumentQueryExplanation {
     pub probes: Vec<DocumentQueryProbe>,
 }
 
+/// Index-entry counts made by an opt-in cost-based planned query.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DocumentQueryEstimates {
+    /// One count per eligible range-class candidate, in fallback order.
+    /// Empty when fewer than two such candidates existed.
+    pub candidates: Vec<DocumentQueryEstimate>,
+    /// Index entries read by every estimate probe. This is never more than
+    /// the supplied entry budget and excludes the executed query's scan.
+    pub entries_read: usize,
+    /// Index scan calls made by every estimate probe, including calls that
+    /// returned no entries. This is never more than the supplied scan budget.
+    pub scans: usize,
+}
+
+/// Total work allowed for the estimates of one opt-in cost-based query.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DocumentEstimateLimits {
+    /// Index entries the estimate probes may read across all candidates.
+    pub max_entries: usize,
+    /// Index scan calls the estimate probes may make across all candidates.
+    /// Each call can register a range in the transaction's read set, even
+    /// when it finds no entries. An empty key range needs no call.
+    pub max_scans: usize,
+}
+
+impl Default for DocumentEstimateLimits {
+    fn default() -> Self {
+        Self {
+            max_entries: 2 * ESTIMATE_CAP + 2,
+            max_scans: 16,
+        }
+    }
+}
+
+/// One candidate's index-entry count.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DocumentQueryEstimate {
+    /// Name of the candidate index.
+    pub index: String,
+    /// Index entries the candidate would read, or `None` when it would read
+    /// more than needed to beat the best candidate so far, or when the entry
+    /// or scan budget ran out before its count was complete.
+    pub entries: Option<usize>,
+}
+
 /// One probe in a document query explanation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -136,6 +183,9 @@ pub struct DocumentQueryProbe {
 }
 
 type Predicate<'a> = (&'a DocumentFilter, bool);
+
+// A chosen access path and its probes, or `None` for a collection scan.
+type Plan<'a> = Option<(DocumentQueryAccess, Vec<IndexProbe<'a>>)>;
 
 // Each supplied predicate must hold with the indicated polarity. Descend
 // through positive And and negated Or without entering alternatives.
@@ -454,6 +504,7 @@ fn eligible(index: &IndexDefinition, required: &[Predicate<'_>]) -> bool {
         .is_none_or(|partial| partial_is_implied(required, partial))
 }
 
+#[derive(Clone)]
 enum Selection {
     Equality(Vec<IndexValue>),
     Membership(Vec<IndexValue>),
@@ -847,6 +898,15 @@ fn choose_index<'a>(
     indexes: &'a [IndexDefinition],
     allow_integer_runs: bool,
 ) -> io::Result<Option<(&'a IndexDefinition, Selection)>> {
+    choose_index_with(required, indexes, allow_integer_runs, &mut None)
+}
+
+fn choose_index_with<'a>(
+    required: &[Predicate<'_>],
+    indexes: &'a [IndexDefinition],
+    allow_integer_runs: bool,
+    estimate: &mut Option<&mut Estimation<'_>>,
+) -> io::Result<Option<(&'a IndexDefinition, Selection)>> {
     // Prefer a unique exact tuple, then a nonunique one, regardless of range.
     // Complete tuples require equality on every field, so omitted missing
     // fields cannot produce an incorrect result.
@@ -865,71 +925,33 @@ fn choose_index<'a>(
             return Ok(Some((index, Selection::Equality(tuple))));
         }
     }
-    // Keep the existing single-field range preference so adding compound
-    // planning does not displace an already eligible single-field range.
-    for index in indexes
+    // Range-class choices keep the single-field-first order as their
+    // deterministic fallback. With an estimator, the eligible choice with the
+    // fewest index entries, counted up to a bounded cap, is taken instead.
+    let ranges = indexes
         .iter()
         .filter(|index| index.fields.len() == 1)
         .chain(indexes.iter().filter(|index| index.fields.len() > 1))
-        .filter(|index| eligible(index, required))
-    {
-        let mut equal = Vec::new();
-        for (position, field) in index.fields.iter().enumerate() {
-            if let Some(value) = required_equality(required, field)? {
-                equal.push(value);
-                continue;
+        .filter(|index| eligible(index, required));
+    if estimate.is_none() {
+        // Without estimation keep the lazy first eligible choice exactly.
+        for index in ranges {
+            if let Some(selection) = range_selection(required, index, allow_integer_runs)? {
+                return Ok(Some((index, selection)));
             }
-            if let Some((lower, upper)) = compound_bounds(required, &index.fields, position)? {
-                // The range and membership are both required. Exact probes of
-                // the surviving values can skip all other rows in the range.
-                // compound_bounds already proved presence of trailing fields.
-                if let Some(values) =
-                    membership_within_bounds(required, field, lower.as_ref(), upper.as_ref())
-                {
-                    // When trailing fields remain, defer an incomplete prefix
-                    // scan so complete compound tuples, deeper ranges, complete
-                    // disjunctions and longer prefixes can narrow them first.
-                    if position + 1 < index.fields.len() {
-                        break;
-                    }
-                    let runs = if allow_integer_runs {
-                        consecutive_integer_runs(&values)
-                    } else {
-                        None
-                    };
-                    let selection = if let Some(runs) = runs {
-                        Selection::IntegerMembership {
-                            prefixes: vec![equal],
-                            runs,
-                        }
-                    } else if index.fields.len() == 1 {
-                        Selection::Membership(values)
-                    } else {
-                        let prefixes = values
-                            .into_iter()
-                            .map(|value| {
-                                let mut prefix = equal.clone();
-                                prefix.push(value);
-                                prefix
-                            })
-                            .collect();
-                        Selection::CompoundMembership(prefixes)
-                    };
-                    return Ok(Some((index, selection)));
-                }
-                return Ok(Some((
-                    index,
-                    Selection::Range {
-                        equal,
-                        lower,
-                        upper,
-                    },
-                )));
+        }
+    } else {
+        let mut choices = Vec::new();
+        for index in ranges {
+            if let Some(selection) = range_selection(required, index, allow_integer_runs)? {
+                choices.push((index, selection));
             }
-            break;
+        }
+        if let Some(choice) = pick_estimated(choices, estimate)? {
+            return Ok(Some(choice));
         }
     }
-    // Preserve existing equality and range choices. A union is safe for a
+    // Preserve existing equality and range choices. A union is safe for a    // Preserve existing equality and range choices. A union is safe for a
     // single field because every matching present scalar has exactly one
     // index entry; a partial index additionally requires its guard to follow
     // from the full filter.
@@ -1027,6 +1049,121 @@ fn choose_index<'a>(
         }
     }
     Ok(None)
+}
+
+// The range-class selection the range pass makes for one eligible index.
+fn range_selection(
+    required: &[Predicate<'_>],
+    index: &IndexDefinition,
+    allow_integer_runs: bool,
+) -> io::Result<Option<Selection>> {
+    let mut equal = Vec::new();
+    for (position, field) in index.fields.iter().enumerate() {
+        if let Some(value) = required_equality(required, field)? {
+            equal.push(value);
+            continue;
+        }
+        if let Some((lower, upper)) = compound_bounds(required, &index.fields, position)? {
+            // The range and membership are both required. Exact probes of
+            // the surviving values can skip all other rows in the range.
+            // compound_bounds already proved presence of trailing fields.
+            if let Some(values) =
+                membership_within_bounds(required, field, lower.as_ref(), upper.as_ref())
+            {
+                // When trailing fields remain, defer an incomplete prefix
+                // scan so complete compound tuples, deeper ranges, complete
+                // disjunctions and longer prefixes can narrow them first.
+                if position + 1 < index.fields.len() {
+                    return Ok(None);
+                }
+                let runs = if allow_integer_runs {
+                    consecutive_integer_runs(&values)
+                } else {
+                    None
+                };
+                let selection = if let Some(runs) = runs {
+                    Selection::IntegerMembership {
+                        prefixes: vec![equal],
+                        runs,
+                    }
+                } else if index.fields.len() == 1 {
+                    Selection::Membership(values)
+                } else {
+                    let prefixes = values
+                        .into_iter()
+                        .map(|value| {
+                            let mut prefix = equal.clone();
+                            prefix.push(value);
+                            prefix
+                        })
+                        .collect();
+                    Selection::CompoundMembership(prefixes)
+                };
+                return Ok(Some(selection));
+            }
+            return Ok(Some(Selection::Range {
+                equal,
+                lower,
+                upper,
+            }));
+        }
+        return Ok(None);
+    }
+    Ok(None)
+}
+
+/// Most index entries one candidate is counted to before it is reported as
+/// exceeding the cap.
+const ESTIMATE_CAP: usize = 256;
+
+// Counts the index entries a selection would read, up to `cap`. Returns the
+// count, or `None` for more than `cap`, and the index entries it read, which
+// is at most `cap + 1`.
+type Estimator<'e> =
+    &'e mut dyn FnMut(&IndexDefinition, &Selection, usize) -> io::Result<(Option<usize>, usize)>;
+
+// Opt-in estimation: the estimator, the remaining total entry budget across
+// every candidate, and the estimates recorded in candidate order.
+struct Estimation<'e> {
+    estimator: Estimator<'e>,
+    remaining: usize,
+    recorded: Vec<(String, Option<usize>)>,
+}
+
+fn pick_estimated<'a>(
+    choices: Vec<(&'a IndexDefinition, Selection)>,
+    estimation: &mut Option<&mut Estimation<'_>>,
+) -> io::Result<Option<(&'a IndexDefinition, Selection)>> {
+    let Some(estimation) = estimation.as_mut().filter(|_| choices.len() > 1) else {
+        return Ok(choices.into_iter().next());
+    };
+    // A later candidate is counted only to one less than the best count so
+    // far, and never past the remaining total budget, so the estimate reads
+    // at most the caller's total across all candidates. Ties keep the
+    // deterministic fallback order.
+    let mut best: Option<(usize, usize)> = None;
+    for (position, (index, selection)) in choices.iter().enumerate() {
+        let wanted = best.map_or(ESTIMATE_CAP, |(count, _)| count.saturating_sub(1));
+        let count = match (best, estimation.remaining.checked_sub(1)) {
+            (Some((0, _)), _) | (_, None) => None,
+            (_, Some(spare)) => {
+                let (count, read) = (estimation.estimator)(index, selection, wanted.min(spare))?;
+                estimation.remaining = estimation
+                    .remaining
+                    .checked_sub(read)
+                    .ok_or_else(|| io::Error::other("estimate exceeded its entry budget"))?;
+                count
+            }
+        };
+        estimation.recorded.push((index.name.clone(), count));
+        if let Some(count) = count {
+            if best.is_none_or(|(best_count, _)| count < best_count) {
+                best = Some((count, position));
+            }
+        }
+    }
+    let chosen = best.map_or(0, |(_, position)| position);
+    Ok(choices.into_iter().nth(chosen))
 }
 
 fn choose_prefix<'a>(
@@ -1225,8 +1362,11 @@ fn plan_query<'a>(
     collection: &str,
     filter: &DocumentFilter,
     indexes: &'a [IndexDefinition],
+    estimate: &mut Option<&mut Estimation<'_>>,
 ) -> io::Result<Option<(DocumentQueryAccess, Vec<IndexProbe<'a>>)>> {
-    if let Some((index, selection)) = choose_index(&[(filter, false)], indexes, true)? {
+    if let Some((index, selection)) =
+        choose_index_with(&[(filter, false)], indexes, true, estimate)?
+    {
         return Ok(Some((
             describe_selection(index, &selection),
             selection.into_probes(index),
@@ -1391,14 +1531,109 @@ impl DocumentTransaction<'_, '_> {
     ) -> io::Result<DocumentQueryExplanation> {
         filter::validate_query(query)?;
         let metadata = self.metadata(collection)?;
-        let Some((access, probes)) = plan_query(collection, &query.filter, &metadata.indexes)?
-        else {
-            return Ok(DocumentQueryExplanation {
-                access: DocumentQueryAccess::CollectionScan,
-                probes: Vec::new(),
-            });
+        let plan = plan_query(collection, &query.filter, &metadata.indexes, &mut None)?;
+        Ok(explain_plan(plan))
+    }
+
+    /// Like [`Self::explain_query`], but chooses among eligible range-class
+    /// paths by counting each one's index entries. Across all candidates the
+    /// counts read at most `limits.max_entries` index entries and make at
+    /// most `limits.max_scans` index scan calls.
+    /// These reads see staged writes, join this transaction's read set and
+    /// count against its read limits, so they can add conflicts on an index
+    /// that is not chosen. Results do not depend on the estimate: every
+    /// candidate is a semantically eligible path. Ties and exhausted budgets
+    /// keep the deterministic order used by [`Self::explain_query`].
+    pub fn explain_query_estimated(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+        limits: DocumentEstimateLimits,
+    ) -> io::Result<(DocumentQueryExplanation, DocumentQueryEstimates)> {
+        filter::validate_query(query)?;
+        let metadata = self.metadata(collection)?;
+        let (plan, estimates) =
+            self.plan_estimated(collection, &query.filter, &metadata, limits)?;
+        Ok((explain_plan(plan), estimates))
+    }
+
+    fn plan_estimated<'m>(
+        &self,
+        collection: &str,
+        filter: &DocumentFilter,
+        metadata: &'m Metadata,
+        limits: DocumentEstimateLimits,
+    ) -> io::Result<(Plan<'m>, DocumentQueryEstimates)> {
+        let (mut entries_read, mut scans) = (0, 0);
+        let mut estimator = |definition: &IndexDefinition, selection: &Selection, cap: usize| {
+            // Count one entry past the cap to tell "more than cap" apart. A
+            // count cut short by the scan budget is inconclusive and cannot win.
+            let (mut counted, mut conclusive) = (0, true);
+            for probe in selection.clone().into_probes(definition) {
+                let (count, used, finished) = self.count_index_entries(
+                    collection,
+                    definition,
+                    &IndexQuery {
+                        equal: probe.equal,
+                        lower: probe.lower,
+                        upper: probe.upper,
+                        after: None,
+                        limit: 1,
+                    },
+                    cap + 1 - counted,
+                    limits.max_scans - scans,
+                )?;
+                counted += count;
+                scans += used;
+                if !finished {
+                    conclusive = false;
+                    break;
+                }
+                if counted > cap {
+                    break;
+                }
+            }
+            entries_read += counted;
+            Ok(((conclusive && counted <= cap).then_some(counted), counted))
         };
-        Ok(DocumentQueryExplanation {
+        let mut estimation = Estimation {
+            estimator: &mut estimator,
+            remaining: limits.max_entries,
+            recorded: Vec::new(),
+        };
+        let plan = plan_query(
+            collection,
+            filter,
+            &metadata.indexes,
+            &mut Some(&mut estimation),
+        )?;
+        let candidates = estimation
+            .recorded
+            .into_iter()
+            .map(|(index, entries)| DocumentQueryEstimate { index, entries })
+            .collect();
+        Ok((
+            plan,
+            DocumentQueryEstimates {
+                candidates,
+                entries_read,
+                scans,
+            },
+        ))
+    }
+}
+
+fn explain_plan(
+    plan: Option<(DocumentQueryAccess, Vec<IndexProbe<'_>>)>,
+) -> DocumentQueryExplanation {
+    let Some((access, probes)) = plan else {
+        return DocumentQueryExplanation {
+            access: DocumentQueryAccess::CollectionScan,
+            probes: Vec::new(),
+        };
+    };
+    {
+        DocumentQueryExplanation {
             access,
             probes: probes
                 .into_iter()
@@ -1410,9 +1645,11 @@ impl DocumentTransaction<'_, '_> {
                     unique_equality: probe.unique_equality,
                 })
                 .collect(),
-        })
+        }
     }
+}
 
+impl DocumentTransaction<'_, '_> {
     /// Executes a bounded filtered query using a qualifying exact equality
     /// tuple, scalar range, bounded membership union or a union of indexed
     /// disjuncts. Falls back to the collection scan when none qualifies.
@@ -1426,15 +1663,45 @@ impl DocumentTransaction<'_, '_> {
     ) -> io::Result<PlannedDocumentQueryResult> {
         filter::validate_query(query)?;
         let metadata = self.metadata(collection)?;
-        let Some((access, probes)) = plan_query(collection, &query.filter, &metadata.indexes)?
-        else {
+        let plan = plan_query(collection, &query.filter, &metadata.indexes, &mut None)?;
+        self.execute_plan(collection, query, &metadata, plan)
+    }
+
+    /// Like [`Self::query_planned`], choosing the path as described for
+    /// [`Self::explain_query_estimated`]. The returned estimates report the
+    /// index entries the estimate probes read, separately from the scan work
+    /// reported in the query plan; both count against this transaction.
+    pub fn query_planned_estimated(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+        limits: DocumentEstimateLimits,
+    ) -> io::Result<(PlannedDocumentQueryResult, DocumentQueryEstimates)> {
+        filter::validate_query(query)?;
+        let metadata = self.metadata(collection)?;
+        let (plan, estimates) =
+            self.plan_estimated(collection, &query.filter, &metadata, limits)?;
+        Ok((
+            self.execute_plan(collection, query, &metadata, plan)?,
+            estimates,
+        ))
+    }
+
+    fn execute_plan(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+        metadata: &Metadata,
+        plan: Option<(DocumentQueryAccess, Vec<IndexProbe<'_>>)>,
+    ) -> io::Result<PlannedDocumentQueryResult> {
+        let Some((access, probes)) = plan else {
             return Ok(PlannedDocumentQueryResult {
                 result: self.query_with_schema(collection, &metadata.schema, query)?,
                 access: DocumentQueryAccess::CollectionScan,
             });
         };
 
-        let id_order = in_id_order(&probes, &metadata);
+        let id_order = in_id_order(&probes, metadata);
         // Only unordered probes need deduplication or a retry.
         let mut ids = (!id_order).then(BTreeSet::new);
         let mut collector = (id_order || filter::may_retry_in_id_order(&query.filter))
@@ -1443,7 +1710,7 @@ impl DocumentTransaction<'_, '_> {
         for probe in probes {
             self.collect_index_candidates(
                 collection,
-                &metadata,
+                metadata,
                 probe,
                 query.max_scanned,
                 &mut budget,
@@ -1464,7 +1731,7 @@ impl DocumentTransaction<'_, '_> {
             // filters retry only if needed to report the first error by ID.
             let mut collector = filter::QueryCollector::new(query, true);
             for id in ids.expect("unordered probes retain candidate IDs") {
-                let document = self.read_index_candidate(collection, &metadata, &id)?;
+                let document = self.read_index_candidate(collection, metadata, &id)?;
                 collector.push(id, document);
                 if collector.has_failed() {
                     break;
@@ -1486,7 +1753,9 @@ impl DocumentTransaction<'_, '_> {
         filter::validate_filter(predicate)?;
         let metadata = self.metadata(collection)?;
         let mut state = T::default();
-        let Some((access, probes)) = plan_query(collection, predicate, &metadata.indexes)? else {
+        let Some((access, probes)) =
+            plan_query(collection, predicate, &metadata.indexes, &mut None)?
+        else {
             let plan = self.visit_filtered_documents_with_schema(
                 collection,
                 &metadata.schema,

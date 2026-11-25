@@ -315,6 +315,55 @@ impl DocumentTransaction<'_, '_> {
 
     // The visitor's effects must remain private until the page passes all
     // index checks and admission limits.
+    /// Counts index entries in one probe's key range without reading their
+    /// documents, up to `limit`. Reads go through this transaction's admitted
+    /// scan, so they see staged writes, join its read set and are charged to
+    /// its read limits. Makes at most `max_scans` scan calls; an empty key
+    /// range needs none. Returns the count capped at `limit`, the scan calls
+    /// made, and whether the count is conclusive: it reached `limit` or the
+    /// end of the range before the scan budget ran out.
+    pub(super) fn count_index_entries(
+        &self,
+        collection: &str,
+        definition: &IndexDefinition,
+        query: &IndexQuery,
+        limit: usize,
+        max_scans: usize,
+    ) -> io::Result<(usize, usize, bool)> {
+        let index_prefix = key::index(b'I', collection, &definition.name)?;
+        let IndexBounds {
+            after, mut before, ..
+        } = index_bounds(
+            &index_prefix,
+            &query.equal,
+            query.lower.as_ref(),
+            query.upper.as_ref(),
+        )?;
+        // The same truncation as an executed scan of this probe.
+        let mut cursor = after[..after.len().min(crate::record::MAX_KEY)].to_vec();
+        if before.len() > crate::record::MAX_KEY {
+            before.truncate(crate::record::MAX_KEY);
+            before = key::end(&before);
+        }
+        let (mut counted, mut scans) = (0, 0);
+        loop {
+            if counted >= limit || cursor.as_slice() >= before.as_slice() {
+                return Ok((counted, scans, true));
+            }
+            if scans == max_scans {
+                return Ok((counted, scans, false));
+            }
+            scans += 1;
+            let page = (limit - counted).min(MAX_QUERY_DOCUMENTS);
+            let rows = self.scan_admitted(&cursor, &before, page, |_, _| true)?;
+            counted += rows.len();
+            match rows.last() {
+                Some((last, _)) if rows.len() == page => cursor = last.clone(),
+                _ => return Ok((counted, scans, true)),
+            }
+        }
+    }
+
     pub(super) fn visit_index_with_metadata(
         &self,
         collection: &str,

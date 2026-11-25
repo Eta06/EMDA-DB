@@ -48,7 +48,8 @@ pub use lifecycle::CollectionDropStep;
 pub use maintenance_key::{MaintenanceKey, MaintenanceProgress};
 pub use online_index::{IndexDropPhase, IndexJobStatus, IndexStep};
 pub use planner::{
-    DocumentQueryAccess, DocumentQueryExplanation, DocumentQueryProbe, PlannedDocumentQueryResult,
+    DocumentEstimateLimits, DocumentQueryAccess, DocumentQueryEstimate, DocumentQueryEstimates,
+    DocumentQueryExplanation, DocumentQueryProbe, PlannedDocumentQueryResult,
 };
 pub use query::{DocumentEntry, DocumentPage, IndexBound, IndexCursor, IndexQuery, IndexQueryPlan};
 pub use schema::{CollectionSchema, FieldRule, FieldType};
@@ -790,6 +791,28 @@ impl<'a> DocumentDatabase<'a> {
         query: &DocumentQuery,
     ) -> io::Result<PlannedDocumentQueryResult> {
         self.transaction(|tx| tx.query_planned(collection, query))
+    }
+
+    /// Like [`Self::query_planned`], choosing among eligible range paths by
+    /// bounded index-entry counts limited by `limits`. See
+    /// [`DocumentTransaction::query_planned_estimated`].
+    pub fn query_planned_estimated(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+        limits: DocumentEstimateLimits,
+    ) -> io::Result<(PlannedDocumentQueryResult, DocumentQueryEstimates)> {
+        self.transaction(|tx| tx.query_planned_estimated(collection, query, limits))
+    }
+
+    /// Describes how [`Self::query_planned_estimated`] would execute.
+    pub fn explain_query_estimated(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+        limits: DocumentEstimateLimits,
+    ) -> io::Result<(DocumentQueryExplanation, DocumentQueryEstimates)> {
+        self.transaction(|tx| tx.explain_query_estimated(collection, query, limits))
     }
 
     /// Reads a bounded page using a named secondary index.
