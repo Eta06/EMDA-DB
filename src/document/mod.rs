@@ -10,6 +10,7 @@ mod integrity;
 mod key;
 mod lifecycle;
 mod maintenance_key;
+mod matching;
 mod online_index;
 mod planner;
 mod query;
@@ -46,6 +47,7 @@ pub use index::{IndexDefinition, IndexValue, PartialFilter};
 pub use integrity::CollectionIntegrity;
 pub use lifecycle::CollectionDropStep;
 pub use maintenance_key::{MaintenanceKey, MaintenanceProgress};
+pub use matching::{MAX_MATCHED_DOCUMENTS, MatchOptions, MatchSelection};
 pub use online_index::{IndexDropPhase, IndexJobStatus, IndexStep};
 pub use planner::{
     DocumentEstimateLimits, DocumentQueryAccess, DocumentQueryEstimate, DocumentQueryEstimates,
@@ -514,6 +516,31 @@ impl<'a> DocumentDatabase<'a> {
     /// Runs a bounded atomic batch of document operations.
     pub fn bulk(&self, operations: &[BulkOperation<'_>]) -> io::Result<Vec<BulkResult>> {
         self.transaction(|tx| tx.bulk(operations))
+    }
+
+    /// Atomically applies `updates` to every document matching `filter` in
+    /// one transaction and returns how many changed. See
+    /// [`DocumentTransaction::update_matching`].
+    pub fn update_matching(
+        &self,
+        collection: &str,
+        filter: &DocumentFilter,
+        updates: &[DocumentUpdate],
+        options: MatchOptions,
+    ) -> io::Result<usize> {
+        self.transaction(|tx| tx.update_matching(collection, filter, updates, options))
+    }
+
+    /// Atomically deletes every document matching `filter` in one transaction
+    /// and returns how many were deleted. See
+    /// [`DocumentTransaction::delete_matching`].
+    pub fn delete_matching(
+        &self,
+        collection: &str,
+        filter: &DocumentFilter,
+        options: MatchOptions,
+    ) -> io::Result<usize> {
+        self.transaction(|tx| tx.delete_matching(collection, filter, options))
     }
 
     /// Reads a document by ID. Missing documents return `None`.

@@ -140,6 +140,63 @@ fn apply(
     Ok(())
 }
 
+/// Validates update conditions and operators, including every value operand,
+/// before any document is read or written.
+pub(super) fn validate_inputs(
+    conditions: &[FieldCondition],
+    updates: &[DocumentUpdate],
+) -> io::Result<()> {
+    if conditions.len() > 64 || updates.is_empty() || updates.len() > 128 {
+        return Err(key::invalid(
+            "update requires 1 to 128 operators and at most 64 conditions",
+        ));
+    }
+    let mut input_budget = input::InputBudget::default();
+    for condition in conditions {
+        schema::validate_path(&condition.path)?;
+        if let Some(value) = &condition.expected {
+            input_budget.value(value)?;
+        }
+    }
+    for update in updates {
+        let path = match update {
+            DocumentUpdate::Set { path, .. }
+            | DocumentUpdate::SetIfMissing { path, .. }
+            | DocumentUpdate::Unset { path }
+            | DocumentUpdate::Increment { path, .. }
+            | DocumentUpdate::Multiply { path, .. }
+            | DocumentUpdate::Min { path, .. }
+            | DocumentUpdate::Max { path, .. }
+            | DocumentUpdate::ArrayPush { path, .. }
+            | DocumentUpdate::ArrayAddUnique { path, .. }
+            | DocumentUpdate::ArrayRemove { path, .. }
+            | DocumentUpdate::ArrayPop { path, .. }
+            | DocumentUpdate::ArrayTruncate { path, .. }
+            | DocumentUpdate::ArrayReverse { path }
+            | DocumentUpdate::ArrayKeepLast { path, .. } => path,
+            DocumentUpdate::Rename { from, to } => {
+                schema::validate_path(to)?;
+                if from.starts_with(to) || to.starts_with(from) {
+                    return Err(key::invalid("rename paths must not overlap"));
+                }
+                from
+            }
+        };
+        schema::validate_path(path)?;
+        if let DocumentUpdate::Set { value, .. } | DocumentUpdate::SetIfMissing { value, .. } =
+            update
+        {
+            input_budget.value(value)?;
+        }
+        if let DocumentUpdate::Min { value, .. } | DocumentUpdate::Max { value, .. } = update {
+            value.encode(&mut Vec::new())?;
+            input_budget.scalar(value)?;
+        }
+    }
+    array::validate_inputs(updates, &mut input_budget)?;
+    Ok(())
+}
+
 impl DocumentTransaction<'_, '_> {
     /// Conditionally applies ordered updates. All conditions must match. If
     /// `upsert` is true a missing ID starts as an empty object; otherwise it
@@ -155,77 +212,48 @@ impl DocumentTransaction<'_, '_> {
         upsert: bool,
     ) -> io::Result<bool> {
         self.mutate(|this| {
-            if conditions.len() > 64 || updates.is_empty() || updates.len() > 128 {
-                return Err(key::invalid(
-                    "update requires 1 to 128 operators and at most 64 conditions",
-                ));
-            }
-            let mut input_budget = input::InputBudget::default();
-            for condition in conditions {
-                schema::validate_path(&condition.path)?;
-                if let Some(value) = &condition.expected {
-                    input_budget.value(value)?;
-                }
-            }
-            for update in updates {
-                let path = match update {
-                    DocumentUpdate::Set { path, .. }
-                    | DocumentUpdate::SetIfMissing { path, .. }
-                    | DocumentUpdate::Unset { path }
-                    | DocumentUpdate::Increment { path, .. }
-                    | DocumentUpdate::Multiply { path, .. }
-                    | DocumentUpdate::Min { path, .. }
-                    | DocumentUpdate::Max { path, .. }
-                    | DocumentUpdate::ArrayPush { path, .. }
-                    | DocumentUpdate::ArrayAddUnique { path, .. }
-                    | DocumentUpdate::ArrayRemove { path, .. }
-                    | DocumentUpdate::ArrayPop { path, .. }
-                    | DocumentUpdate::ArrayTruncate { path, .. }
-                    | DocumentUpdate::ArrayReverse { path }
-                    | DocumentUpdate::ArrayKeepLast { path, .. } => path,
-                    DocumentUpdate::Rename { from, to } => {
-                        schema::validate_path(to)?;
-                        if from.starts_with(to) || to.starts_with(from) {
-                            return Err(key::invalid("rename paths must not overlap"));
-                        }
-                        from
-                    }
-                };
-                schema::validate_path(path)?;
-                if let DocumentUpdate::Set { value, .. }
-                | DocumentUpdate::SetIfMissing { value, .. } = update
-                {
-                    input_budget.value(value)?;
-                }
-                if let DocumentUpdate::Min { value, .. } | DocumentUpdate::Max { value, .. } =
-                    update
-                {
-                    value.encode(&mut Vec::new())?;
-                    input_budget.scalar(value)?;
-                }
-            }
-            array::validate_inputs(updates, &mut input_budget)?;
-            let Some(mut document) = this
-                .get(collection, id)?
-                .or_else(|| upsert.then(|| Value::Object(Map::new())))
-            else {
-                return Ok(false);
-            };
-            let mut equality = EqualityWork::default();
-            for condition in conditions {
-                let actual = schema::field(&document, &condition.path);
-                let matches = match (actual, condition.expected.as_ref()) {
-                    (Some(left), Some(right)) => equals(&mut equality, left, right)?,
-                    (None, None) => true,
-                    _ => false,
-                };
-                if !matches {
-                    return Ok(false);
-                }
-            }
-            apply(&mut document, updates, &mut equality)?;
-            this.set(collection, id, &document, false, upsert)?;
-            Ok(true)
+            validate_inputs(conditions, updates)?;
+            this.update_validated(
+                (collection, id),
+                conditions,
+                updates,
+                upsert,
+                &mut EqualityWork::default(),
+            )
         })
+    }
+
+    // Applies already validated conditions and updates to one document.
+    // `equality` accumulates nested comparison work across every call that
+    // shares it. The caller is responsible for failure latching.
+    pub(super) fn update_validated(
+        &mut self,
+        (collection, id): (&str, &str),
+        conditions: &[FieldCondition],
+        updates: &[DocumentUpdate],
+        upsert: bool,
+        equality: &mut EqualityWork,
+    ) -> io::Result<bool> {
+        let this = self;
+        let Some(mut document) = this
+            .get(collection, id)?
+            .or_else(|| upsert.then(|| Value::Object(Map::new())))
+        else {
+            return Ok(false);
+        };
+        for condition in conditions {
+            let actual = schema::field(&document, &condition.path);
+            let matches = match (actual, condition.expected.as_ref()) {
+                (Some(left), Some(right)) => equals(equality, left, right)?,
+                (None, None) => true,
+                _ => false,
+            };
+            if !matches {
+                return Ok(false);
+            }
+        }
+        apply(&mut document, updates, equality)?;
+        this.set(collection, id, &document, false, upsert)?;
+        Ok(true)
     }
 }

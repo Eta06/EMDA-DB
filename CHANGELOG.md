@@ -4,6 +4,15 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add `update_matching` and `delete_matching` to `DocumentDatabase` and
+  `DocumentTransaction`. Each applies update operators to, or deletes,
+  every document matching a `DocumentFilter` in one transaction and
+  returns the count. `MatchOptions` requires `max_scanned` (up to 1,024)
+  and `max_matched` (up to 128). Exceeding a limit, invalid update input
+  (even with no matches) or any per-document failure commits nothing. The
+  default selection scans the whole collection. `MatchOptions::planned`
+  uses index probes and trusts index maintenance.
+
 - Add `DocumentFilter::EndsWith` for case-sensitive UTF-8 string suffix
   filters, with the same 256-byte operand cap and string-only semantics as
   `StartsWith`. A suffix alone does not select an index.
