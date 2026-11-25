@@ -94,10 +94,11 @@ fn on_backends(exercise: impl Fn(&DocumentDatabase<'_>, &Path)) {
             let store =
                 retry_lock(|| CheckpointStore::open(&source, &checkpoint, &digest)).unwrap();
             store.rollover_managed(root.path().join("managed")).unwrap();
-            let db = DocumentDatabase::with_checkpoint_store(&store);
-            exercise(&db, &source);
-            let committed = all(&db);
-            drop(db);
+            let committed = {
+                let db = DocumentDatabase::with_checkpoint_store(&store);
+                exercise(&db, &source);
+                all(&db)
+            };
             drop(store);
             // The committed result survives reopening.
             let store = retry_lock(|| CheckpointStore::open_managed(&source)).unwrap();
@@ -106,10 +107,11 @@ fn on_backends(exercise: impl Fn(&DocumentDatabase<'_>, &Path)) {
                 committed
             );
         } else {
-            let db = DocumentDatabase::new(&store);
-            exercise(&db, &source);
-            let committed = all(&db);
-            drop(db);
+            let committed = {
+                let db = DocumentDatabase::new(&store);
+                exercise(&db, &source);
+                all(&db)
+            };
             drop(store);
             let store = retry_lock(|| Store::open(&source)).unwrap();
             assert_eq!(all(&DocumentDatabase::new(&store)), committed);
