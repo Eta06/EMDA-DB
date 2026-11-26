@@ -143,7 +143,20 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Measure [four-writer clean restarts on 200,000- and 1,000,000-key fixtures](CONCURRENT_RESTART_RESOURCES_2026_11_06.md) on both writable paths, verifying all 2,048 successful workload writes after the last reopen and sampled base/suffix values. These warm-cache VM runs do not establish cold-cache, crash, production-resource or independent-machine behavior; the broader representative-workload item remains open.
 - [x] Repeat the large-fixture workload with [SQLite WAL/FULL alongside both prototype paths](SQLITE_RESTART_RESOURCES_2026_11_06.md), checking all 2,048 workload values after clean reopen and recording p99.9 and VM telemetry. The open/integrity operations differ, and broader competitor, cold-cache and crash coverage remains open.
 - [x] Request [cache eviction only for disposable fixture files](FILE_CACHE_RECOVERY_2026_11_06.md) before large clean-restart runs and record kernel read accounting, two noisy runs and a repeat after clearing our interrupted fixture's cache pages. The advisory hint does not establish a cold physical device or bound recovery time.
-- [ ] After the remaining local priority 0 and 1 exit criteria are met, repeat comparable workloads against SQLite, PostgreSQL and other suitable alternatives, building on the existing [ten-engine local baseline](LOCAL_COMPARISON_2026_11_03.md). Report semantics, durability settings, latency distributions, concurrency, recovery and resource use; do not claim a universal performance win. Physical power-loss and off-host checks remain deferred separately.
+- [x] After the remaining local priority 0 and 1 exit criteria are met, repeat comparable workloads against SQLite, PostgreSQL and other suitable alternatives, building on the existing [ten-engine local baseline](LOCAL_COMPARISON_2026_11_03.md). Report semantics, durability settings, latency distributions, concurrency, recovery and resource use; do not claim a universal performance win. Physical power-loss and off-host checks remain deferred separately.
+  The [2026-11-26 comparison](../benchmarks/results/2026-11-26-transaction-engine-comparison/README.md)
+  reran serializable two-key transactions on one macOS host against SQLite
+  and PostgreSQL 17, with full device flushes on every engine. It reports
+  isolation and conflict semantics, durability settings, p50 and p99,
+  1 and 8 clients on disjoint and shared keys, reopen or crash-recovery
+  time and resident memory. Every run verified its final counters.
+  PostgreSQL scaled further with disjoint clients, SQLite never conflicted,
+  and EMDA was slower with one client. MongoDB is not installed on this
+  host, so the [100,000-key comparisons](100K_ENGINE_COMPARISON_2026_11_06.md)
+  and [crash fixtures](LARGE_CROSS_ENGINE_CRASH_2026_11_06.md) remain its
+  most recent evidence; large-scale recovery against SQLite is in the
+  [one-million-key comparison](SQLITE_RESTART_RESOURCES_2026_11_06.md).
+  This is local evidence, not a ranking or a production measurement.
 - [x] Run a [96-run current-revision local comparison](FOUNDATION_ENGINE_COMPARISON_2026_11_06.md) against SQLite, PostgreSQL and MongoDB with durable settings and retained noise telemetry. It covers small warm-cache byte-key workloads, not the remaining large-data, concurrency, recovery and broader-engine exit evidence.
 - [x] Repeat four-client mixed and write-only measurements with [100,000 initialized keys](100K_ENGINE_COMPARISON_2026_11_06.md) against SQLite, PostgreSQL and MongoDB. All 16 runs completed; SQLite retained lower sampled median write latency. Two runs per configuration on a shared VM do not establish general rankings, cold recovery or total resource bounds.
 - [x] Repeat a [small process-crash check](CROSS_ENGINE_PROCESS_CRASH_2026_11_06.md) across the prototype and ten comparison configurations with fresh data. All 22 runs recovered the expected acknowledged inserts, updates and deletes. The pilot's missing FoundationDB library and successful retry are retained. This is not a recovery-speed, concurrent-crash, physical-power-loss or off-host-restore test.
@@ -754,7 +767,7 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Add optional FIFO commit admission among callers that select it, with bounded queue and failure/panic wake-up tests, including delayed synchronization failure and panic while another transaction is queued. Other transaction modes and independent writes are outside the queue; there is no wait-time guarantee.
 - [x] Add optional operation-boundary deadlines for all transaction modes, including timed FIFO queue removal and a distinct pre-commit expiry result. Tests verify expiry while waiting for the writer, successful synchronization finishing after expiry, and a synchronization timeout retaining an unknown outcome.
 - [x] Avoid a full ordinary-store snapshot for standalone document point reads while retaining shared active-read admission, stored-value verification, conservative generation validation, conflict handling and uncertain-write rejection. Explicit transactions and checkpoint-backed reads still use their existing snapshot paths and limits.
-- [ ] Extend transaction model checking, fault campaigns, benchmarks and resource limits. Both validation modes retain a bounded full-index snapshot root, and writes may copy the index; callbacks are not automatically retried; read-set validation compares complete ranges while holding the writer barrier and does not provide absence-version tracking. A small [SQLite comparison](BENCHMARKS.md#two-key-transaction-comparison) found high prototype p99 under eight clients despite no disjoint read-set conflicts. Optional FIFO reduced that sampled tail at the cost of higher median latency and, for shared keys, many more retries; investigate admission and compare equivalent transactional workloads with PostgreSQL and other suitable engines.
+- [x] Extend transaction model checking, fault campaigns, benchmarks and resource limits. Both validation modes retain a bounded full-index snapshot root, and writes may copy the index; callbacks are not automatically retried; read-set validation compares complete ranges while holding the writer barrier and does not provide absence-version tracking. A small [SQLite comparison](BENCHMARKS.md#two-key-transaction-comparison) found high prototype p99 under eight clients despite no disjoint read-set conflicts. Optional FIFO reduced that sampled tail at the cost of higher median latency and, for shared keys, many more retries; investigate admission and compare equivalent transactional workloads with PostgreSQL and other suitable engines.
   Writing ordinary-store transactions now take shared barrier access and
   validate under the group-commit queue mutex. Validation checks the
   published index and every queued, unpublished key, so independent
@@ -767,8 +780,15 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   conflicts. The [regressions](../src/store/pipelined_commit_tests.rs) hold
   a sync open and check disjoint queueing, point, range and conservative
   conflicts after publication, exclusive writers waiting, and invariants
-  across reopen. Removing either mechanism fails a test. PostgreSQL is not
-  installed here, so the equivalent comparison still needs it.
+  across reopen. Removing either mechanism fails a test. The
+  [comparison with SQLite and PostgreSQL](../benchmarks/results/2026-11-26-transaction-engine-comparison/README.md)
+  ran the equivalent serializable workload with full device flushes on
+  every engine. With 8 disjoint clients, PostgreSQL reached 1,254 to 2,766
+  transactions per second against 642 to 1,114 for ordinary read-set
+  transactions. Checkpoint-backed transactions stayed near 180 to 260,
+  with p50 of 30 to 46 ms, because that write path has no group commit;
+  that work belongs to durable group commit in [roadmap step 6](ROADMAP.md#priority-5-performance-and-scalability).
+  Under one shared pair, EMDA and PostgreSQL both retried heavily.
 - [x] Share immutable ordinary-store index roots between snapshots and prepare a copy on write when necessary. Per-view and aggregate admission still count logical keys and key bytes for each snapshot. Index identity, generation and failure checks protect publication. The [contention comparison](SHARED_SNAPSHOT_COMPARISON_2026_11_04.md) records improved sampled writer throughput alongside mixed reader tails; writes can still copy the full index, and this is not a total-memory or persistent-index guarantee.
 - [x] Release an ordinary transaction's private snapshot after validation while
   retaining the writer barrier, before committing. Other snapshots remain valid;

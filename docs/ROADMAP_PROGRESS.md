@@ -10,9 +10,9 @@ backup modes have not been tested.
 
 | Step | Area | Progress | Basis and remaining evidence |
 | --- | --- | ---: | --- |
-| 1 | Correctness and foundations | 98% | 117 of 120 checklist items. Full-log backup, restore, and format upgrade have scan ceilings. Broader fault and resource evidence remains open. |
-| 2 | Durable storage and core operations | 98% | 179 of 183 checklist items. Retained recovery and startup retirement share a scan ceiling. Broader writable-memory and reclamation evidence remains open. |
-| 3 | Document model and queries | 99% | 115 of 116 checklist items. Retained snapshots share bounded aggregation and pagination. Richer operators, transaction scalability, isolation and comparable server-engine measurements remain open. |
+| 1 | Correctness and foundations | 98% | 118 of 120 checklist items. Full-log backup, restore, and format upgrade have scan ceilings. Serializable transactions have been compared with SQLite and PostgreSQL on one host. Representative-deployment resource evidence and the standing contract-alignment item remain open. |
+| 2 | Durable storage and core operations | 98% | 180 of 183 checklist items. Retained recovery and startup retirement share a scan ceiling. Broader writable-memory and reclamation evidence remains open. |
+| 3 | Document model and queries | 99% | 115 of 116 checklist items. Retained snapshots share bounded aggregation and pagination. Richer operators and project isolation remain open; checkpoint-backed transactions do not yet share syncs. |
 | 4 | SQL | 0% | None of four SQL milestones has a working prototype. The embedded transaction engine is a prerequisite shared with earlier steps. |
 | 5 | Secure service and project isolation | 10% | One of five milestones has partial evidence from the loopback benchmark adapter. A secure API, project isolation and safe scale-to-zero remain to build. |
 | 6 | Performance and scalability | 60% | The comparative benchmark milestone has evidence. Profiling, durable group commit, hardware acceleration and scheduling each have partial evidence. Full workload and project-level scaling remain open. |
@@ -21,7 +21,7 @@ backup modes have not been tested.
 
 Steps 1–3 count checked bullets in the [foundation and storage](FOUNDATION_FOLLOW_UP.md)
 and [document](DOCUMENT_FOLLOW_UP.md) checklists, including both drills
-that were previously deferred. Their combined count is 411 of 419 (98.1%). Each item has equal
+that were previously deferred. Their combined count is 413 of 419 (98.6%). Each item has equal
 weight in that count. Steps 4–8 are estimates from roadmap milestones with
 one point for demonstrated delivery, half a point for a tested subset, and
 zero for design or prerequisites. The projects have different scope and the

@@ -129,7 +129,11 @@ fn retry(
 fn connection(path: &Path) -> BenchResult<Connection> {
     let conn = Connection::open(path)?;
     conn.busy_timeout(Duration::from_secs(30))?;
-    conn.execute_batch("PRAGMA synchronous=FULL;")?;
+    // On macOS, fsync does not flush the drive cache; fullfsync uses
+    // F_FULLFSYNC, as Rust's sync_data does for the engine.
+    conn.execute_batch(
+        "PRAGMA synchronous=FULL; PRAGMA fullfsync=ON; PRAGMA checkpoint_fullfsync=ON;",
+    )?;
     Ok(conn)
 }
 
@@ -207,8 +211,9 @@ fn main() -> BenchResult<()> {
         let journal: String = conn.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
         if journal != "wal"
             || conn.query_row("PRAGMA synchronous", [], |row| row.get::<_, u32>(0))? != 2
+            || conn.query_row("PRAGMA fullfsync", [], |row| row.get::<_, u32>(0))? != 1
         {
-            return Err("SQLite WAL and synchronous=FULL required".into());
+            return Err("SQLite WAL, synchronous=FULL and fullfsync required".into());
         }
         conn.execute_batch("CREATE TABLE kv(key BLOB PRIMARY KEY, value BLOB NOT NULL, checksum INTEGER NOT NULL) WITHOUT ROWID;")?;
         let zero = 0_u64.to_le_bytes();
@@ -347,6 +352,8 @@ fn main() -> BenchResult<()> {
     drop(store);
     drop(checkpoint_store);
     drop(sqlite_keeper);
+    // Time a fresh reopen and verification of every counter.
+    let reopen_started = Instant::now();
     if matches!(mode, Mode::Sqlite) {
         let conn = connection(&sqlite_path)?;
         for id in 0..pairs {
@@ -377,6 +384,7 @@ fn main() -> BenchResult<()> {
             }
         }
     }
+    let reopen = reopen_started.elapsed().as_nanos();
     let samples = samples
         .iter()
         .map(u128::to_string)
@@ -393,7 +401,7 @@ fn main() -> BenchResult<()> {
         env!("CARGO_PKG_VERSION")
     };
     println!(
-        "backend={backend} version={version} clients={clients} operations={operations} workload={workload} elapsed_ns={elapsed} conflicts={conflicts} samples_ns={samples}"
+        "backend={backend} version={version} clients={clients} operations={operations} workload={workload} elapsed_ns={elapsed} reopen_ns={reopen} conflicts={conflicts} samples_ns={samples}"
     );
     Ok(())
 }
