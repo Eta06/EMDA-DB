@@ -55,6 +55,7 @@ fn assert_documented_error(err: &SqlError) {
         | SqlError::NoSuchTable(_)
         | SqlError::NoSuchColumn { .. }
         | SqlError::TableExists(_)
+        | SqlError::IndexExists(_)
         | SqlError::Bounds(_)
         | SqlError::ParameterCount { .. } => {}
         SqlError::Conflict(io_err) => {
@@ -986,6 +987,7 @@ fn exec_insert_op(
     model: &mut BTreeMap<Pk, Row>,
     cur: &mut ByteCursor<'_>,
     text_pk: bool,
+    has_unique_n: bool,
 ) {
     let row_count = 1 + (cur.next_or(0) % 3) as usize;
     let explicit_cols = cur.next_or(0) & 1 != 0;
@@ -1139,6 +1141,18 @@ fn exec_insert_op(
     if expected_err.is_none() && staged_rows.iter().any(|(pk, _)| model.contains_key(pk)) {
         expected_err = Some(ModelError::Constraint);
     }
+    if expected_err.is_none() && has_unique_n {
+        let mut seen_n = HashSet::new();
+        for (_, row) in &staged_rows {
+            if let Some(n_val) = row.n
+                && (!seen_n.insert(n_val)
+                    || model.values().any(|existing| existing.n == Some(n_val)))
+            {
+                expected_err = Some(ModelError::Constraint);
+                break;
+            }
+        }
+    }
 
     let actual = db.execute(&sql, &params);
     if let Some(exp_err) = expected_err {
@@ -1161,6 +1175,7 @@ fn exec_select_op(
     model: &BTreeMap<Pk, Row>,
     cur: &mut ByteCursor<'_>,
     text_pk: bool,
+    check_forced_scan: bool,
 ) {
     let select_all = cur.next_or(0) & 1 == 0;
     let mut cols = Vec::new();
@@ -1318,6 +1333,15 @@ fn exec_select_op(
         .map(|row| row.project(&cols))
         .collect();
     let outcome = actual.unwrap_or_else(|e| panic!("SELECT `{sql}` failed: {e}"));
+    if check_forced_scan {
+        let scanned = db
+            .execute_force_full_scan_for_test(&sql, &params)
+            .unwrap_or_else(|e| panic!("forced-scan SELECT `{sql}` failed: {e}"));
+        assert_eq!(
+            outcome, scanned,
+            "indexed vs forced-scan mismatch for `{sql}` params={params:?}"
+        );
+    }
     assert_eq!(
         outcome,
         SqlOutcome::Rows {
@@ -1343,6 +1367,7 @@ fn exec_update_op(
     model: &mut BTreeMap<Pk, Row>,
     cur: &mut ByteCursor<'_>,
     text_pk: bool,
+    has_unique_n: bool,
 ) {
     let mut params = Vec::new();
     let mut assigns: Vec<(Col, AssignRhs)> = Vec::new();
@@ -1513,9 +1538,35 @@ fn exec_update_op(
         }
     }
 
+    let mut transient_unique_swap = false;
+    if expected_err.is_none() && has_unique_n {
+        let mut live_n: BTreeMap<Pk, Option<i64>> =
+            model.iter().map(|(k, r)| (k.clone(), r.n)).collect();
+        for (pk, new_row) in &staged_updates {
+            if let Some(new_n) = new_row.n
+                && live_n
+                    .iter()
+                    .any(|(other_pk, other_n)| other_pk != pk && *other_n == Some(new_n))
+            {
+                if assigns
+                    .iter()
+                    .any(|(c, rhs)| *c == Col::N && matches!(rhs, AssignRhs::Col(_)))
+                {
+                    transient_unique_swap = true;
+                } else {
+                    expected_err = Some(ModelError::Constraint);
+                }
+                break;
+            }
+            live_n.insert(pk.clone(), new_row.n);
+        }
+    }
+
     let actual = db.execute(&sql, &params);
     if let Some(exp_err) = expected_err {
         assert_expected_error(actual, exp_err, &sql);
+    } else if transient_unique_swap && matches!(actual, Err(SqlError::Constraint(_))) {
+        // Row-by-row unique check may fail on transient swap; table remains unchanged.
     } else if staged_updates.is_empty() && has_non_exact_int_param_to_real {
         // Non-exact INTEGER param assigned to REAL when 0 rows match may fail at bind time
         // or succeed with 0 updated rows; either way, model is unchanged.
@@ -1631,11 +1682,47 @@ fn exec_error_probe(db: &SqlDatabase<'_>, selector: u8) {
     }
 }
 
+fn exec_create_unique_n_op(
+    db: &SqlDatabase<'_>,
+    model: &BTreeMap<Pk, Row>,
+    has_unique_n: &mut bool,
+    cur: &mut ByteCursor<'_>,
+) {
+    let if_not_exists = cur.next_or(0) & 1 != 0;
+    let sql = if if_not_exists {
+        "CREATE UNIQUE INDEX IF NOT EXISTS u_n ON m (n)"
+    } else {
+        "CREATE UNIQUE INDEX u_n ON m (n)"
+    };
+    if *has_unique_n {
+        let res = db.execute(sql, &[]);
+        if if_not_exists {
+            assert_eq!(res.unwrap(), SqlOutcome::IndexCreated);
+        } else {
+            assert!(matches!(res, Err(SqlError::IndexExists(_))));
+        }
+        return;
+    }
+    let mut seen = HashSet::new();
+    let has_dup = model
+        .values()
+        .filter_map(|r| r.n)
+        .any(|n| !seen.insert(n));
+    let res = db.execute(sql, &[]);
+    if has_dup {
+        assert!(matches!(res, Err(SqlError::Constraint(_))));
+    } else {
+        assert_eq!(res.unwrap(), SqlOutcome::IndexCreated);
+        *has_unique_n = true;
+    }
+}
+
 fn fuzz_structured_model(root: &Path, data: &[u8]) -> Backend {
     let mut cur = ByteCursor::new(data);
     let flags = cur.next_or(0);
     let use_checkpoint = flags & 1 != 0;
     let text_pk = flags & 2 != 0;
+    let with_indexes = flags & 4 != 0;
 
     let store_path = root.join("model_store");
     let ckpt_path = root.join("model_ckpt");
@@ -1660,23 +1747,37 @@ fn fuzz_structured_model(root: &Path, data: &[u8]) -> Backend {
         backend.sql().execute(create_sql, &[]).expect("create m"),
         SqlOutcome::TableCreated
     );
+    if with_indexes {
+        for idx_sql in [
+            "CREATE INDEX idx_n ON m (n)",
+            "CREATE INDEX idx_s ON m (s)",
+            "CREATE INDEX idx_req_b ON m (req, b)",
+            "CREATE INDEX idx_req_s ON m (req, s)",
+        ] {
+            assert_eq!(
+                backend.sql().execute(idx_sql, &[]).expect("create idx"),
+                SqlOutcome::IndexCreated
+            );
+        }
+    }
 
     let mut model = BTreeMap::<Pk, Row>::new();
+    let mut has_unique_n = false;
 
     for _ in 0..MAX_STRUCTURED_OPS {
         let Some(op) = cur.next() else {
             break;
         };
-        match op % 8 {
+        match op % 9 {
             0 | 1 => {
-                exec_insert_op(&backend.sql(), &mut model, &mut cur, text_pk);
+                exec_insert_op(&backend.sql(), &mut model, &mut cur, text_pk, has_unique_n);
                 check_full_table(&backend.sql(), &model);
             }
             2 | 3 => {
-                exec_select_op(&backend.sql(), &model, &mut cur, text_pk);
+                exec_select_op(&backend.sql(), &model, &mut cur, text_pk, with_indexes);
             }
             4 => {
-                exec_update_op(&backend.sql(), &mut model, &mut cur, text_pk);
+                exec_update_op(&backend.sql(), &mut model, &mut cur, text_pk, has_unique_n);
                 check_full_table(&backend.sql(), &model);
             }
             5 => {
@@ -1687,6 +1788,9 @@ fn fuzz_structured_model(root: &Path, data: &[u8]) -> Backend {
                 drop(backend);
                 backend = open_backend(&store_path, &ckpt_path, digest.as_ref(), use_checkpoint);
                 check_full_table(&backend.sql(), &model);
+            }
+            7 => {
+                exec_create_unique_n_op(&backend.sql(), &model, &mut has_unique_n, &mut cur);
             }
             _ => {
                 exec_error_probe(&backend.sql(), cur.next_or(0));

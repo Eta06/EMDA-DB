@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX u_n ON t (n); SELECT id FROM t WHERE n = 10;

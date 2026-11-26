@@ -52,7 +52,7 @@ impl Backend for SqlDatabase<'_> {
             SqlOutcome::Inserted { rows }
             | SqlOutcome::Updated { rows }
             | SqlOutcome::Deleted { rows } => rows,
-            SqlOutcome::TableCreated => 0,
+            SqlOutcome::TableCreated | SqlOutcome::IndexCreated => 0,
         })
     }
     fn prepare_only(&self, sql: &str) -> Result<()> {
@@ -216,6 +216,99 @@ fn documents(db: &DocumentDatabase<'_>, rows: i64, ops: i64) -> Result<String> {
     ))
 }
 
+fn indexed_row_params(id: i64) -> Vec<SqlValue> {
+    vec![
+        SqlValue::Integer(id),
+        SqlValue::Integer(id * 3 + 7),
+        SqlValue::Text(format!("tag-{:04}", id % 200)),
+        SqlValue::Boolean(id % 2 == 0),
+        SqlValue::Real(id as f64 / 4.0),
+    ]
+}
+
+fn indexed_workload(name: &str, db: &dyn Backend, rows: i64, ops: i64) -> Result<String> {
+    // 1-index table: equality + short range + single-row durable insert cost
+    db.exec(
+        "CREATE TABLE items1 (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, tag TEXT NOT NULL, active BOOLEAN NOT NULL, score REAL)",
+        &[],
+    )?;
+    db.exec("CREATE INDEX idx1_code ON items1 (code)", &[])?;
+
+    let tuple = "(?, ?, ?, ?, ?)";
+    for chunk in (0..rows).collect::<Vec<_>>().chunks(100) {
+        let sql = format!(
+            "INSERT INTO items1 VALUES {}",
+            vec![tuple; chunk.len()].join(", ")
+        );
+        let params = chunk
+            .iter()
+            .flat_map(|id| indexed_row_params(*id))
+            .collect::<Vec<_>>();
+        db.exec(&sql, &params)?;
+    }
+
+    // 3-index table: single-row durable insert cost with 3 secondary indexes
+    db.exec(
+        "CREATE TABLE items3 (id INTEGER PRIMARY KEY, code INTEGER NOT NULL, tag TEXT NOT NULL, active BOOLEAN NOT NULL, score REAL)",
+        &[],
+    )?;
+    db.exec("CREATE INDEX idx3_code ON items3 (code)", &[])?;
+    db.exec("CREATE INDEX idx3_tag ON items3 (tag)", &[])?;
+    db.exec("CREATE INDEX idx3_active ON items3 (active)", &[])?;
+    for chunk in (0..rows).collect::<Vec<_>>().chunks(100) {
+        let sql = format!(
+            "INSERT INTO items3 VALUES {}",
+            vec![tuple; chunk.len()].join(", ")
+        );
+        let params = chunk
+            .iter()
+            .flat_map(|id| indexed_row_params(*id))
+            .collect::<Vec<_>>();
+        db.exec(&sql, &params)?;
+    }
+
+    let eq_sql = "SELECT id, code, tag, active, score FROM items1 WHERE code = ?";
+    let range_sql = "SELECT id, code, tag, active, score FROM items1 WHERE code >= ? AND code < ?";
+    let ins1_sql = "INSERT INTO items1 VALUES (?, ?, ?, ?, ?)";
+    let ins3_sql = "INSERT INTO items3 VALUES (?, ?, ?, ?, ?)";
+    let (mut idx_eq, mut idx_range, mut ins_1idx, mut ins_3idx) = (vec![], vec![], vec![], vec![]);
+
+    for op in 0..ops {
+        let id = (op * 7919) % rows;
+        let target_code = id * 3 + 7;
+        time(&mut idx_eq, || {
+            (db.exec(eq_sql, &[SqlValue::Integer(target_code)])? == 1)
+                .then_some(())
+                .ok_or_else(|| "indexed eq missed".into())
+        })?;
+        let lo = ((op * 1049) % (rows - 10).max(1)) * 3 + 7;
+        let hi = lo + 30;
+        time(&mut idx_range, || {
+            let n = db.exec(range_sql, &[SqlValue::Integer(lo), SqlValue::Integer(hi)])?;
+            if n == 0 {
+                return Err("indexed range missed".into());
+            }
+            Ok(())
+        })?;
+        time(&mut ins_1idx, || {
+            db.exec(ins1_sql, &indexed_row_params(rows + op))
+                .map(|_| ())
+        })?;
+        time(&mut ins_3idx, || {
+            db.exec(ins3_sql, &indexed_row_params(rows + op))
+                .map(|_| ())
+        })?;
+    }
+
+    Ok(format!(
+        "{{\"backend\":\"{name}-indexed\",\"rows\":{rows},\"idx_eq\":{},\"idx_range_10\":{},\"insert_1idx\":{},\"insert_3idx\":{}}}",
+        Samples(idx_eq).json(),
+        Samples(idx_range).json(),
+        Samples(ins_1idx).json(),
+        Samples(ins_3idx).json(),
+    ))
+}
+
 fn sqlite(path: &Path) -> Result<Sqlite> {
     let conn = rusqlite::Connection::open(path)?;
     conn.execute_batch(
@@ -287,5 +380,40 @@ fn main() -> Result<()> {
     println!("{}", workload("sqlite", &db, rows, ops)?);
     drop(db);
     check(&sqlite(&root.join("sqlite.db"))?, rows)?;
+
+    let store_idx = Store::open(root.join("store-idx"))?;
+    println!(
+        "{}",
+        indexed_workload(
+            "emda-store",
+            &SqlDatabase::new(DocumentDatabase::new(&store_idx)),
+            rows,
+            ops
+        )?
+    );
+    drop(store_idx);
+
+    let initial_idx = Store::open(root.join("checkpoint-idx-log"))?;
+    let digest_idx = initial_idx.checkpoint_to(root.join("checkpoint-idx"))?;
+    drop(initial_idx);
+    let ckpt_idx = CheckpointStore::open(
+        root.join("checkpoint-idx-log"),
+        root.join("checkpoint-idx"),
+        &digest_idx,
+    )?;
+    println!(
+        "{}",
+        indexed_workload(
+            "emda-checkpoint",
+            &SqlDatabase::new(DocumentDatabase::with_checkpoint_store(&ckpt_idx)),
+            rows,
+            ops
+        )?
+    );
+    drop(ckpt_idx);
+
+    let sqlite_idx = sqlite(&root.join("sqlite-idx.db"))?;
+    println!("{}", indexed_workload("sqlite", &sqlite_idx, rows, ops)?);
+    drop(sqlite_idx);
     Ok(())
 }
