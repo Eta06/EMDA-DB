@@ -1860,6 +1860,7 @@ impl DocumentTransaction<'_, '_> {
                     response_byte_limit: None,
                     candidate_limit: Some(remaining),
                     unique_equality,
+                    reject_response_overflow: false,
                 },
                 &mut visit,
             )?;

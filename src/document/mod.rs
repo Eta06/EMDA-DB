@@ -14,6 +14,7 @@ mod matching;
 mod online_index;
 mod planner;
 mod query;
+mod relationship;
 mod retained;
 mod schema;
 mod schema_migration;
@@ -54,6 +55,10 @@ pub use planner::{
     DocumentQueryExplanation, DocumentQueryProbe, PlannedDocumentQueryResult,
 };
 pub use query::{DocumentEntry, DocumentPage, IndexBound, IndexCursor, IndexQuery, IndexQueryPlan};
+pub use relationship::{
+    LookupManyEntry, LookupManyLimits, LookupManyResult, MAX_LOOKUP_MANY_PER_SOURCE,
+    MAX_LOOKUP_MANY_RELATED, MAX_LOOKUP_MANY_RESPONSE_BYTES, PlannedLookupManyResult,
+};
 pub use schema::{CollectionSchema, FieldRule, FieldType};
 pub use schema_migration::{SchemaMigrationStatus, SchemaStep};
 pub use snapshot::DocumentSnapshot;
@@ -767,6 +772,34 @@ impl<'a> DocumentDatabase<'a> {
                 foreign_collection,
                 foreign_index,
             )
+        })
+    }
+
+    /// Resolves every foreign document related to each source row through a
+    /// named non-unique index, in one transaction. See
+    /// [`DocumentTransaction::lookup_many`].
+    pub fn lookup_many(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+        local_paths: &[Vec<String>],
+        foreign: (&str, &str),
+        limits: LookupManyLimits,
+    ) -> io::Result<LookupManyResult> {
+        self.transaction(|tx| tx.lookup_many(collection, query, local_paths, foreign, limits))
+    }
+
+    /// Like [`Self::lookup_many`], selecting source rows with the planner.
+    pub fn lookup_many_planned(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+        local_paths: &[Vec<String>],
+        foreign: (&str, &str),
+        limits: LookupManyLimits,
+    ) -> io::Result<PlannedLookupManyResult> {
+        self.transaction(|tx| {
+            tx.lookup_many_planned(collection, query, local_paths, foreign, limits)
         })
     }
 

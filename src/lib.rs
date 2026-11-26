@@ -62,11 +62,13 @@ pub use document::{
     DocumentReadLimits, DocumentRequestLimits, DocumentSnapshot, DocumentSort, DocumentTransaction,
     DocumentTransactionLimits, DocumentTransactionMode, DocumentUpdate, FieldCondition, FieldRule,
     FieldType, IndexBound, IndexCursor, IndexDefinition, IndexDropPhase, IndexJobStatus,
-    IndexQuery, IndexQueryPlan, IndexStep, IndexValue, LookupEntry, LookupResult,
-    MAX_COLLECTION_ARCHIVE_BYTES, MAX_COLLECTION_ARCHIVE_DOCUMENTS,
-    MAX_DOCUMENT_UPDATE_INPUT_BYTES, MAX_MATCHED_DOCUMENTS, MaintenanceKey, MaintenanceProgress,
-    MatchOptions, MatchSelection, NumericFieldStats, PartialFilter, PlannedAggregateStatsResult,
-    PlannedDocumentQueryResult, PlannedLookupResult, QueryPlan, SchemaMigrationStatus, SchemaStep,
+    IndexQuery, IndexQueryPlan, IndexStep, IndexValue, LookupEntry, LookupManyEntry,
+    LookupManyLimits, LookupManyResult, LookupResult, MAX_COLLECTION_ARCHIVE_BYTES,
+    MAX_COLLECTION_ARCHIVE_DOCUMENTS, MAX_DOCUMENT_UPDATE_INPUT_BYTES, MAX_LOOKUP_MANY_PER_SOURCE,
+    MAX_LOOKUP_MANY_RELATED, MAX_LOOKUP_MANY_RESPONSE_BYTES, MAX_MATCHED_DOCUMENTS, MaintenanceKey,
+    MaintenanceProgress, MatchOptions, MatchSelection, NumericFieldStats, PartialFilter,
+    PlannedAggregateStatsResult, PlannedDocumentQueryResult, PlannedLookupManyResult,
+    PlannedLookupResult, QueryPlan, SchemaMigrationStatus, SchemaStep,
 };
 pub use log::{PeakVerificationLimits, StoreRecoveryLimits};
 pub use publication_outcome::{

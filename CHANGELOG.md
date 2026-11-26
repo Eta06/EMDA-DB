@@ -4,6 +4,13 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add `lookup_many` and `lookup_many_planned` to `DocumentDatabase`,
+  `DocumentTransaction` and `DocumentSnapshot`. They return every foreign
+  document whose entry in a named non-unique index carries the source
+  row's complete typed tuple, in foreign ID order. `LookupManyLimits`
+  requires per-source, total and response-byte limits. Exceeding any of
+  them fails the whole lookup. The one-to-one lookups are unchanged.
+
 - Allow automatic checkpoints on a disk-budgeted managed store. Enabling
   and each rollover are admitted before they remove or write anything,
   including the exact checkpoint, staging markers, the selection

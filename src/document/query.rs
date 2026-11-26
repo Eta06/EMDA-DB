@@ -8,7 +8,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::io;
 
-const MAX_QUERY_DOCUMENTS: usize = 256;
+pub(super) const MAX_QUERY_DOCUMENTS: usize = 256;
 const MAX_QUERY_BYTES: usize = 16 * 1024 * 1024;
 const CURSOR_MAGIC: &[u8; 8] = b"EMDAIC01";
 const CURSOR_HEADER_BYTES: usize = CURSOR_MAGIC.len() + 32;
@@ -182,6 +182,8 @@ pub(super) struct IndexScan {
     pub next: Option<Vec<u8>>,
     pub plan: IndexQueryPlan,
     pub document_key_value_bytes: usize,
+    // IDs plus stored document bytes of the returned entries.
+    pub response_bytes: usize,
 }
 
 pub(super) struct IndexScanOptions<'a> {
@@ -190,6 +192,9 @@ pub(super) struct IndexScanOptions<'a> {
     pub response_byte_limit: Option<usize>,
     pub candidate_limit: Option<usize>,
     pub unique_equality: bool,
+    // Refuse, before reading its value, an entry that would exceed
+    // `response_byte_limit`, instead of ending the page early.
+    pub reject_response_overflow: bool,
 }
 
 pub(super) fn index_definition<'a>(
@@ -301,6 +306,7 @@ impl DocumentTransaction<'_, '_> {
                     .map(|cursor| cursor.position.as_slice()),
                 byte_limit: None,
                 response_byte_limit: Some(MAX_QUERY_BYTES),
+                reject_response_overflow: false,
                 candidate_limit: None,
                 unique_equality: false,
             },
@@ -425,6 +431,7 @@ impl DocumentTransaction<'_, '_> {
                 next: None,
                 plan: plan(0, 0),
                 document_key_value_bytes: 0,
+                response_bytes: 0,
             });
         }
         let mut nonempty_entry = false;
@@ -461,6 +468,15 @@ impl DocumentTransaction<'_, '_> {
                         .is_some_and(|limit| next_document_bytes > limit)
                     {
                         return Err(key::invalid("document scan exceeds the operation limit"));
+                    }
+                    if options.reject_response_overflow
+                        && options.response_byte_limit.is_some_and(|limit| {
+                            used.checked_add(id.len())
+                                .and_then(|total| total.checked_add(len))
+                                .is_none_or(|total| total > limit)
+                        })
+                    {
+                        return Err(key::invalid("lookup response exceeds its byte limit"));
                     }
                     Ok(())
                 })?
@@ -505,6 +521,7 @@ impl DocumentTransaction<'_, '_> {
             next: cursor,
             plan: plan(entries_read, returned),
             document_key_value_bytes,
+            response_bytes: used,
         })
     }
 }

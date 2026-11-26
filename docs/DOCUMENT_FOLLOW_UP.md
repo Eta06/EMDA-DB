@@ -195,6 +195,19 @@ remain open.
 - [x] Add bounded relationship lookups by a complete unique index tuple.
   Tests cover typed and partial targets, exact response limits, staged
   changes, missing-owner conflicts, and retained restore and reopen.
+- [x] Add bounded one-to-many relationship lookups through a named
+  non-unique index, with `lookup_many` and `lookup_many_planned` on
+  databases, transactions and snapshots. Each source row's complete typed
+  tuple returns every covered foreign document in ID order. Missing local
+  fields match nothing, null matches indexed null, and types never coerce.
+  Per-source, total and response-byte limits are required, and each target
+  is admitted before its value is read. An exceeded limit, an incomplete
+  page or an index entry that disagrees with its document fails the whole
+  call. The [tests](../tests/document_lookup_many.rs) cover ordinary and
+  checkpoint stores, multiple, zero, null and typed matches, compound and
+  partial indexes, and exact and one-over limits. They also cover staged
+  and aborted edits, snapshots, reopen, and a concurrent matching foreign
+  insert under read-set validation, with a disjoint insert as control.
 - [x] Share nested JSON equality work limits across update conditions,
   array add-unique, and array remove. The [budget regressions](../tests/document_equality_budget.rs)
   exercise exact and exceeded limits on ordinary and checkpoint stores,

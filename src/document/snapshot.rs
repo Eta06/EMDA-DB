@@ -137,6 +137,33 @@ impl<'a> DocumentSnapshot<'a> {
         )
     }
 
+    /// Resolves one-to-many relationships through a named non-unique index
+    /// within the captured view. See [`DocumentTransaction::lookup_many`].
+    pub fn lookup_many(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+        local_paths: &[Vec<String>],
+        foreign: (&str, &str),
+        limits: super::LookupManyLimits,
+    ) -> io::Result<super::LookupManyResult> {
+        self.view
+            .lookup_many(collection, query, local_paths, foreign, limits)
+    }
+
+    /// Like [`Self::lookup_many`], selecting source rows with the planner.
+    pub fn lookup_many_planned(
+        &self,
+        collection: &str,
+        query: &DocumentQuery,
+        local_paths: &[Vec<String>],
+        foreign: (&str, &str),
+        limits: super::LookupManyLimits,
+    ) -> io::Result<super::PlannedLookupManyResult> {
+        self.view
+            .lookup_many_planned(collection, query, local_paths, foreign, limits)
+    }
+
     /// Computes bounded counts and optional sums over the captured view.
     pub fn aggregate(
         &self,
