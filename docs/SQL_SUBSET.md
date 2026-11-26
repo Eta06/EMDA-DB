@@ -46,15 +46,19 @@ fn example(store: &Store) -> Result<(), Box<dyn std::error::Error>> {
 Keywords are case-insensitive. Unquoted identifiers (`[A-Za-z_][A-Za-z0-9_]*`) fold to ASCII lowercase. Double-quoted identifiers (`"Name"`, with `""` escaping `"`) preserve case. Identifiers must be 1–128 UTF-8 bytes. `--` starts a line comment outside strings and quoted identifiers.
 
 ```text
-statement      := (create_table | insert | select | update | delete) [";"]
+statement      := (create_table | create_index | insert | select | update | delete) [";"]
 
 create_table   := CREATE TABLE [IF NOT EXISTS] ident "(" table_item ("," table_item)* ")"
-table_item     := col_def | PRIMARY KEY "(" ident ")"
-col_def        := ident data_type (NOT NULL | PRIMARY KEY)*
+table_item     := col_def
+                | PRIMARY KEY "(" ident ")"
+                | UNIQUE "(" ident ("," ident)* ")"
+col_def        := ident data_type (NOT NULL | PRIMARY KEY | UNIQUE)*
 data_type      := INTEGER | INT | BIGINT
                 | REAL | DOUBLE | FLOAT
                 | TEXT | VARCHAR | VARCHAR "(" positive_int ")"
                 | BOOLEAN | BOOL
+
+create_index   := CREATE [UNIQUE] INDEX [IF NOT EXISTS] ident ON ident "(" ident ("," ident)* ")"
 
 insert         := INSERT INTO ident ["(" ident ("," ident)* ")"]
                   VALUES tuple ("," tuple)*
@@ -91,7 +95,8 @@ Notes on specific constructs:
 - Updating a `PRIMARY KEY` column in `UPDATE ... SET` is rejected as `SqlError::Unsupported`.
 - `ORDER BY` column positions (`ORDER BY 1`), expressions or qualified names in `ORDER BY`, standalone `OFFSET` without `LIMIT`, and `ORDER BY` / `LIMIT` / `OFFSET` on `UPDATE` or `DELETE` are rejected as `SqlError::Unsupported`.
 - `LIMIT` and `OFFSET` values must be non-negative `INTEGER` literals or `?` parameters (`SqlError::Bounds` for negative `INTEGER` values; `SqlError::Type` for `NULL`, `REAL`, `TEXT`, or `BOOLEAN`; `SqlError::Syntax` for out-of-`i64`-range integer literals).
-- Recognized SQL outside this grammar (`JOIN`, comma joins, `GROUP BY`, `HAVING`, `DISTINCT`, `UNION`/`INTERSECT`/`EXCEPT`, aggregates/function calls, subqueries, `CREATE INDEX`, `DROP`, `ALTER`, `BEGIN`/`COMMIT`/`ROLLBACK`, `RETURNING`, `ON CONFLICT`, `DEFAULT`, `CHECK`, `FOREIGN KEY`/`REFERENCES`, `UNIQUE`, `IN`, `BETWEEN`, `LIKE`, `CASE`, `CAST`, arithmetic operators, qualified `table.column`, aliases `AS`) fails with `SqlError::Unsupported` naming the feature.
+- Secondary indexes (`CREATE [UNIQUE] INDEX` and `UNIQUE` constraints) support `INTEGER`, `TEXT`/`VARCHAR(n)`, and `BOOLEAN` columns (1–4 columns per index, up to 16 indexes per table). `REAL` columns in indexes/unique constraints, partial `CREATE INDEX ... WHERE ...`, `ASC`/`DESC` index ordering, `USING ...`, and `DROP INDEX` fail with `SqlError::Unsupported`.
+- Recognized SQL outside this grammar (`JOIN`, comma joins, `GROUP BY`, `HAVING`, `DISTINCT`, `UNION`/`INTERSECT`/`EXCEPT`, aggregates/function calls, subqueries, `DROP`, `ALTER`, `BEGIN`/`COMMIT`/`ROLLBACK`, `RETURNING`, `ON CONFLICT`, `DEFAULT`, `CHECK`, `FOREIGN KEY`/`REFERENCES`, `IN`, `BETWEEN`, `LIKE`, `CASE`, `CAST`, arithmetic operators, qualified `table.column`, aliases `AS`) fails with `SqlError::Unsupported` naming the feature.
 
 ## Types, coercion, and NULL semantics
 
@@ -122,9 +127,14 @@ Type rules:
 - Every table is stored as one `DocumentDatabase` collection plus a durable catalog entry stored atomically in the same transaction under the raw-key prefix `\0emda-sql\x01T<table_name>`.
 - **Do not write SQL tables through `DocumentDatabase` or the raw key-value APIs.** Raw keys under `\0emda-sql\x01T` are reserved by convention only (only `\0emda-document\x01` is enforced as reserved by the document layer). Writing a SQL collection directly through `DocumentDatabase` or raw keys can bypass SQL constraints (`VARCHAR(n)`), corrupt catalog entries, or introduce mismatched document IDs.
 - **Row integrity check**: On every row decode (across point, range, and full-scan paths), the SQL layer verifies that the document ID equals the canonical encoding of the row's primary-key column value. Any mismatch returns `SqlError::Io` (`io::ErrorKind::InvalidData`) naming the table.
-- Creating a table also installs a matching `CollectionSchema` (`required: true`, `nullable: !col.not_null`) as defense in depth.
+- Creating a table also installs a matching `CollectionSchema` (`required: col.not_null`, `nullable: !col.not_null`) as defense in depth. SQL `NULL` values are stored by omitting the field from the document JSON object so document-layer secondary and unique indexes omit any row where an indexed column is `NULL`.
 - Every table must declare **exactly one** `PRIMARY KEY` column of type `INTEGER` or `TEXT`. The primary key column is implicitly `NOT NULL`.
-- Duplicate primary keys (either against existing rows or within a multi-row `INSERT`) and `NOT NULL` / `VARCHAR(n)` violations fail with `SqlError::Constraint` and roll back the entire statement.
+- Duplicate primary keys (either against existing rows or within a multi-row `INSERT`), `UNIQUE` violations, and `NOT NULL` / `VARCHAR(n)` violations fail with `SqlError::Constraint` and roll back the entire statement.
+- **Secondary indexes and `UNIQUE` constraints**:
+  - `CREATE [UNIQUE] INDEX [IF NOT EXISTS] name ON table (col, ...)` and column/table `UNIQUE` constraints map directly onto `DocumentTransaction::create_index` and document-layer single/compound scalar indexes (`1..=4` columns, up to `16` indexes per table, index names scoped per table).
+  - **NULL semantics**: Following PostgreSQL and SQLite, `UNIQUE` permits multiple `NULL` values (including compound tuples such as `(1, NULL)` and `(1, NULL)`), because SQL `NULL` is stored as an absent JSON field and omitted from document indexes.
+  - **Populated-table index builds**: `CREATE [UNIQUE] INDEX` runs as a single bounded atomic transaction via `DocumentTransaction::create_index` (up to `256` existing rows and `32 MiB` of scanned document bytes), updating both document index metadata/keys and the SQL catalog entry in the same `DB02` commit record. Tables exceeding `256` rows or `32 MiB` fail with `SqlError::Bounds`, and unique violations on existing rows fail with `SqlError::Constraint`. A crash or failure mid-build leaves the table, its existing rows, and the catalog completely unchanged (no partial index or pending maintenance job).
+  - **String and key limits**: Indexed `TEXT` values are bounded to `256` UTF-8 bytes (`MAX_INDEX_STRING_BYTES`), and encoded index keys are bounded to `1,024` bytes; exceeding either fails with `SqlError::Bounds` and rolls back the statement.
 - **Primary-key ordering guarantee**:
   - `INTEGER` primary keys encode `(value ^ i64::MIN) as u64` as `i:<16 lowercase hex digits>`.
   - `TEXT` primary keys encode `t:<utf8_bytes>` (maximum `254` UTF-8 bytes to fit the 256-byte document ID limit; longer keys fail with `SqlError::Bounds`).
@@ -153,14 +163,14 @@ Type rules:
 - Read-set validation covers the catalog key on commit, and any catalog change or drop invalidates the cached `TableDef` and any dependent bound plans immediately so stale definitions are never served.
 - `SqlDatabase::set_limits` clears cached statements and bound plans so updated limits take effect immediately.
 
-## Access paths (`SELECT`, `UPDATE`, `DELETE`)
-
-After bind-time validation (table/column resolution and expression type checking), the planner selects one of four access paths:
-
-- **Empty short-circuit**: If a top-level `AND` conjunction (nested parentheses allowed) contains a `NULL` comparison on the primary key (`pk <op> NULL` or `NULL <op> pk` for `=`, `<>`, `<`, `<=`, `>`, `>=`), contradictory primary-key bounds (such as `id >= 10 AND id <= 5`), or an impossible `INTEGER` primary-key equality (such as `id = 3.5` or an out-of-`i64`-range `REAL`), the statement visits zero rows without scanning and returns an empty result (`0` rows).
-- **Point access (`DocumentTransaction::get`)**: When the `WHERE` expression is a top-level `AND` conjunction (nested parentheses allowed) containing `pk = <literal or ?>` (in either operand order) and consistent with any other primary-key conjuncts, the engine fetches only that single document by its encoded primary-key ID and then evaluates the full `WHERE` predicate on it. Cross-type comparisons (`INTEGER` primary key vs exact finite `REAL` such as `id = 3.0`) use the exact same semantics as a full scan.
-- **Range access (`DocumentTransaction::scan_documents`)**: When the `WHERE` expression is a top-level `AND` conjunction containing one or more primary-key inequality conjuncts (`>`, `>=`, `<`, `<=` against a literal or `?` parameter in either operand order) without `=`, the planner computes tight intersected lower and upper encoded-ID bounds (rounding `REAL` bounds exactly for `INTEGER` primary keys; using UTF-8 byte order for `TEXT` primary keys) and scans only that ID range via `DocumentTransaction::scan_documents`, starting after the lower bound and stopping at the first document ID past the upper bound.
-- **Full-collection scan (`DocumentTransaction::scan_documents`)**: Statements without `WHERE` and predicates outside the top-level conjunction forms above (such as top-level `OR`, `NOT`, `<>`, `IS [NOT] NULL`, or non-PK filters) scan the collection in ascending ID order.
+- **Access-path priority (`SELECT`, `UPDATE`, `DELETE`)**:
+  After bind-time validation (table/column resolution and expression type checking), the planner flattens top-level `AND` conjunctions (nested parentheses allowed) and selects one of five access paths:
+  1. **Empty short-circuit**: Any `col <op> NULL` comparison (`=`, `<>`, `<`, `<=`, `>`, `>=`), contradictory bounds on any column (such as `id >= 10 AND id <= 5` or `x > 4 AND x < 5` on `INTEGER`), impossible `INTEGER` vs `REAL` equality (such as `n = 3.5` or `n = 2^63`), or `TEXT` equality exceeding `254` bytes (PK) / `256` bytes (secondary index) visits zero rows and returns an empty result.
+  2. **Primary-key point access (`DocumentTransaction::get`)**: `pk = <lit|?>` (or tight integer bounds `lo == hi`) fetches only that single document by its encoded primary-key ID and evaluates the full `WHERE` predicate.
+  3. **Unique-index equality (`DocumentTransaction::query_index`)**: A `UNIQUE` index whose every column is constrained by `=` visits at most one row via the unique index.
+  4. **Primary-key range vs secondary index (`DocumentTransaction::scan_documents` / `query_index`)**: Secondary indexes are eligible when a leading equality prefix (`col = v`, with `0` or more columns) is followed by an optional range (`<`, `<=`, `>`, `>=`) on the next column, and every trailing index column is guaranteed non-`NULL` (`NOT NULL` or `WHERE` proof such as `IS NOT NULL` or comparison with a non-`NULL` value). `INTEGER` bounds against `REAL` operands (including `i64` values above `2^53` and fractional `REAL`s) are converted to exact `i64` bounds matching scan semantics. When both a PK range and a secondary index apply, a small integer PK range (`<= 8` keys) prefers PK range, otherwise non-boolean index equality or a two-sided index range over a one-sided PK range prefers the index; otherwise PK range wins.
+  5. **Index-order `ORDER BY ... LIMIT` streaming and full-collection scan fallback**: If `WHERE` did not select a point, range, or index path, `SELECT` with `LIMIT` and `ORDER BY` matching an index whose columns are all guaranteed non-`NULL` (with all `ASC` directions and exact PK tie-break compatibility) streams directly from `query_index` and stops after `OFFSET + LIMIT` matches. Otherwise, execution falls back to a full-collection scan in ascending ID order.
+  - Whenever an index scan does not naturally yield rows in the required `ORDER BY` (or default ascending PK) order, matching rows are sorted (or bounded top-K heaped when `LIMIT` is present) with deterministic ascending PK tie-breaking. Every non-streaming path evaluates the full `WHERE` predicate as a residual filter.
 
 `SqlLimits::max_visited_rows` counts only rows actually read by the chosen access path, so point lookups and bounded ranges over a subset within `max_visited_rows` succeed even when the table contains more than `max_visited_rows` total rows. During scans, unreferenced columns are not decoded into `SqlValue`s and expression evaluation borrows directly from the decoded document without cloning rows.
 
@@ -181,8 +191,12 @@ All bounds live in `SqlLimits` (implementing `Default`), configurable via `SqlDa
 | `max_visited_rows` | 32,768 | 131,072 | Rows visited while scanning in one statement |
 | `max_params` | 1,024 | 1,024 | Positional `?` parameters |
 | `max_text_bytes` | 262,144 (256 KiB) | 262,144 | UTF-8 bytes of a `TEXT` literal/param/value |
-| Identifier length | 128 | 128 | Table and column names (UTF-8 bytes) |
+| Identifier length | 128 | 128 | Table, column, and index names (UTF-8 bytes) |
 | `TEXT` primary key bytes | 254 | 254 | Document ID 256-byte limit (`"t:"` + key) |
+| Indexed `TEXT` bytes | 256 | 256 | Document-layer `MAX_INDEX_STRING_BYTES` |
+| Columns per index | 4 | 4 | Document-layer `MAX_INDEX_FIELDS` |
+| Indexes per table | 16 | 16 | Document-layer collection index cap |
+| Populated `CREATE INDEX` | 256 rows / 32 MiB | 256 rows / 32 MiB | Single-transaction `DocumentTransaction::create_index` build |
 | Row serialized bytes | 1 MiB | 1 MiB | Document layer `MAX_DOCUMENT_BYTES` |
 | Atomic batch bytes | 16 MiB | 16 MiB | Storage `MAX_ATOMIC_BATCH_BYTES` per statement |
 
@@ -193,9 +207,9 @@ Statements never silently truncate: exceeding any bound fails with `SqlError::Bo
 - `Syntax { offset, message }`: lexical or grammar error with byte offset.
 - `Unsupported { feature, offset }`: recognized SQL outside slice 1.
 - `Type(String)`: type mismatch, non-finite float, or non-exact `INTEGER` -> `REAL` coercion.
-- `Constraint(String)`: duplicate primary key, `NOT NULL`, `VARCHAR(n)` overflow, or missing/invalid `PRIMARY KEY` definition.
+- `Constraint(String)`: duplicate primary key, `UNIQUE` violation, `NOT NULL`, `VARCHAR(n)` overflow, or missing/invalid `PRIMARY KEY` definition.
 - `NoSuchTable(String)` / `NoSuchColumn { table, column }`: unknown table or column.
-- `TableExists(String)`: `CREATE TABLE` on an existing table/collection without `IF NOT EXISTS`.
+- `TableExists(String)` / `IndexExists(String)`: `CREATE TABLE` or `CREATE [UNIQUE] INDEX` on an existing table or index without `IF NOT EXISTS`.
 - `Bounds(String)`: exceeded `SqlLimits`, positively identified storage/document size or batch/quota limits, or `Store` snapshot budget.
 - `ParameterCount { expected, actual }`: wrong number of `params` passed to `execute` / `execute_prepared`.
 - `Conflict(io::Error)`: pre-commit transaction conflict (`database_engine::is_transaction_conflict` is `true`).
@@ -215,5 +229,5 @@ Every SQL statement runs inside a single `DocumentDatabase::transaction_detailed
 
 ## Implemented vs planned
 
-- **Implemented**: `CREATE TABLE [IF NOT EXISTS]`, `INSERT`, `SELECT` (`*` or column list, `WHERE`, `ORDER BY` with `ASC`/`DESC`/`NULLS FIRST`/`NULLS LAST`, `LIMIT`/`OFFSET`), `UPDATE`, `DELETE`, `SqlValue`/`SqlLimits`/`SqlError`/`SqlStatement` prepared reuse, per-`SqlDatabase` catalog/statement/plan caching, 3VL expressions, exact numeric comparisons, ascending PK order guarantee and streaming `ORDER BY pk ASC`, bounded `ORDER BY pk DESC` and top-K / full sort, primary-key point (`=`) and range (`>`, `>=`, `<`, `<=`) access paths with bounded full-collection scan fallback via `DocumentTransaction::scan_documents`, `ReadSet` optimistic concurrency, and row PK/document-ID integrity verification.
-- **Planned (later slices)**: secondary indexes (`CREATE INDEX`) and cost-based SQL query planning, `JOIN`, `GROUP BY` / aggregates, subqueries, multi-statement explicit SQL transactions (`BEGIN` / `COMMIT` / `ROLLBACK`), schema migrations (`ALTER` / `DROP`), and `EXPLAIN` / SQL diagnostics.
+- **Implemented**: `CREATE TABLE [IF NOT EXISTS]` (including column-level `UNIQUE` and table-level `UNIQUE (col, ...)`), `CREATE [UNIQUE] INDEX [IF NOT EXISTS]`, `INSERT`, `SELECT` (`*` or column list, `WHERE`, `ORDER BY` with `ASC`/`DESC`/`NULLS FIRST`/`NULLS LAST`, `LIMIT`/`OFFSET`), `UPDATE`, `DELETE`, `SqlValue`/`SqlLimits`/`SqlError`/`SqlStatement` prepared reuse, per-`SqlDatabase` catalog/statement/plan caching, 3VL expressions, exact numeric comparisons, ascending PK order guarantee and streaming `ORDER BY pk ASC`, index-order `ORDER BY ... LIMIT` streaming, bounded `ORDER BY pk DESC` and top-K / full sort, primary-key point (`=`) and range (`>`, `>=`, `<`, `<=`) access paths, single and compound secondary index equality/range access via `DocumentTransaction::query_index`, bounded full-collection scan fallback via `DocumentTransaction::scan_documents`, `ReadSet` optimistic concurrency, and row PK/document-ID integrity verification.
+- **Planned (later slices)**: `JOIN`, `GROUP BY` / aggregates, subqueries, multi-statement explicit SQL transactions (`BEGIN` / `COMMIT` / `ROLLBACK`), schema migrations (`ALTER` / `DROP`), and `EXPLAIN` / SQL diagnostics.
