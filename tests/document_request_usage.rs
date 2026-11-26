@@ -112,12 +112,13 @@ fn request_usage_matches_admission_on_both_writable_backends() {
     let root = tempfile::tempdir().unwrap();
     let source = root.path().join("store");
     let store = Store::open(&source).unwrap();
-    let db = DocumentDatabase::new(&store);
-    seed(&db);
-    check(&db);
+    {
+        let db = DocumentDatabase::new(&store);
+        seed(&db);
+        check(&db);
+    }
     let checkpoint = root.path().join("checkpoint");
     let digest = store.checkpoint_to(&checkpoint).unwrap();
-    drop(db);
     drop(store);
     let store = retry_lock(|| CheckpointStore::open(&source, &checkpoint, &digest)).unwrap();
     check(&DocumentDatabase::with_checkpoint_store(&store));
