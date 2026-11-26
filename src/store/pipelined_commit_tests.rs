@@ -254,3 +254,62 @@ fn a_read_only_transaction_that_finds_the_index_busy_still_commits() {
     drop(index);
     assert_eq!(reader.join().unwrap().unwrap(), b"v");
 }
+
+#[test]
+fn transactions_queue_behind_a_pending_atomic_and_conflict_on_its_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let held = held(dir.path());
+    // The increment downgrades to shared access once queued, then syncs.
+    held.armed.store(true, Ordering::SeqCst);
+    let store = Arc::clone(&held.store);
+    let atomic = thread::spawn(move || store.increment_i64(b"n", 5));
+    held.started.recv_timeout(Duration::from_secs(10)).unwrap();
+
+    let store = Arc::clone(&held.store);
+    let disjoint = thread::spawn(move || {
+        store.transaction_with_read_set(|tx| {
+            tx.get(b"other")?;
+            tx.put(b"other", b"joined")
+        })
+    });
+    // A disjoint transaction validates and queues behind the atomic.
+    wait_for_reserved(&held.store, 2);
+
+    let store = Arc::clone(&held.store);
+    let finished = Arc::new(AtomicBool::new(false));
+    let done = Arc::clone(&finished);
+    let overlapping = thread::spawn(move || {
+        let result = store.transaction_with_read_set(|tx| {
+            tx.get(b"n")?;
+            tx.put(b"copy", b"x")
+        });
+        done.store(true, Ordering::SeqCst);
+        result
+    });
+    // A transaction that read the atomic's key neither queues nor returns.
+    thread::sleep(Duration::from_millis(50));
+    assert_eq!(reserved(&held.store), 2);
+    assert!(!finished.load(Ordering::SeqCst));
+    assert_eq!(
+        held.store.get(b"n").unwrap(),
+        None,
+        "not visible before sync"
+    );
+
+    held.resume.send(()).unwrap();
+    assert_eq!(atomic.join().unwrap().unwrap(), 5);
+    disjoint.join().unwrap().unwrap();
+    let error = overlapping.join().unwrap().unwrap_err();
+    assert!(crate::is_transaction_conflict(&error), "{error}");
+    assert_eq!(held.store.get(b"copy").unwrap(), None);
+    drop(held);
+    let reopened = Store::open(dir.path()).unwrap();
+    assert_eq!(
+        reopened.get(b"n").unwrap().as_deref(),
+        Some(&5i64.to_le_bytes()[..])
+    );
+    assert_eq!(
+        reopened.get(b"other").unwrap().as_deref(),
+        Some(&b"joined"[..])
+    );
+}
