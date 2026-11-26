@@ -320,6 +320,9 @@ fn exec_create_index(
         }
         col_indices.push(idx);
     }
+    if !table.indexes.iter().any(|index| index.name == stmt.name) {
+        omit_explicit_nulls(tx, table, &col_indices)?;
+    }
     let index_def = IndexDef {
         name: stmt.name.clone(),
         columns: col_indices,
@@ -327,6 +330,50 @@ fn exec_create_index(
     };
     catalog::create_index(tx, &cached_table, index_def, stmt.if_not_exists)?;
     Ok(SqlOutcome::IndexCreated)
+}
+
+/// Rows written before NULL was stored by omission may hold explicit JSON
+/// `null` in an indexed column. Document indexes treat `null` as a value but
+/// skip missing fields, so rewrite those rows to omit the field before the
+/// index is built, in the same transaction. SQL reads both forms as NULL.
+fn omit_explicit_nulls(
+    tx: &mut DocumentTransaction<'_, '_>,
+    table: &TableDef,
+    columns: &[usize],
+) -> Result<(), SqlError> {
+    let names = columns
+        .iter()
+        .map(|&idx| table.columns[idx].name.as_str())
+        .collect::<Vec<_>>();
+    let mut rewrites = Vec::new();
+    let mut after: Option<String> = None;
+    loop {
+        let page = tx
+            .scan_documents(&table.name, after.as_deref(), MAX_SCAN_ENTRIES)
+            .map_err(classify_io_error)?;
+        let Some(last) = page.last() else { break };
+        after = Some(last.id.clone());
+        for entry in page {
+            let Value::Object(mut fields) = entry.document else {
+                continue;
+            };
+            let mut changed = false;
+            for name in &names {
+                if matches!(fields.get(*name), Some(Value::Null)) {
+                    fields.remove(*name);
+                    changed = true;
+                }
+            }
+            if changed {
+                rewrites.push((entry.id, Value::Object(fields)));
+            }
+        }
+    }
+    for (id, document) in rewrites {
+        tx.replace(&table.name, &id, &document, false)
+            .map_err(classify_io_error)?;
+    }
+    Ok(())
 }
 
 struct BoundInsertPlan {

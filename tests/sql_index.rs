@@ -961,3 +961,60 @@ fn concurrent_unique_inserts_allow_exactly_one_winner() {
     let ckpt: &'static CheckpointStore = Box::leak(Box::new(ckpt));
     run_race(|| SqlDatabase::new(DocumentDatabase::with_checkpoint_store(ckpt)));
 }
+
+/// Rows written before NULL was stored by omission hold explicit JSON `null`.
+/// Building a UNIQUE index over them must still allow any number of NULLs.
+#[test]
+fn unique_index_over_legacy_explicit_null_rows_allows_many_nulls() {
+    for_both_sql(|db, backend| {
+        db.execute(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, u INTEGER, v TEXT)",
+            &[],
+        )
+        .unwrap();
+        let documents = db.document_database();
+        for id in 1i64..=4 {
+            let key = format!("i:{:016x}", (id ^ i64::MIN) as u64);
+            let v = if id <= 2 {
+                serde_json::json!("same")
+            } else {
+                serde_json::json!(null)
+            };
+            documents
+                .insert("t", &key, &serde_json::json!({"id": id, "u": null, "v": v}))
+                .unwrap();
+        }
+        db.execute("CREATE UNIQUE INDEX tu ON t (u)", &[])
+            .unwrap_or_else(|error| panic!("{backend}: single-column index: {error}"));
+        db.execute("CREATE UNIQUE INDEX tuv ON t (u, v)", &[])
+            .unwrap_or_else(|error| panic!("{backend}: compound index: {error}"));
+        verify_collection_ok(db, "t");
+        let SqlOutcome::Rows { rows, .. } = db
+            .execute("SELECT id FROM t WHERE u IS NULL AND v IS NULL", &[])
+            .unwrap()
+        else {
+            panic!("expected rows")
+        };
+        assert_eq!(rows.len(), 2, "{backend}");
+        db.execute("INSERT INTO t VALUES (5, NULL, NULL)", &[])
+            .unwrap();
+        db.execute("UPDATE t SET u = 7 WHERE id = 1", &[]).unwrap();
+        assert!(
+            matches!(
+                db.execute("UPDATE t SET u = 7 WHERE id = 2", &[]),
+                Err(SqlError::Constraint(_))
+            ),
+            "{backend}"
+        );
+        db.execute("UPDATE t SET u = NULL WHERE id = 1", &[])
+            .unwrap();
+        db.execute("UPDATE t SET u = 7 WHERE id = 2", &[]).unwrap();
+        let SqlOutcome::Rows { rows, .. } =
+            db.execute("SELECT id FROM t WHERE u = 7", &[]).unwrap()
+        else {
+            panic!("expected rows")
+        };
+        assert_eq!(rows, vec![vec![SqlValue::Integer(2)]], "{backend}");
+        verify_collection_ok(db, "t");
+    });
+}
