@@ -284,14 +284,22 @@ pub(crate) fn reject_unbudgeted_writer(store: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn remove(store: &Path) -> io::Result<()> {
-    for name in [BUDGET_FILE, BUDGET_TEMP] {
-        match fs::remove_file(store.join(name)) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
-            _ => {}
-        }
+fn remove(store: &Path) -> Result<(), crate::PublicationFailure> {
+    use crate::PublicationFailure::{NotPublished, OutcomeUnknown};
+    let remove = |name| match fs::remove_file(store.join(name)) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    };
+    remove(BUDGET_FILE).map_err(NotPublished)?;
+    #[cfg(test)]
+    if FAIL_RECORD_DIRECTORY_SYNC.get() {
+        return Err(OutcomeUnknown(io::Error::other(
+            "injected record directory sync failure",
+        )));
     }
-    File::open(store)?.sync_all()
+    remove(BUDGET_TEMP)
+        .and_then(|()| File::open(store)?.sync_all())
+        .map_err(OutcomeUnknown)
 }
 
 /// Owned by exactly one store generation as its last-declared field.
@@ -735,13 +743,19 @@ impl DiskBudget {
 
     /// Changes the persistent limit. A limit below the charged total returns
     /// `WouldBlock` and leaves the record unchanged.
-    pub(crate) fn set_limit(&self, limit: u64) -> io::Result<()> {
-        let mut state = lock_reliable(&self.state)?;
-        if self.status_locked(&mut state)?.charged > limit {
-            return Err(io::Error::new(
+    pub(crate) fn set_limit(&self, limit: u64) -> Result<(), crate::PublicationFailure> {
+        use crate::PublicationFailure::{NotPublished, OutcomeUnknown};
+        let mut state = lock_reliable(&self.state).map_err(NotPublished)?;
+        if self
+            .status_locked(&mut state)
+            .map_err(NotPublished)?
+            .charged
+            > limit
+        {
+            return Err(NotPublished(io::Error::new(
                 io::ErrorKind::WouldBlock,
                 "disk budget limit is below the charged bytes",
-            ));
+            )));
         }
         let record = Record {
             limit,
@@ -752,11 +766,11 @@ impl DiskBudget {
                 state.limit = limit;
                 Ok(())
             }
-            Err(WriteFailure::NotPublished(error)) => Err(error),
+            Err(WriteFailure::NotPublished(error)) => Err(NotPublished(error)),
             Err(failure) => {
                 // Either limit may be the durable one; admit nothing more.
                 state.uncertain = true;
-                Err(failure.into_io())
+                Err(OutcomeUnknown(failure.into_io()))
             }
         }
     }
@@ -764,13 +778,20 @@ impl DiskBudget {
     /// Removes the record when nothing is outstanding or pinned. If removal
     /// fails, the budget stays attached and enforced, which is never less
     /// restrictive than a removed record.
-    pub(crate) fn remove(&self) -> io::Result<()> {
-        let mut state = lock_reliable(&self.state)?;
-        if state.pending != Pending::Idle || Self::pinned_locked(&mut state)? != 0 {
-            return Err(io::Error::new(
+    ///
+    /// A failure before the record is unlinked is `NotPublished`. Once it is
+    /// unlinked, a later failure is `OutcomeUnknown`: a reopen may or may not
+    /// find the record, while this handle keeps enforcing it.
+    pub(crate) fn remove(&self) -> Result<(), crate::PublicationFailure> {
+        use crate::PublicationFailure::NotPublished;
+        let mut state = lock_reliable(&self.state).map_err(NotPublished)?;
+        if state.pending != Pending::Idle
+            || Self::pinned_locked(&mut state).map_err(NotPublished)? != 0
+        {
+            return Err(NotPublished(io::Error::new(
                 io::ErrorKind::WouldBlock,
                 "disk budget still charges maintenance or pinned generations",
-            ));
+            )));
         }
         remove(&self.store)
     }

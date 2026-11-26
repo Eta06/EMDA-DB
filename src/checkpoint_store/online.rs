@@ -506,26 +506,55 @@ impl OnlineCheckpointStore {
     /// `WouldBlock` unchanged.
     /// Removing requires no outstanding maintenance or pinned generations.
     pub fn set_disk_budget(&self, limit: Option<u64>) -> io::Result<()> {
-        Access::check_not_active(self.id())?;
+        self.set_disk_budget_detailed(limit)
+            .map_err(|failure| match failure {
+                crate::PublicationFailure::NotPublished(error)
+                | crate::PublicationFailure::OutcomeUnknown(error) => error,
+            })
+    }
+
+    /// Like [`Self::set_disk_budget`], classifying a failure by whether the
+    /// budget record may have changed. `NotPublished` leaves the previous
+    /// record visible and this handle healthy. `OutcomeUnknown` means either
+    /// record may be durable: after an uncertain install or limit change the
+    /// handle refuses every admission until reopen, and after an uncertain
+    /// removal it keeps enforcing the old budget, which is never less strict
+    /// than the removed record. Reopen to load the visible record.
+    pub fn set_disk_budget_detailed(
+        &self,
+        limit: Option<u64>,
+    ) -> Result<(), crate::PublicationFailure> {
+        use crate::PublicationFailure::{NotPublished, OutcomeUnknown};
+        Access::check_not_active(self.id()).map_err(NotPublished)?;
         let _maintenance = match self.maintenance.try_lock() {
             Ok(guard) => guard,
             Err(TryLockError::WouldBlock) => {
-                return Err(io::Error::new(io::ErrorKind::WouldBlock, MaintenanceBusy));
+                return Err(NotPublished(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    MaintenanceBusy,
+                )));
             }
-            Err(TryLockError::Poisoned(_)) => return Err(uncertain()),
+            Err(TryLockError::Poisoned(_)) => return Err(NotPublished(uncertain())),
         };
-        let mut state = self.state.write().map_err(|_| uncertain())?;
+        let mut state = self.state.write().map_err(|_| NotPublished(uncertain()))?;
         if state.failed {
-            return Err(uncertain());
+            return Err(NotPublished(uncertain()));
         }
         let current = Arc::clone(&state.store);
-        let _writer = current.writers.write().map_err(|_| uncertain())?;
-        let existing = current.disk_budget()?;
+        let _writer = current
+            .writers
+            .write()
+            .map_err(|_| NotPublished(uncertain()))?;
+        let existing = current.disk_budget().map_err(NotPublished)?;
         match (existing, limit) {
             (Some(budget), Some(limit)) => budget.set_limit(limit),
             (Some(budget), None) => {
                 budget.remove()?;
-                *current.disk_budget.write().map_err(|_| uncertain())? = None;
+                // The record is gone; failing to detach keeps it enforced.
+                *current
+                    .disk_budget
+                    .write()
+                    .map_err(|_| OutcomeUnknown(uncertain()))? = None;
                 Ok(())
             }
             (None, None) => Ok(()),
@@ -535,15 +564,21 @@ impl OnlineCheckpointStore {
                 // checkpoint are measured below, and no snapshot can hold a
                 // slot or checkpoint that is no longer named.
                 let selected = current
-                    .read()?
+                    .read()
+                    .map_err(NotPublished)?
                     .selection
                     .as_ref()
                     .map(|selection| selection.checkpoint.clone());
-                if current.snapshot_budget_status()?.active != 0 {
-                    return Err(io::Error::new(
+                if current
+                    .snapshot_budget_status()
+                    .map_err(NotPublished)?
+                    .active
+                    != 0
+                {
+                    return Err(NotPublished(io::Error::new(
                         io::ErrorKind::WouldBlock,
                         "close snapshots before installing a disk budget",
-                    ));
+                    )));
                 }
                 let record = super::disk_budget::Record {
                     limit,
@@ -559,22 +594,29 @@ impl OnlineCheckpointStore {
                     )
                 };
                 // The record file itself will add one more record length.
-                let projected = open(record.clone())?
-                    .status()?
-                    .charged
-                    .checked_add(super::disk_budget::RECORD_BYTES as u64)
-                    .ok_or_else(|| io::Error::other("disk budget charge overflow"))?;
+                let projected = open(record.clone())
+                    .and_then(|budget| budget.status())
+                    .and_then(|status| {
+                        status
+                            .charged
+                            .checked_add(super::disk_budget::RECORD_BYTES as u64)
+                            .ok_or_else(|| io::Error::other("disk budget charge overflow"))
+                    })
+                    .map_err(NotPublished)?;
                 if projected > limit {
-                    return Err(io::Error::new(
+                    return Err(NotPublished(io::Error::new(
                         io::ErrorKind::WouldBlock,
                         "disk budget limit is below the charged bytes",
-                    ));
+                    )));
                 }
                 // Take the budget slot before publishing, so a poisoned lock
                 // fails with nothing published. Any failure at or after
                 // publication, including rebuilding the accounting, fences the
                 // whole handle until reopen, which loads the visible record.
-                let mut slot = current.disk_budget.write().map_err(|_| uncertain())?;
+                let mut slot = current
+                    .disk_budget
+                    .write()
+                    .map_err(|_| NotPublished(uncertain()))?;
                 let published =
                     super::disk_budget::write_tracked(&self.path, &record).and_then(|()| {
                         open(record).map_err(super::disk_budget::WriteFailure::Uncertain)
@@ -584,11 +626,13 @@ impl OnlineCheckpointStore {
                         *slot = Some(Arc::new(budget));
                         Ok(())
                     }
-                    Err(super::disk_budget::WriteFailure::NotPublished(error)) => Err(error),
+                    Err(super::disk_budget::WriteFailure::NotPublished(error)) => {
+                        Err(NotPublished(error))
+                    }
                     Err(failure) => {
                         drop(slot);
                         state.failed = true;
-                        Err(failure.into_io())
+                        Err(OutcomeUnknown(failure.into_io()))
                     }
                 }
             }

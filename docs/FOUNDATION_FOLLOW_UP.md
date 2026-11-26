@@ -258,6 +258,14 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   [Linux sync fault traces](../benchmarks/results/2026-11-24-retained-rotation-outcomes/README.md)
   and authority tests verify the previous or successor generation and
   acknowledged writes after each affected publication boundary.
+  `OnlineCheckpointStore::set_disk_budget_detailed` classifies disk-budget
+  installs, limit changes and removals. A refusal before the record changes
+  is `NotPublished` and leaves the handle healthy. A failure at or after the
+  rename or unlink is `OutcomeUnknown`. An uncertain install or limit
+  change fences the handle until reopen. An uncertain removal keeps the old
+  budget enforced. [Tests](../src/checkpoint_store/online/tests/budget_outcomes.rs)
+  inject a directory sync failure after each publication and check the
+  record a reopen loads. `set_disk_budget` returns the same errors as before.
 - [x] Inject errors during pending-tail witness updates and sync through
   ordinary, full bounded and suffix bounded managed rebuilds. Both witness
   formats report uncertain tail adoption, preserve the old checkpoint

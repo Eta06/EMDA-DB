@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add `OnlineCheckpointStore::set_disk_budget_detailed`, which returns a
+  `PublicationFailure` separating a refusal before the budget record
+  changes from an uncertain install, limit change or removal.
+
 - Add `OnlineCheckpointStore::set_retired_snapshot_log_limit` and
   `retired_snapshot_log_bytes`, matching `OnlineStore`. A per-handle limit
   on retired log history that owned snapshots still pin. A handoff that

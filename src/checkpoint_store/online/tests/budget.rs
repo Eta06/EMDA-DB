@@ -239,7 +239,7 @@ fn concurrent_appends_are_admitted_against_the_reservation() {
                         .unwrap()
                         .charged;
                     let budget = online.state.read().unwrap().store.disk_budget()?.unwrap();
-                    budget.set_limit(charged + step)?;
+                    budget.set_limit(charged + step).map_err(io::Error::other)?;
                     outcomes.push(online.with_store(|store| store.put(b"c", b"v")).is_ok());
                     let second = online.with_store(|store| store.put(b"d", b"v"));
                     outcomes.push(second.is_err_and(|error| is_full(&error)));
