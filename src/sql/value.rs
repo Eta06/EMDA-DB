@@ -35,6 +35,12 @@ pub const MAX_SQL_TEXT_BYTES: usize = 256 * 1024;
 pub const MAX_SQL_IDENTIFIER_BYTES: usize = 128;
 /// Maximum UTF-8 byte length of a `TEXT` primary key value (`256 - len("t:")`).
 pub const MAX_SQL_TEXT_PK_BYTES: usize = 254;
+/// Maximum columns per secondary index or `UNIQUE` constraint (matches document layer).
+pub(crate) const MAX_SQL_INDEX_COLUMNS: usize = 4;
+/// Maximum secondary indexes and `UNIQUE` constraints per table (matches document layer).
+pub(crate) const MAX_SQL_INDEXES_PER_TABLE: usize = 16;
+/// Maximum UTF-8 byte length of a `TEXT` value in a secondary index.
+pub(crate) const MAX_SQL_INDEX_TEXT_BYTES: usize = 256;
 
 /// Configurable per-database execution bounds, capped at documented hard maxima.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -204,6 +210,7 @@ impl SqlType {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SqlOutcome {
     TableCreated,
+    IndexCreated,
     Inserted {
         rows: usize,
     },
@@ -231,7 +238,7 @@ pub enum SqlError {
     },
     /// Type mismatch or non-finite/non-representable numeric conversion.
     Type(String),
-    /// Constraint violation (`NOT NULL`, duplicate primary key, `VARCHAR(n)` length, PK requirements).
+    /// Constraint violation (`NOT NULL`, duplicate primary key, `UNIQUE`, `VARCHAR(n)` length, PK requirements).
     Constraint(String),
     /// Referenced table does not exist.
     NoSuchTable(String),
@@ -239,6 +246,8 @@ pub enum SqlError {
     NoSuchColumn { table: String, column: String },
     /// Table or collection already exists.
     TableExists(String),
+    /// Index already exists on the table.
+    IndexExists(String),
     /// Documented or configured limit exceeded.
     Bounds(String),
     /// Positional parameter count mismatch.
@@ -282,6 +291,7 @@ impl fmt::Display for SqlError {
                 write!(f, "no such column: {table}.{column}")
             }
             Self::TableExists(name) => write!(f, "table already exists: {name}"),
+            Self::IndexExists(name) => write!(f, "index already exists: {name}"),
             Self::Bounds(msg) => write!(f, "bounds exceeded: {msg}"),
             Self::ParameterCount { expected, actual } => {
                 write!(

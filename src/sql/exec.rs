@@ -1,15 +1,19 @@
 //! Statement binding, expression evaluation, and transactional execution over `DocumentDatabase`.
-use super::catalog::{self, CachedTable, ColumnDef, TableCache, TableDef};
+use super::catalog::{self, CachedTable, ColumnDef, IndexDef, TableCache, TableDef};
 use super::parser::{
-    self, Assignment, CompareOp, CreateTableStmt, DeleteStmt, Expr, InsertStmt, LimitValue,
-    LiteralValue, NullsOrder, SelectColumns, SelectStmt, SqlStatement, Statement, UpdateStmt,
+    self, Assignment, CompareOp, CreateIndexStmt, CreateTableStmt, DeleteStmt, Expr, InsertStmt,
+    LimitValue, LiteralValue, NullsOrder, SelectColumns, SelectStmt, SqlStatement, Statement,
+    UpdateStmt,
 };
 use super::plan::{self, AccessPlan, UpperBound};
 use super::value::{
     MAX_SQL_TEXT_PK_BYTES, SqlError, SqlLimits, SqlOutcome, SqlType, SqlValue, coerce_for_column,
     compare_i64_f64, encode_i64_pk_bytes, exact_i64_to_f64,
 };
-use crate::document::{DocumentDatabase, DocumentTransaction, DocumentTransactionMode};
+use crate::document::{
+    DocumentDatabase, DocumentTransaction, DocumentTransactionMode, IndexBound, IndexCursor,
+    IndexQuery, IndexValue,
+};
 use crate::{MAX_SCAN_ENTRIES, TransactionFailure};
 use parking_lot::RwLock;
 use serde_json::{Map, Number, Value};
@@ -117,6 +121,7 @@ pub(crate) fn execute_statement(
 
     run_tx(db, |tx| match &stmt.inner {
         Statement::CreateTable(create) => exec_create_table(tx, create, limits),
+        Statement::CreateIndex(create_idx) => exec_create_index(tx, create_idx, cache),
         Statement::Insert(insert) => exec_insert(tx, stmt.stmt_id, insert, params, limits, cache),
         Statement::Select(select) => exec_select(
             tx,
@@ -234,6 +239,10 @@ fn is_engine_bounds_error(err: &io::Error) -> bool {
         "document scan exceeds the operation limit",
         "key exceeds 1024 bytes",
         "value exceeds 16 MiB",
+        "indexed string exceeds 256 bytes",
+        "collection exceeds 16 indexes",
+        "an index must have between 1 and 4 fields",
+        "lookup response exceeds its byte limit",
         "suffix byte limit exceeded",
         "suffix operation limit exceeded",
         "suffix work limit exceeded",
@@ -265,14 +274,63 @@ fn exec_create_table(
             not_null: col.not_null,
         })
         .collect();
-    let def = TableDef::new(stmt.name.clone(), columns, stmt.primary_key_index)?;
+    let indexes = stmt
+        .unique_constraints
+        .iter()
+        .enumerate()
+        .map(|(i, cols)| IndexDef {
+            name: format!("__sql_u_{i}"),
+            columns: cols.clone(),
+            unique: true,
+        })
+        .collect();
+    let def = TableDef::new(stmt.name.clone(), columns, stmt.primary_key_index, indexes)?;
     catalog::create_table(tx, &def, stmt.if_not_exists)?;
     Ok(SqlOutcome::TableCreated)
 }
 
+fn exec_create_index(
+    tx: &mut DocumentTransaction<'_, '_>,
+    stmt: &CreateIndexStmt,
+    cache: &SqlCache,
+) -> Result<SqlOutcome, SqlError> {
+    let cached_table = catalog::load_table_cached(tx, &stmt.table, &cache.tables)?;
+    let table = &cached_table.def;
+    let mut col_indices = Vec::with_capacity(stmt.columns.len());
+    for col_name in &stmt.columns {
+        let idx = table
+            .column_index(col_name)
+            .ok_or_else(|| SqlError::NoSuchColumn {
+                table: table.name.clone(),
+                column: col_name.clone(),
+            })?;
+        let col = &table.columns[idx];
+        if !matches!(
+            col.col_type,
+            SqlType::Integer | SqlType::Text { .. } | SqlType::Boolean
+        ) {
+            return Err(SqlError::Unsupported {
+                feature: format!(
+                    "secondary index on {} column '{}'",
+                    col.col_type.display_name(),
+                    col.name
+                ),
+                offset: None,
+            });
+        }
+        col_indices.push(idx);
+    }
+    let index_def = IndexDef {
+        name: stmt.name.clone(),
+        columns: col_indices,
+        unique: stmt.unique,
+    };
+    catalog::create_index(tx, &cached_table, index_def, stmt.if_not_exists)?;
+    Ok(SqlOutcome::IndexCreated)
+}
+
 struct BoundInsertPlan {
     target_indices: Vec<usize>,
-    identity_order: bool,
 }
 
 fn get_or_build_insert_plan(
@@ -286,7 +344,7 @@ fn get_or_build_insert_plan(
         return Ok(Arc::clone(plan));
     }
     let table = &cached_table.def;
-    let (target_indices, identity_order) = match &stmt.columns {
+    let target_indices = match &stmt.columns {
         Some(cols) => {
             let mut indices = Vec::with_capacity(cols.len());
             for col_name in cols {
@@ -312,16 +370,11 @@ fn get_or_build_insert_plan(
                     )));
                 }
             }
-            let identity = indices.len() == table.columns.len()
-                && indices.iter().enumerate().all(|(i, &idx)| i == idx);
-            (indices, identity)
+            indices
         }
-        None => ((0..table.columns.len()).collect(), true),
+        None => (0..table.columns.len()).collect(),
     };
-    let plan = Arc::new(BoundInsertPlan {
-        target_indices,
-        identity_order,
-    });
+    let plan = Arc::new(BoundInsertPlan { target_indices });
     let mut guard = cache.insert_plans.write();
     if guard.len() >= MAX_CACHED_PLANS {
         guard.clear();
@@ -523,13 +576,8 @@ fn exec_insert(
             if col_idx == pk_idx {
                 pk_val = maybe_pk;
             }
-            obj.insert(col.name.clone(), json_val);
-        }
-        if !plan.identity_order {
-            for col in &table.columns {
-                if !obj.contains_key(&col.name) {
-                    obj.insert(col.name.clone(), Value::Null);
-                }
+            if !json_val.is_null() {
+                obj.insert(col.name.clone(), json_val);
             }
         }
         let pk = pk_val
@@ -538,13 +586,8 @@ fn exec_insert(
         let mut txt_buf = [0u8; 256];
         let doc_id = encode_insert_pk_stack(&pk, pk_type, &mut i64_buf, &mut txt_buf)?;
         let doc = Value::Object(obj);
-        tx.insert(&table.name, doc_id, &doc).map_err(|err| {
-            if err.kind() == io::ErrorKind::AlreadyExists {
-                SqlError::Constraint(format!("duplicate primary key on table '{}'", table.name))
-            } else {
-                classify_io_error(err)
-            }
-        })?;
+        tx.insert(&table.name, doc_id, &doc)
+            .map_err(|err| map_write_constraint_error(err, &table.name))?;
         return Ok(SqlOutcome::Inserted { rows: 1 });
     }
 
@@ -572,13 +615,8 @@ fn exec_insert(
             if col_idx == pk_idx {
                 pk_val = maybe_pk;
             }
-            obj.insert(col.name.clone(), json_val);
-        }
-        if !plan.identity_order {
-            for col in &table.columns {
-                if !obj.contains_key(&col.name) {
-                    obj.insert(col.name.clone(), Value::Null);
-                }
+            if !json_val.is_null() {
+                obj.insert(col.name.clone(), json_val);
             }
         }
         let pk = pk_val
@@ -615,27 +653,34 @@ fn exec_insert(
 
     let inserted = prepared_rows.len();
     for (doc_id, doc) in prepared_rows {
-        tx.insert(&table.name, &doc_id, &doc).map_err(|err| {
-            if err.kind() == io::ErrorKind::AlreadyExists {
-                SqlError::Constraint(format!("duplicate primary key on table '{}'", table.name))
-            } else {
-                classify_io_error(err)
-            }
-        })?;
+        tx.insert(&table.name, &doc_id, &doc)
+            .map_err(|err| map_write_constraint_error(err, &table.name))?;
     }
     Ok(SqlOutcome::Inserted { rows: inserted })
 }
 
+fn map_write_constraint_error(err: io::Error, table_name: &str) -> SqlError {
+    if err.kind() == io::ErrorKind::AlreadyExists {
+        if err.to_string().contains("unique") {
+            return SqlError::Constraint(format!(
+                "UNIQUE constraint failed on table '{table_name}'"
+            ));
+        }
+        return SqlError::Constraint(format!("duplicate primary key on table '{table_name}'"));
+    }
+    classify_io_error(err)
+}
+
 #[derive(Clone, Copy, Debug)]
-struct BoundOrderBy {
-    col_idx: usize,
-    desc: bool,
-    nulls_first: bool,
+pub(crate) struct BoundOrderBy {
+    pub(crate) col_idx: usize,
+    pub(crate) desc: bool,
+    pub(crate) nulls_first: bool,
 }
 
 struct SortRow {
     keys: Vec<SqlValue>,
-    scan_seq: usize,
+    doc_id: String,
     verified_pk: Option<i64>,
     obj: Map<String, Value>,
 }
@@ -662,6 +707,34 @@ impl PartialOrd for HeapSortRow {
 impl Ord for HeapSortRow {
     fn cmp(&self, other: &Self) -> Ordering {
         compare_sort_rows(&self.row, &other.row, &self.specs)
+    }
+}
+
+struct PkSortRow {
+    doc_id: String,
+    verified_pk: Option<i64>,
+    obj: Map<String, Value>,
+    desc: bool,
+}
+
+impl PartialEq for PkSortRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.doc_id == other.doc_id
+    }
+}
+
+impl Eq for PkSortRow {}
+
+impl PartialOrd for PkSortRow {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PkSortRow {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let ord = self.doc_id.as_bytes().cmp(other.doc_id.as_bytes());
+        if self.desc { ord.reverse() } else { ord }
     }
 }
 
@@ -697,12 +770,12 @@ fn compare_sort_rows(a: &SortRow, b: &SortRow, specs: &[BoundOrderBy]) -> Orderi
             return ord;
         }
     }
-    a.scan_seq.cmp(&b.scan_seq)
+    a.doc_id.as_bytes().cmp(b.doc_id.as_bytes())
 }
 
 fn compare_sort_keys_to_row(
     keys: &[SqlValue],
-    scan_seq: usize,
+    doc_id: &str,
     other: &SortRow,
     specs: &[BoundOrderBy],
 ) -> Ordering {
@@ -712,7 +785,7 @@ fn compare_sort_keys_to_row(
             return ord;
         }
     }
-    scan_seq.cmp(&other.scan_seq)
+    doc_id.as_bytes().cmp(other.doc_id.as_bytes())
 }
 
 fn decode_order_keys(
@@ -1324,62 +1397,85 @@ fn exec_select(
     }
 
     let bound_filter = plan.filter.as_ref().map(|f| &f.expr);
+    let access = if force_full_scan {
+        AccessPlan::FullScan
+    } else {
+        plan::plan_access(bound_filter, table, &plan.order_by, limit.is_some(), params)
+    };
+    if matches!(access, AccessPlan::Empty) {
+        return Ok(SqlOutcome::Rows {
+            columns: plan.col_names.clone(),
+            rows: Vec::new(),
+        });
+    }
+
     let rows = match plan.order_strategy {
         OrderStrategy::PkAsc => {
-            // Streaming path in ascending primary-key order: stops after OFFSET + LIMIT matches.
-            let mut skipped = 0usize;
-            let mut rows = Vec::new();
-            let stream_cap = if bound_filter.is_none() {
-                limit.map(|l| offset.saturating_add(l))
-            } else {
-                None
+            let can_stream = match &access {
+                AccessPlan::Index {
+                    preserves_pk_asc,
+                    satisfies_order_by,
+                    ..
+                } => *preserves_pk_asc || *satisfies_order_by,
+                _ => true,
             };
-            visit_matching_rows(
-                tx,
-                table,
-                bound_filter,
-                params,
-                limits,
-                force_full_scan,
-                stream_cap,
-                |_doc_id, verified_pk, obj| {
-                    if skipped < offset {
-                        skipped += 1;
-                        return Ok(ControlFlow::Continue(()));
-                    }
-                    if rows.len() >= limits.max_select_rows {
-                        return Err(SqlError::Bounds(format!(
-                            "SELECT result exceeds max_select_rows ({})",
-                            limits.max_select_rows
-                        )));
-                    }
-                    rows.push(project_row_with_pk(
-                        obj,
-                        table,
-                        &plan.proj_indices,
-                        &plan.proj_is_last,
-                        verified_pk,
-                    )?);
-                    if Some(rows.len()) == limit {
-                        Ok(ControlFlow::Break(()))
-                    } else {
-                        Ok(ControlFlow::Continue(()))
-                    }
-                },
-            )?;
-            rows
-        }
-        OrderStrategy::PkDesc => {
-            if let Some(lim) = limit {
-                let keep_cap = (offset as u128).saturating_add(lim as u128);
-                let mut ring: VecDeque<(Option<i64>, Map<String, Value>)> = VecDeque::new();
-                visit_matching_rows(
+            if can_stream {
+                exec_streaming_select(
                     tx,
                     table,
+                    &plan,
+                    &access,
                     bound_filter,
                     params,
                     limits,
-                    force_full_scan,
+                    limit,
+                    offset,
+                )?
+            } else {
+                exec_pk_sorted_select(
+                    tx,
+                    table,
+                    &plan,
+                    &access,
+                    bound_filter,
+                    params,
+                    limits,
+                    limit,
+                    offset,
+                    false,
+                )?
+            }
+        }
+        OrderStrategy::PkDesc => {
+            let preserves_pk_asc = match &access {
+                AccessPlan::Index {
+                    preserves_pk_asc, ..
+                } => *preserves_pk_asc,
+                _ => true,
+            };
+            if !preserves_pk_asc {
+                exec_pk_sorted_select(
+                    tx,
+                    table,
+                    &plan,
+                    &access,
+                    bound_filter,
+                    params,
+                    limits,
+                    limit,
+                    offset,
+                    true,
+                )?
+            } else if let Some(lim) = limit {
+                let keep_cap = (offset as u128).saturating_add(lim as u128);
+                let mut ring: VecDeque<(Option<i64>, Map<String, Value>)> = VecDeque::new();
+                visit_access_rows(
+                    tx,
+                    table,
+                    &access,
+                    bound_filter,
+                    params,
+                    limits,
                     None,
                     |_doc_id, verified_pk, obj| {
                         if (ring.len() as u128) == keep_cap {
@@ -1430,13 +1526,13 @@ fn exec_select(
                 }
             } else {
                 let mut rows = Vec::new();
-                visit_matching_rows(
+                visit_access_rows(
                     tx,
                     table,
+                    &access,
                     bound_filter,
                     params,
                     limits,
-                    force_full_scan,
                     None,
                     |_doc_id, verified_pk, obj| {
                         if rows.len() >= limits.max_select_rows {
@@ -1466,23 +1562,38 @@ fn exec_select(
             }
         }
         OrderStrategy::General => {
-            if let Some(lim) = limit {
-                let keep_cap = (offset as u128).saturating_add(lim as u128);
-                let specs: Rc<[BoundOrderBy]> = Rc::from(plan.order_by.as_slice());
-                let mut heap: BinaryHeap<HeapSortRow> = BinaryHeap::new();
-                let mut scan_seq = 0usize;
-                visit_matching_rows(
+            if matches!(
+                access,
+                AccessPlan::Index {
+                    satisfies_order_by: true,
+                    ..
+                }
+            ) {
+                exec_streaming_select(
                     tx,
                     table,
+                    &plan,
+                    &access,
                     bound_filter,
                     params,
                     limits,
-                    force_full_scan,
+                    limit,
+                    offset,
+                )?
+            } else if let Some(lim) = limit {
+                let keep_cap = (offset as u128).saturating_add(lim as u128);
+                let specs: Rc<[BoundOrderBy]> = Rc::from(plan.order_by.as_slice());
+                let mut heap: BinaryHeap<HeapSortRow> = BinaryHeap::new();
+                visit_access_rows(
+                    tx,
+                    table,
+                    &access,
+                    bound_filter,
+                    params,
+                    limits,
                     None,
-                    |_doc_id, verified_pk, obj| {
+                    |doc_id, verified_pk, obj| {
                         let keys = decode_order_keys(&obj, table, &specs)?;
-                        let seq = scan_seq;
-                        scan_seq += 1;
                         if (heap.len() as u128) < keep_cap {
                             if heap.len() >= limits.max_sort_rows {
                                 return Err(SqlError::Bounds(format!(
@@ -1499,19 +1610,19 @@ fn exec_select(
                             heap.push(HeapSortRow {
                                 row: SortRow {
                                     keys,
-                                    scan_seq: seq,
+                                    doc_id,
                                     verified_pk,
                                     obj,
                                 },
                                 specs: Rc::clone(&specs),
                             });
                         } else if let Some(mut top) = heap.peek_mut() {
-                            if compare_sort_keys_to_row(&keys, seq, &top.row, &specs)
+                            if compare_sort_keys_to_row(&keys, &doc_id, &top.row, &specs)
                                 == Ordering::Less
                             {
                                 top.row = SortRow {
                                     keys,
-                                    scan_seq: seq,
+                                    doc_id,
                                     verified_pk,
                                     obj,
                                 };
@@ -1545,16 +1656,15 @@ fn exec_select(
                 }
             } else {
                 let mut collected = Vec::new();
-                let mut scan_seq = 0usize;
-                visit_matching_rows(
+                visit_access_rows(
                     tx,
                     table,
+                    &access,
                     bound_filter,
                     params,
                     limits,
-                    force_full_scan,
                     None,
-                    |_doc_id, verified_pk, obj| {
+                    |doc_id, verified_pk, obj| {
                         if collected.len() >= limits.max_select_rows {
                             return Err(SqlError::Bounds(format!(
                                 "SELECT result exceeds max_select_rows ({})",
@@ -1568,11 +1678,9 @@ fn exec_select(
                             )));
                         }
                         let keys = decode_order_keys(&obj, table, &plan.order_by)?;
-                        let seq = scan_seq;
-                        scan_seq += 1;
                         collected.push(SortRow {
                             keys,
-                            scan_seq: seq,
+                            doc_id,
                             verified_pk,
                             obj,
                         });
@@ -1599,6 +1707,191 @@ fn exec_select(
         columns: plan.col_names.clone(),
         rows,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exec_streaming_select(
+    tx: &DocumentTransaction<'_, '_>,
+    table: &TableDef,
+    plan: &BoundSelectPlan,
+    access: &AccessPlan,
+    bound_filter: Option<&BoundExpr>,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    limit: Option<usize>,
+    offset: usize,
+) -> Result<Vec<Vec<SqlValue>>, SqlError> {
+    let mut skipped = 0usize;
+    let mut rows = Vec::new();
+    let stream_cap = if bound_filter.is_none() {
+        limit.map(|l| offset.saturating_add(l))
+    } else {
+        None
+    };
+    visit_access_rows(
+        tx,
+        table,
+        access,
+        bound_filter,
+        params,
+        limits,
+        stream_cap,
+        |_doc_id, verified_pk, obj| {
+            if skipped < offset {
+                skipped += 1;
+                return Ok(ControlFlow::Continue(()));
+            }
+            if rows.len() >= limits.max_select_rows {
+                return Err(SqlError::Bounds(format!(
+                    "SELECT result exceeds max_select_rows ({})",
+                    limits.max_select_rows
+                )));
+            }
+            rows.push(project_row_with_pk(
+                obj,
+                table,
+                &plan.proj_indices,
+                &plan.proj_is_last,
+                verified_pk,
+            )?);
+            if Some(rows.len()) == limit {
+                Ok(ControlFlow::Break(()))
+            } else {
+                Ok(ControlFlow::Continue(()))
+            }
+        },
+    )?;
+    Ok(rows)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exec_pk_sorted_select(
+    tx: &DocumentTransaction<'_, '_>,
+    table: &TableDef,
+    plan: &BoundSelectPlan,
+    access: &AccessPlan,
+    bound_filter: Option<&BoundExpr>,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    limit: Option<usize>,
+    offset: usize,
+    desc: bool,
+) -> Result<Vec<Vec<SqlValue>>, SqlError> {
+    if let Some(lim) = limit {
+        let keep_cap = (offset as u128).saturating_add(lim as u128);
+        let mut heap: BinaryHeap<PkSortRow> = BinaryHeap::new();
+        visit_access_rows(
+            tx,
+            table,
+            access,
+            bound_filter,
+            params,
+            limits,
+            None,
+            |doc_id, verified_pk, obj| {
+                if (heap.len() as u128) < keep_cap {
+                    if heap.len() >= limits.max_sort_rows {
+                        return Err(SqlError::Bounds(format!(
+                            "sort row count exceeds max_sort_rows ({})",
+                            limits.max_sort_rows
+                        )));
+                    }
+                    if offset == 0 && heap.len() >= limits.max_select_rows {
+                        return Err(SqlError::Bounds(format!(
+                            "SELECT result exceeds max_select_rows ({})",
+                            limits.max_select_rows
+                        )));
+                    }
+                    heap.push(PkSortRow {
+                        doc_id,
+                        verified_pk,
+                        obj,
+                        desc,
+                    });
+                } else if let Some(mut top) = heap.peek_mut() {
+                    let ord = doc_id.as_bytes().cmp(top.doc_id.as_bytes());
+                    let is_better = if desc {
+                        ord == Ordering::Greater
+                    } else {
+                        ord == Ordering::Less
+                    };
+                    if is_better {
+                        *top = PkSortRow {
+                            doc_id,
+                            verified_pk,
+                            obj,
+                            desc,
+                        };
+                    }
+                }
+                Ok(ControlFlow::Continue(()))
+            },
+        )?;
+        if heap.len() <= offset {
+            return Ok(Vec::new());
+        }
+        let result_len = heap.len() - offset;
+        if result_len > limits.max_select_rows {
+            return Err(SqlError::Bounds(format!(
+                "SELECT result exceeds max_select_rows ({})",
+                limits.max_select_rows
+            )));
+        }
+        let sorted = heap.into_sorted_vec();
+        let mut rows = Vec::with_capacity(result_len);
+        for entry in sorted.into_iter().skip(offset) {
+            rows.push(project_row_with_pk(
+                entry.obj,
+                table,
+                &plan.proj_indices,
+                &plan.proj_is_last,
+                entry.verified_pk,
+            )?);
+        }
+        Ok(rows)
+    } else {
+        let mut collected = Vec::new();
+        visit_access_rows(
+            tx,
+            table,
+            access,
+            bound_filter,
+            params,
+            limits,
+            None,
+            |doc_id, verified_pk, obj| {
+                if collected.len() >= limits.max_select_rows {
+                    return Err(SqlError::Bounds(format!(
+                        "SELECT result exceeds max_select_rows ({})",
+                        limits.max_select_rows
+                    )));
+                }
+                if collected.len() >= limits.max_sort_rows {
+                    return Err(SqlError::Bounds(format!(
+                        "sort row count exceeds max_sort_rows ({})",
+                        limits.max_sort_rows
+                    )));
+                }
+                collected.push((doc_id, verified_pk, obj));
+                Ok(ControlFlow::Continue(()))
+            },
+        )?;
+        collected.sort_unstable_by(|a, b| {
+            let ord = a.0.as_bytes().cmp(b.0.as_bytes());
+            if desc { ord.reverse() } else { ord }
+        });
+        let mut rows = Vec::with_capacity(collected.len());
+        for (_doc_id, verified_pk, obj) in collected {
+            rows.push(project_row_with_pk(
+                obj,
+                table,
+                &plan.proj_indices,
+                &plan.proj_is_last,
+                verified_pk,
+            )?);
+        }
+        Ok(rows)
+    }
 }
 
 fn get_or_build_update_plan(
@@ -1735,8 +2028,12 @@ fn exec_update(
                 updates.push((col, coerced));
             }
             for (col, val) in updates {
-                let json_val = sql_value_to_json(&val, &col.name)?;
-                obj.insert(col.name.clone(), json_val);
+                if matches!(val, SqlValue::Null) {
+                    obj.remove(&col.name);
+                } else {
+                    let json_val = sql_value_to_json(&val, &col.name)?;
+                    obj.insert(col.name.clone(), json_val);
+                }
             }
             matched.push((doc_id, Value::Object(obj)));
             Ok(ControlFlow::Continue(()))
@@ -1746,7 +2043,7 @@ fn exec_update(
     let updated = matched.len();
     for (doc_id, doc) in matched {
         tx.replace(&table.name, &doc_id, &doc, false)
-            .map_err(classify_io_error)?;
+            .map_err(|err| map_write_constraint_error(err, &table.name))?;
     }
     Ok(SqlOutcome::Updated { rows: updated })
 }
@@ -1822,22 +2119,37 @@ fn visit_matching_rows(
     limits: &SqlLimits,
     force_full_scan: bool,
     stream_cap: Option<usize>,
+    on_match: impl FnMut(String, Option<i64>, Map<String, Value>) -> Result<ControlFlow<()>, SqlError>,
+) -> Result<(), SqlError> {
+    let plan = if force_full_scan {
+        AccessPlan::FullScan
+    } else {
+        plan::plan_access(filter, table, &[], false, params)
+    };
+    visit_access_rows(
+        tx, table, &plan, filter, params, limits, stream_cap, on_match,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn visit_access_rows(
+    tx: &DocumentTransaction<'_, '_>,
+    table: &TableDef,
+    plan: &AccessPlan,
+    filter: Option<&BoundExpr>,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    stream_cap: Option<usize>,
     mut on_match: impl FnMut(
         String,
         Option<i64>,
         Map<String, Value>,
     ) -> Result<ControlFlow<()>, SqlError>,
 ) -> Result<(), SqlError> {
-    let plan = if force_full_scan {
-        AccessPlan::FullScan
-    } else {
-        plan::plan_access(filter, table, params)
-    };
-
     match plan {
         AccessPlan::Empty => Ok(()),
-        AccessPlan::Point { doc_id } => {
-            let Some(doc) = tx.get(&table.name, &doc_id).map_err(classify_io_error)? else {
+        AccessPlan::PkPoint { doc_id } => {
+            let Some(doc) = tx.get(&table.name, doc_id).map_err(classify_io_error)? else {
                 return Ok(());
             };
             if 1 > limits.max_visited_rows {
@@ -1847,13 +2159,13 @@ fn visit_matching_rows(
                 )));
             }
             let obj = doc_into_object(doc)?;
-            let verified_pk = verify_doc_pk_id(table, &doc_id, &obj)?;
+            let verified_pk = verify_doc_pk_id(table, doc_id, &obj)?;
             if eval_where_doc(filter, table, &obj, params)? {
-                let _ = on_match(doc_id, verified_pk, obj)?;
+                let _ = on_match(doc_id.clone(), verified_pk, obj)?;
             }
             Ok(())
         }
-        AccessPlan::Range {
+        AccessPlan::PkRange {
             after_id,
             upper,
             max_exact_rows,
@@ -1863,9 +2175,30 @@ fn visit_matching_rows(
             filter,
             params,
             limits,
-            after_id,
-            &upper,
-            max_exact_rows,
+            after_id.clone(),
+            upper,
+            *max_exact_rows,
+            stream_cap,
+            on_match,
+        ),
+        AccessPlan::Index {
+            index_idx,
+            equal,
+            lower,
+            upper,
+            unique_equality,
+            ..
+        } => visit_index_rows(
+            tx,
+            table,
+            &table.indexes[*index_idx].name,
+            equal,
+            lower.as_ref(),
+            upper.as_ref(),
+            *unique_equality,
+            filter,
+            params,
+            limits,
             stream_cap,
             on_match,
         ),
@@ -1881,6 +2214,86 @@ fn visit_matching_rows(
             stream_cap,
             on_match,
         ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn visit_index_rows(
+    tx: &DocumentTransaction<'_, '_>,
+    table: &TableDef,
+    index_name: &str,
+    equal: &[IndexValue],
+    lower: Option<&IndexBound>,
+    upper: Option<&IndexBound>,
+    unique_equality: bool,
+    filter: Option<&BoundExpr>,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    mut stream_cap: Option<usize>,
+    mut on_match: impl FnMut(
+        String,
+        Option<i64>,
+        Map<String, Value>,
+    ) -> Result<ControlFlow<()>, SqlError>,
+) -> Result<(), SqlError> {
+    const MAX_INDEX_QUERY_DOCUMENTS: usize = 256;
+    let mut visited = 0usize;
+    let mut after: Option<IndexCursor> = None;
+
+    loop {
+        let remaining_visit = limits.max_visited_rows.saturating_sub(visited);
+        let mut page_limit = remaining_visit
+            .saturating_add(1)
+            .clamp(1, MAX_INDEX_QUERY_DOCUMENTS);
+        if unique_equality {
+            page_limit = page_limit.min(2);
+        }
+        if let Some(cap) = stream_cap {
+            if cap == 0 {
+                return Ok(());
+            }
+            page_limit = page_limit.min(cap);
+        }
+        let query = IndexQuery {
+            equal: equal.to_vec(),
+            lower: lower.cloned(),
+            upper: upper.cloned(),
+            after: after.take(),
+            limit: page_limit,
+        };
+        let page = tx
+            .query_index(&table.name, index_name, &query)
+            .map_err(classify_io_error)?;
+        if page.documents.is_empty() {
+            return Ok(());
+        }
+        let done = unique_equality
+            || (page.plan.entries_read < page_limit
+                && page.plan.returned == page.plan.entries_read);
+        after = page.next;
+
+        for entry in page.documents {
+            visited += 1;
+            if visited > limits.max_visited_rows {
+                return Err(SqlError::Bounds(format!(
+                    "visited row count exceeds max_visited_rows ({})",
+                    limits.max_visited_rows
+                )));
+            }
+            let obj = doc_into_object(entry.document)?;
+            let verified_pk = verify_doc_pk_id(table, &entry.id, &obj)?;
+            if eval_where_doc(filter, table, &obj, params)? {
+                if let Some(cap) = &mut stream_cap {
+                    *cap = cap.saturating_sub(1);
+                }
+                if on_match(entry.id, verified_pk, obj)?.is_break() {
+                    return Ok(());
+                }
+            }
+        }
+        if done {
+            return Ok(());
+        }
     }
 }
 

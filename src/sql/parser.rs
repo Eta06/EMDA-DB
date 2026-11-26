@@ -1,6 +1,8 @@
 //! Hand-written recursive-descent SQL parser and AST definitions.
 use super::lexer::{Token, TokenKind, tokenize};
-use super::value::{SqlError, SqlLimits, SqlType};
+use super::value::{
+    MAX_SQL_INDEX_COLUMNS, MAX_SQL_INDEXES_PER_TABLE, SqlError, SqlLimits, SqlType,
+};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -30,6 +32,7 @@ impl SqlStatement {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Statement {
     CreateTable(CreateTableStmt),
+    CreateIndex(CreateIndexStmt),
     Insert(InsertStmt),
     Select(SelectStmt),
     Update(UpdateStmt),
@@ -42,6 +45,16 @@ pub(crate) struct CreateTableStmt {
     pub(crate) name: String,
     pub(crate) columns: Vec<ColumnSpec>,
     pub(crate) primary_key_index: usize,
+    pub(crate) unique_constraints: Vec<Vec<usize>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CreateIndexStmt {
+    pub(crate) unique: bool,
+    pub(crate) if_not_exists: bool,
+    pub(crate) name: String,
+    pub(crate) table: String,
+    pub(crate) columns: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -210,13 +223,6 @@ impl Parser<'_> {
         matches!(&self.peek().kind, TokenKind::Ident { text, quoted: false } if text == kw)
     }
 
-    fn peek_n_kw(&self, offset: usize, kw: &str) -> bool {
-        matches!(
-            self.peek_n(offset).map(|t| &t.kind),
-            Some(TokenKind::Ident { text, quoted: false }) if text == kw
-        )
-    }
-
     fn eat_kw(&mut self, kw: &str) -> bool {
         if self.at_kw(kw) {
             self.advance();
@@ -288,7 +294,7 @@ impl Parser<'_> {
                 text,
                 quoted: false,
             } => match text.as_str() {
-                "create" => Statement::CreateTable(self.parse_create_table()?),
+                "create" => self.parse_create()?,
                 "insert" => Statement::Insert(self.parse_insert()?),
                 "select" => Statement::Select(self.parse_select()?),
                 "update" => Statement::Update(self.parse_update()?),
@@ -394,19 +400,19 @@ impl Parser<'_> {
         Ok(())
     }
 
-    fn parse_create_table(&mut self) -> Result<CreateTableStmt, SqlError> {
+    fn parse_create(&mut self) -> Result<Statement, SqlError> {
         self.expect_kw("create")?;
-        if self.at_kw("unique") && self.peek_n_kw(1, "index") {
-            return Err(SqlError::Unsupported {
-                feature: "CREATE INDEX".into(),
-                offset: Some(self.peek().offset),
+        if self.eat_kw("unique") {
+            if self.eat_kw("index") {
+                return Ok(Statement::CreateIndex(self.parse_create_index(true)?));
+            }
+            return Err(SqlError::Syntax {
+                offset: self.peek().offset,
+                message: "expected INDEX after CREATE UNIQUE".into(),
             });
         }
-        if self.at_kw("index") {
-            return Err(SqlError::Unsupported {
-                feature: "CREATE INDEX".into(),
-                offset: Some(self.peek().offset),
-            });
+        if self.eat_kw("index") {
+            return Ok(Statement::CreateIndex(self.parse_create_index(false)?));
         }
         if !self.at_kw("table") {
             if let TokenKind::Ident {
@@ -421,9 +427,85 @@ impl Parser<'_> {
             }
             return Err(SqlError::Syntax {
                 offset: self.peek().offset,
-                message: "expected TABLE after CREATE".into(),
+                message: "expected TABLE or INDEX after CREATE".into(),
             });
         }
+        Ok(Statement::CreateTable(self.parse_create_table_body()?))
+    }
+
+    fn parse_create_index(&mut self, unique: bool) -> Result<CreateIndexStmt, SqlError> {
+        let if_not_exists = if self.eat_kw("if") {
+            self.expect_kw("not")?;
+            self.expect_kw("exists")?;
+            true
+        } else {
+            false
+        };
+        let (name, _) = self.expect_ident("index name")?;
+        self.expect_kw("on")?;
+        let (table, _) = self.expect_ident("table name")?;
+        if self.at_kw("using") {
+            return Err(SqlError::Unsupported {
+                feature: "CREATE INDEX ... USING".into(),
+                offset: Some(self.peek().offset),
+            });
+        }
+        self.expect_kind(&TokenKind::LParen, "'('")?;
+        if matches!(self.peek().kind, TokenKind::RParen) {
+            return Err(SqlError::Syntax {
+                offset: self.peek().offset,
+                message: "CREATE INDEX must declare at least one column".into(),
+            });
+        }
+        let mut columns = Vec::new();
+        let mut seen = HashSet::new();
+        loop {
+            if columns.len() >= MAX_SQL_INDEX_COLUMNS {
+                return Err(SqlError::Bounds(format!(
+                    "index column count exceeds maximum ({MAX_SQL_INDEX_COLUMNS})"
+                )));
+            }
+            let (col_name, col_offset) = self.expect_ident("column name")?;
+            if !seen.insert(col_name.clone()) {
+                return Err(SqlError::Syntax {
+                    offset: col_offset,
+                    message: format!("duplicate column '{col_name}' in CREATE INDEX"),
+                });
+            }
+            if self.at_kw("asc")
+                || self.at_kw("desc")
+                || self.at_kw("nulls")
+                || self.at_kw("collate")
+            {
+                return Err(SqlError::Unsupported {
+                    feature: "index column sort order or collation".into(),
+                    offset: Some(self.peek().offset),
+                });
+            }
+            columns.push(col_name);
+            if matches!(self.peek().kind, TokenKind::Comma) {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+        self.expect_kind(&TokenKind::RParen, "')'")?;
+        if self.at_kw("where") {
+            return Err(SqlError::Unsupported {
+                feature: "partial index WHERE clause".into(),
+                offset: Some(self.peek().offset),
+            });
+        }
+        Ok(CreateIndexStmt {
+            unique,
+            if_not_exists,
+            name,
+            table,
+            columns,
+        })
+    }
+
+    fn parse_create_table_body(&mut self) -> Result<CreateTableStmt, SqlError> {
         self.advance();
 
         let if_not_exists = if self.eat_kw("if") {
@@ -441,6 +523,8 @@ impl Parser<'_> {
         let mut seen_cols = HashSet::new();
         let mut pk_col_index: Option<usize> = None;
         let mut table_pk_name: Option<(String, usize)> = None;
+        let mut col_uniques: Vec<usize> = Vec::new();
+        let mut table_uniques: Vec<Vec<(String, usize)>> = Vec::new();
 
         if matches!(self.peek().kind, TokenKind::RParen) {
             return Err(SqlError::Syntax {
@@ -468,11 +552,50 @@ impl Parser<'_> {
                     ));
                 }
                 table_pk_name = Some((pk_name, pk_offset));
-            } else if self.at_kw("constraint")
-                || self.at_kw("unique")
-                || self.at_kw("check")
-                || self.at_kw("foreign")
-            {
+            } else if self.eat_kw("unique") {
+                self.expect_kind(&TokenKind::LParen, "'('")?;
+                if matches!(self.peek().kind, TokenKind::RParen) {
+                    return Err(SqlError::Syntax {
+                        offset: self.peek().offset,
+                        message: "UNIQUE constraint must declare at least one column".into(),
+                    });
+                }
+                let mut u_cols = Vec::new();
+                let mut seen_u = HashSet::new();
+                loop {
+                    if u_cols.len() >= MAX_SQL_INDEX_COLUMNS {
+                        return Err(SqlError::Bounds(format!(
+                            "UNIQUE constraint column count exceeds maximum ({MAX_SQL_INDEX_COLUMNS})"
+                        )));
+                    }
+                    let (u_col, u_offset) =
+                        self.expect_ident("column name in UNIQUE constraint")?;
+                    if !seen_u.insert(u_col.clone()) {
+                        return Err(SqlError::Syntax {
+                            offset: u_offset,
+                            message: format!("duplicate column '{u_col}' in UNIQUE constraint"),
+                        });
+                    }
+                    if self.at_kw("asc")
+                        || self.at_kw("desc")
+                        || self.at_kw("nulls")
+                        || self.at_kw("collate")
+                    {
+                        return Err(SqlError::Unsupported {
+                            feature: "UNIQUE constraint column sort order or collation".into(),
+                            offset: Some(self.peek().offset),
+                        });
+                    }
+                    u_cols.push((u_col, u_offset));
+                    if matches!(self.peek().kind, TokenKind::Comma) {
+                        self.advance();
+                        continue;
+                    }
+                    break;
+                }
+                self.expect_kind(&TokenKind::RParen, "')'")?;
+                table_uniques.push(u_cols);
+            } else if self.at_kw("constraint") || self.at_kw("check") || self.at_kw("foreign") {
                 let feature = match &self.peek().kind {
                     TokenKind::Ident { text, .. } => {
                         format!("{} constraint", text.to_ascii_uppercase())
@@ -500,6 +623,7 @@ impl Parser<'_> {
                 let col_type = self.parse_column_type()?;
                 let mut not_null = false;
                 let mut is_pk = false;
+                let mut is_unique = false;
                 loop {
                     if self.eat_kw("not") {
                         self.expect_kw("null")?;
@@ -513,9 +637,10 @@ impl Parser<'_> {
                         }
                         is_pk = true;
                         not_null = true;
+                    } else if self.eat_kw("unique") {
+                        is_unique = true;
                     } else if self.at_kw("default")
                         || self.at_kw("check")
-                        || self.at_kw("unique")
                         || self.at_kw("references")
                         || self.at_kw("autoincrement")
                         || self.at_kw("generated")
@@ -535,8 +660,12 @@ impl Parser<'_> {
                         break;
                     }
                 }
+                let col_idx = columns.len();
                 if is_pk {
-                    pk_col_index = Some(columns.len());
+                    pk_col_index = Some(col_idx);
+                }
+                if is_unique {
+                    col_uniques.push(col_idx);
                 }
                 columns.push(ColumnSpec {
                     name: col_name,
@@ -584,11 +713,62 @@ impl Parser<'_> {
             )));
         }
 
+        let mut unique_constraints: Vec<Vec<usize>> = Vec::new();
+        for col_idx in col_uniques {
+            if col_idx != primary_key_index {
+                let single = vec![col_idx];
+                if !unique_constraints.contains(&single) {
+                    unique_constraints.push(single);
+                }
+            }
+        }
+        for u_cols in table_uniques {
+            let mut indices = Vec::with_capacity(u_cols.len());
+            for (u_name, u_offset) in u_cols {
+                let idx = columns
+                    .iter()
+                    .position(|c| c.name == u_name)
+                    .ok_or_else(|| SqlError::Syntax {
+                        offset: u_offset,
+                        message: format!("UNIQUE column '{u_name}' is not declared in table"),
+                    })?;
+                indices.push(idx);
+            }
+            if !(indices.len() == 1 && indices[0] == primary_key_index)
+                && !unique_constraints.contains(&indices)
+            {
+                unique_constraints.push(indices);
+            }
+        }
+        if unique_constraints.len() > MAX_SQL_INDEXES_PER_TABLE {
+            return Err(SqlError::Bounds(format!(
+                "UNIQUE constraint count exceeds maximum ({MAX_SQL_INDEXES_PER_TABLE})"
+            )));
+        }
+        for cols in &unique_constraints {
+            for &col_idx in cols {
+                if !matches!(
+                    columns[col_idx].col_type,
+                    SqlType::Integer | SqlType::Text { .. } | SqlType::Boolean
+                ) {
+                    return Err(SqlError::Unsupported {
+                        feature: format!(
+                            "UNIQUE constraint on {} column '{}'",
+                            columns[col_idx].col_type.display_name(),
+                            columns[col_idx].name
+                        ),
+                        offset: None,
+                    });
+                }
+            }
+        }
+
         Ok(CreateTableStmt {
             if_not_exists,
             name,
             columns,
             primary_key_index,
+            unique_constraints,
         })
     }
 

@@ -1,7 +1,10 @@
 //! Durable SQL catalog stored atomically in the same transaction as the table collection.
 use super::exec::classify_io_error;
-use super::value::{MAX_SQL_COLUMNS, MAX_SQL_IDENTIFIER_BYTES, SqlError, SqlType};
-use crate::document::{CollectionSchema, DocumentTransaction, FieldRule};
+use super::value::{
+    MAX_SQL_COLUMNS, MAX_SQL_IDENTIFIER_BYTES, MAX_SQL_INDEX_COLUMNS, MAX_SQL_INDEXES_PER_TABLE,
+    SqlError, SqlType,
+};
+use crate::document::{CollectionSchema, DocumentTransaction, FieldRule, IndexDefinition};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -48,11 +51,21 @@ pub(crate) struct ColumnDef {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct IndexDef {
+    pub(crate) name: String,
+    pub(crate) columns: Vec<usize>,
+    pub(crate) unique: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct TableDef {
     pub(crate) version: u32,
     pub(crate) name: String,
     pub(crate) columns: Vec<ColumnDef>,
     pub(crate) primary_key_index: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) indexes: Vec<IndexDef>,
 }
 
 impl TableDef {
@@ -60,12 +73,14 @@ impl TableDef {
         name: String,
         columns: Vec<ColumnDef>,
         primary_key_index: usize,
+        indexes: Vec<IndexDef>,
     ) -> Result<Self, SqlError> {
         let def = Self {
             version: CATALOG_VERSION,
             name,
             columns,
             primary_key_index,
+            indexes,
         };
         def.validate()?;
         Ok(def)
@@ -114,6 +129,60 @@ impl TableDef {
                 "invalid primary key column in SQL catalog entry",
             )));
         }
+        if self.indexes.len() > MAX_SQL_INDEXES_PER_TABLE {
+            return Err(SqlError::Bounds(format!(
+                "table '{}' cannot have more than {MAX_SQL_INDEXES_PER_TABLE} indexes",
+                self.name
+            )));
+        }
+        let mut index_names = HashSet::new();
+        for idx in &self.indexes {
+            if idx.name.is_empty() || idx.name.len() > MAX_SQL_IDENTIFIER_BYTES {
+                return Err(SqlError::Bounds(format!(
+                    "index name must be 1..={MAX_SQL_IDENTIFIER_BYTES} UTF-8 bytes"
+                )));
+            }
+            if !index_names.insert(idx.name.as_str()) {
+                return Err(SqlError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "duplicate index name in SQL catalog entry",
+                )));
+            }
+            if idx.columns.is_empty() || idx.columns.len() > MAX_SQL_INDEX_COLUMNS {
+                return Err(SqlError::Bounds(format!(
+                    "index '{}' must have 1..={MAX_SQL_INDEX_COLUMNS} columns",
+                    idx.name
+                )));
+            }
+            let mut seen_cols = HashSet::new();
+            for &col_idx in &idx.columns {
+                let col = self.columns.get(col_idx).ok_or_else(|| {
+                    SqlError::Io(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "invalid column index in SQL catalog index entry",
+                    ))
+                })?;
+                if !seen_cols.insert(col_idx) {
+                    return Err(SqlError::Io(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "duplicate column in SQL catalog index entry",
+                    )));
+                }
+                if !matches!(
+                    col.col_type,
+                    SqlType::Integer | SqlType::Text { .. } | SqlType::Boolean
+                ) {
+                    return Err(SqlError::Unsupported {
+                        feature: format!(
+                            "secondary index on {} column '{}'",
+                            col.col_type.display_name(),
+                            col.name
+                        ),
+                        offset: None,
+                    });
+                }
+            }
+        }
         Ok(())
     }
 
@@ -129,10 +198,24 @@ impl TableDef {
                 .map(|col| FieldRule {
                     path: vec![col.name.clone()],
                     field_type: col.col_type.to_field_type(),
-                    required: true,
+                    // SQL NULL is stored as absent so document unique indexes omit NULL tuples.
+                    required: col.not_null,
                     nullable: !col.not_null,
                 })
                 .collect(),
+        }
+    }
+
+    pub(crate) fn to_index_definition(&self, idx: &IndexDef) -> IndexDefinition {
+        IndexDefinition {
+            name: idx.name.clone(),
+            fields: idx
+                .columns
+                .iter()
+                .map(|&col_idx| vec![self.columns[col_idx].name.clone()])
+                .collect(),
+            unique: idx.unique,
+            partial: None,
         }
     }
 }
@@ -218,7 +301,49 @@ pub(crate) fn create_table(
             classify_io_error(err)
         }
     })?;
+    for idx in &def.indexes {
+        tx.create_index(&def.name, def.to_index_definition(idx))
+            .map_err(|err| map_index_build_error(err, &def.name, &idx.name))?;
+    }
     let bytes = serde_json::to_vec(def).map_err(|err| SqlError::Io(io::Error::other(err)))?;
     tx.put_raw(&key, &bytes).map_err(classify_io_error)?;
     Ok(())
+}
+
+pub(crate) fn create_index(
+    tx: &mut DocumentTransaction<'_, '_>,
+    cached: &CachedTable,
+    idx: IndexDef,
+    if_not_exists: bool,
+) -> Result<(), SqlError> {
+    let existing = &cached.def;
+    if existing.indexes.iter().any(|i| i.name == idx.name) {
+        if if_not_exists {
+            return Ok(());
+        }
+        return Err(SqlError::IndexExists(idx.name));
+    }
+    let mut updated = TableDef::clone(existing);
+    let doc_def = updated.to_index_definition(&idx);
+    let idx_name = idx.name.clone();
+    updated.indexes.push(idx);
+    updated.validate()?;
+    tx.create_index(&updated.name, doc_def)
+        .map_err(|err| map_index_build_error(err, &updated.name, &idx_name))?;
+    let bytes = serde_json::to_vec(&updated).map_err(|err| SqlError::Io(io::Error::other(err)))?;
+    tx.put_raw(&cached.catalog_key, &bytes)
+        .map_err(classify_io_error)?;
+    Ok(())
+}
+
+fn map_index_build_error(err: io::Error, table_name: &str, index_name: &str) -> SqlError {
+    if err.kind() == io::ErrorKind::AlreadyExists {
+        if err.to_string().contains("unique") {
+            return SqlError::Constraint(format!(
+                "UNIQUE constraint failed while building index '{index_name}' on table '{table_name}'"
+            ));
+        }
+        return SqlError::IndexExists(index_name.to_owned());
+    }
+    classify_io_error(err)
 }

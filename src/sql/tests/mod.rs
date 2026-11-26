@@ -219,6 +219,9 @@ fn deterministic_randomized_parser_fuzzer_never_panics() {
         "LAST",
         "LIMIT",
         "OFFSET",
+        "INDEX",
+        "UNIQUE",
+        "ON",
         " ",
         "\n",
         "!",
@@ -322,18 +325,212 @@ fn classify_io_error_distinguishes_bounds_from_other_invalid_input() {
         "snapshot key count limit exceeded",
         "atomic batch exceeds 16 MiB encoded payload",
         "transaction write count limit exceeded",
+        "indexed string exceeds 256 bytes",
+        "collection exceeds 16 indexes",
     ] {
-        let kind =
-            if msg.contains("1 MiB") || msg.contains("atomic batch") || msg.contains("write count")
-            {
-                io::ErrorKind::InvalidInput
-            } else {
-                io::ErrorKind::Other
-            };
+        let kind = if msg.contains("1 MiB")
+            || msg.contains("atomic batch")
+            || msg.contains("write count")
+            || msg.contains("indexed string")
+            || msg.contains("16 indexes")
+        {
+            io::ErrorKind::InvalidInput
+        } else {
+            io::ErrorKind::Other
+        };
         let err = io::Error::new(kind, msg);
         assert!(
             matches!(exec::classify_io_error(err), SqlError::Bounds(_)),
             "expected SqlError::Bounds for {msg}"
         );
     }
+}
+
+#[test]
+fn planner_selects_expected_access_paths_for_indexes() {
+    use super::catalog::{ColumnDef, IndexDef, TableDef};
+    use super::exec::{BoundExpr, BoundOrderBy};
+    use super::parser::CompareOp;
+    use super::plan::{AccessPlan, plan_access};
+    use super::value::SqlType;
+    use crate::document::{IndexBound, IndexValue};
+
+    let table = TableDef::new(
+        "t".into(),
+        vec![
+            ColumnDef {
+                name: "id".into(),
+                col_type: SqlType::Integer,
+                not_null: true,
+            },
+            ColumnDef {
+                name: "u".into(),
+                col_type: SqlType::Integer,
+                not_null: false,
+            },
+            ColumnDef {
+                name: "a".into(),
+                col_type: SqlType::Integer,
+                not_null: true,
+            },
+            ColumnDef {
+                name: "b".into(),
+                col_type: SqlType::Integer,
+                not_null: false,
+            },
+            ColumnDef {
+                name: "c".into(),
+                col_type: SqlType::Text { max_chars: None },
+                not_null: true,
+            },
+        ],
+        0,
+        vec![
+            IndexDef {
+                name: "u_idx".into(),
+                columns: vec![1],
+                unique: true,
+            },
+            IndexDef {
+                name: "ab_idx".into(),
+                columns: vec![2, 3],
+                unique: false,
+            },
+            IndexDef {
+                name: "ac_idx".into(),
+                columns: vec![2, 4],
+                unique: false,
+            },
+        ],
+    )
+    .unwrap();
+
+    let eq_pk = BoundExpr::Compare {
+        op: CompareOp::Eq,
+        left: Box::new(BoundExpr::Column(0)),
+        right: Box::new(BoundExpr::Literal(SqlValue::Integer(42))),
+    };
+    let eq_u = BoundExpr::Compare {
+        op: CompareOp::Eq,
+        left: Box::new(BoundExpr::Column(1)),
+        right: Box::new(BoundExpr::Literal(SqlValue::Integer(7))),
+    };
+    // PK point beats unique secondary index equality.
+    assert!(matches!(
+        plan_access(
+            Some(&BoundExpr::And(vec![eq_pk, eq_u])),
+            &table,
+            &[],
+            false,
+            &[],
+        ),
+        AccessPlan::PkPoint { .. }
+    ));
+
+    // Unique index equality beats PK range and compound range.
+    let eq_u2 = BoundExpr::Compare {
+        op: CompareOp::Eq,
+        left: Box::new(BoundExpr::Column(1)),
+        right: Box::new(BoundExpr::Literal(SqlValue::Integer(7))),
+    };
+    let gt_pk = BoundExpr::Compare {
+        op: CompareOp::Gt,
+        left: Box::new(BoundExpr::Column(0)),
+        right: Box::new(BoundExpr::Literal(SqlValue::Integer(1))),
+    };
+    assert!(matches!(
+        plan_access(
+            Some(&BoundExpr::And(vec![gt_pk, eq_u2])),
+            &table,
+            &[],
+            false,
+            &[],
+        ),
+        AccessPlan::Index {
+            index_idx: 0,
+            unique_equality: true,
+            preserves_pk_asc: true,
+            ..
+        }
+    ));
+
+    // Compound prefix `a = 5` cannot use `ab_idx` (because `b` is nullable), so uses `ac_idx` (`c` is NOT NULL)!
+    let eq_a = BoundExpr::Compare {
+        op: CompareOp::Eq,
+        left: Box::new(BoundExpr::Column(2)),
+        right: Box::new(BoundExpr::Literal(SqlValue::Integer(5))),
+    };
+    assert_eq!(
+        plan_access(Some(&eq_a), &table, &[], false, &[]),
+        AccessPlan::Index {
+            index_idx: 2,
+            equal: vec![IndexValue::Integer(5)],
+            lower: None,
+            upper: None,
+            unique_equality: false,
+            preserves_pk_asc: false,
+            satisfies_order_by: false,
+        }
+    );
+
+    // Compound prefix `a = 5 AND b > 3` uses `ab_idx`!
+    let gt_b = BoundExpr::Compare {
+        op: CompareOp::Gt,
+        left: Box::new(BoundExpr::Column(3)),
+        right: Box::new(BoundExpr::Literal(SqlValue::Integer(3))),
+    };
+    assert_eq!(
+        plan_access(
+            Some(&BoundExpr::And(vec![eq_a, gt_b])),
+            &table,
+            &[],
+            false,
+            &[],
+        ),
+        AccessPlan::Index {
+            index_idx: 1,
+            equal: vec![IndexValue::Integer(5)],
+            lower: Some(IndexBound {
+                value: IndexValue::Integer(4),
+                inclusive: true,
+            }),
+            upper: None,
+            unique_equality: false,
+            preserves_pk_asc: false,
+            satisfies_order_by: false,
+        }
+    );
+
+    // ORDER BY a ASC, c ASC LIMIT 5 (without WHERE) streams `ac_idx` (both NOT NULL)!
+    let order_ac = vec![
+        BoundOrderBy {
+            col_idx: 2,
+            desc: false,
+            nulls_first: true,
+        },
+        BoundOrderBy {
+            col_idx: 4,
+            desc: false,
+            nulls_first: true,
+        },
+    ];
+    assert!(matches!(
+        plan_access(None, &table, &order_ac, true, &[]),
+        AccessPlan::Index {
+            index_idx: 2,
+            satisfies_order_by: true,
+            ..
+        }
+    ));
+
+    // ORDER BY u ASC LIMIT 5 (where `u` is nullable) must NOT stream `u_idx` without WHERE!
+    let order_u = vec![BoundOrderBy {
+        col_idx: 1,
+        desc: false,
+        nulls_first: true,
+    }];
+    assert_eq!(
+        plan_access(None, &table, &order_u, true, &[]),
+        AccessPlan::FullScan
+    );
 }
