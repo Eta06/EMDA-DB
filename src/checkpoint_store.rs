@@ -134,6 +134,9 @@ impl Default for CheckpointStoreLimits {
 
 type OpenLimits = CheckpointStoreLimits;
 
+// A checkpoint's covered log prefix length and digest.
+type CoveredPrefix = (u64, [u8; 32]);
+
 /// Memory kept by a checkpoint-backed store for its disk-backed index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -229,7 +232,8 @@ pub struct CheckpointStore {
     block_cache_limit: AtomicUsize,
     // The covered prefix and digest of a checkpoint opened without hashing
     // its prefix, until `verify_covered_prefix` succeeds.
-    unverified_prefix: Mutex<Option<(u64, [u8; 32])>>,
+    // Boxed to keep the store small while nothing is deferred.
+    unverified_prefix: Mutex<Option<Box<CoveredPrefix>>>,
     // Must remain the last field: its release marks every descriptor closed.
     generation_token: Arc<disk_budget::GenerationToken>,
 }
@@ -568,7 +572,7 @@ impl CheckpointStore {
             .unverified_prefix
             .lock()
             .map_err(|_| io::Error::other("prefix verification state poisoned"))?;
-        let Some((prefix, digest)) = *pending else {
+        let Some((prefix, digest)) = pending.as_deref().copied() else {
             return Ok(());
         };
         if max_scan_bytes.is_some_and(|limit| prefix > limit) {
@@ -918,7 +922,7 @@ impl CheckpointStore {
             checkpoint_view_limits: checkpoint_view,
             disk_budget: RwLock::new(disk_budget),
             block_cache_limit: AtomicUsize::new(0),
-            unverified_prefix: Mutex::new(unverified_prefix),
+            unverified_prefix: Mutex::new(unverified_prefix.map(Box::new)),
             generation_token: disk_budget::generation_token(),
         })
     }
