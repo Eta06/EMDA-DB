@@ -322,9 +322,7 @@ fn verify_recovered_state(
         else {
             return Err(format!("row {idx} has unexpected value types: {row:?}"));
         };
-        if let Some(prev) = prev_id
-            && *id <= prev
-        {
+        if let Some(prev) = prev_id.filter(|prev| *id <= *prev) {
             return Err(format!(
                 "SELECT primary-key ordering violated at row {idx}: {prev} followed by {id}"
             ));
@@ -610,10 +608,12 @@ fn run_crash_drill(kind: BackendKind, seed: u64) {
                     Ok(0) | Err(_) => break,
                     Ok(_) => {
                         // Only accept complete newline-terminated ACK lines.
-                        if line.ends_with('\n')
-                            && let Some(rest) = line.trim_end().strip_prefix("ACK ")
-                            && let Ok(seq) = rest.parse::<u64>()
-                        {
+                        let seq = line
+                            .ends_with('\n')
+                            .then(|| line.trim_end().strip_prefix("ACK "))
+                            .flatten()
+                            .and_then(|rest| rest.parse::<u64>().ok());
+                        if let Some(seq) = seq {
                             let _ = tx.send(seq);
                         }
                     }

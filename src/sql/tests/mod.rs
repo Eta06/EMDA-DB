@@ -202,7 +202,7 @@ fn deterministic_randomized_parser_fuzzer_never_panics() {
         for _ in 0..count {
             let idx = (next_u64() as usize) % fragments.len();
             s.push_str(fragments[idx]);
-            if next_u64().is_multiple_of(3) {
+            if next_u64() % 3 == 0 {
                 s.push(' ');
             }
         }

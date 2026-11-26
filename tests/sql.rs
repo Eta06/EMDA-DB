@@ -1234,7 +1234,7 @@ fn randomized_model_test_matches_btreemap_on_both_backends() {
                         }
                         sql.push_str("(?, ?, ?)");
                         let id = (next() % 40) as i64 - 20;
-                        let val = if next().is_multiple_of(3) {
+                        let val = if next() % 3 == 0 {
                             None
                         } else {
                             Some((next() % 100) as i64 - 50)
@@ -1266,7 +1266,7 @@ fn randomized_model_test_matches_btreemap_on_both_backends() {
                 1 => {
                     // UPDATE with threshold
                     let threshold = (next() % 40) as i64 - 20;
-                    let new_val = if next().is_multiple_of(2) {
+                    let new_val = if next() % 2 == 0 {
                         None
                     } else {
                         Some((next() % 100) as i64)

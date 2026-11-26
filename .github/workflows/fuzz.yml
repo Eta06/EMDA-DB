@@ -320,6 +320,12 @@ jobs:
           mkdir -p "$RUNNER_TEMP/document-collection-drop-corpus"
           cp fuzz/document-collection-drop-seeds/* "$RUNNER_TEMP/document-collection-drop-corpus/"
           cargo +nightly-2026-11-03 fuzz run document_collection_drop "$RUNNER_TEMP/document-collection-drop-corpus" -- -max_total_time=60 -max_len=96 -timeout=10
+      - name: Run SQL subset differential fuzzing
+        if: ${{ !cancelled() && steps.fuzz_setup.outcome == 'success' && matrix.shard == 1 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/sql-corpus"
+          cp fuzz/sql-seeds/* "$RUNNER_TEMP/sql-corpus/"
+          cargo +nightly-2026-11-03 fuzz run sql "$RUNNER_TEMP/sql-corpus" -- -max_total_time=60 -max_len=256 -timeout=10
       - name: Preserve any reproducer
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
