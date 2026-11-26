@@ -49,15 +49,23 @@ pub(crate) fn plan_access(
     let Some(expr) = filter else {
         return AccessPlan::FullScan;
     };
-    let mut conjuncts = Vec::new();
-    collect_conjuncts(expr, &mut conjuncts);
+    let single;
+    let mut multi;
+    let conjuncts: &[&BoundExpr] = if matches!(expr, BoundExpr::And(_)) {
+        multi = Vec::new();
+        collect_conjuncts(expr, &mut multi);
+        &multi
+    } else {
+        single = [expr];
+        &single
+    };
 
     let pk_idx = table.primary_key_index;
     let pk_type = table.columns[pk_idx].col_type;
 
     match pk_type {
-        SqlType::Integer => plan_integer_pk(&conjuncts, pk_idx, params),
-        SqlType::Text { .. } => plan_text_pk(&conjuncts, pk_idx, params),
+        SqlType::Integer => plan_integer_pk(conjuncts, pk_idx, params),
+        SqlType::Text { .. } => plan_text_pk(conjuncts, pk_idx, params),
         _ => AccessPlan::FullScan,
     }
 }

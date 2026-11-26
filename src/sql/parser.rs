@@ -2,12 +2,22 @@
 use super::lexer::{Token, TokenKind, tokenize};
 use super::value::{SqlError, SqlLimits, SqlType};
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_STMT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Parsed, reusable SQL statement for this embedded subset.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct SqlStatement {
     pub(crate) inner: Statement,
     pub(crate) param_count: usize,
+    pub(crate) stmt_id: u64,
+}
+
+impl PartialEq for SqlStatement {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner == other.inner && self.param_count == other.param_count
+    }
 }
 
 impl SqlStatement {
@@ -153,6 +163,7 @@ pub(crate) fn parse_statement(sql: &str, limits: &SqlLimits) -> Result<SqlStatem
     Ok(SqlStatement {
         inner,
         param_count: parser.param_count,
+        stmt_id: NEXT_STMT_ID.fetch_add(1, Ordering::Relaxed),
     })
 }
 
@@ -180,6 +191,15 @@ impl Parser<'_> {
             self.pos += 1;
         }
         tok
+    }
+
+    fn take_token(&mut self) -> (TokenKind, usize) {
+        let offset = self.tokens[self.pos].offset;
+        let kind = std::mem::replace(&mut self.tokens[self.pos].kind, TokenKind::Eof);
+        if self.pos + 1 < self.tokens.len() && !matches!(kind, TokenKind::Eof) {
+            self.pos += 1;
+        }
+        (kind, offset)
     }
 
     fn at_eof(&self) -> bool {
@@ -232,23 +252,25 @@ impl Parser<'_> {
     }
 
     fn expect_ident(&mut self, label: &str) -> Result<(String, usize), SqlError> {
-        let tok = self.peek().clone();
-        match tok.kind {
+        let offset = self.peek().offset;
+        match &self.peek().kind {
             TokenKind::Ident { text, quoted } => {
-                if !quoted && is_reserved_keyword(&text) {
+                if !quoted && is_reserved_keyword(text) {
                     return Err(SqlError::Syntax {
-                        offset: tok.offset,
+                        offset,
                         message: format!(
                             "reserved keyword '{}' cannot be used as {label} without double quotes",
                             text.to_ascii_uppercase()
                         ),
                     });
                 }
-                self.advance();
-                Ok((text, tok.offset))
+                let (TokenKind::Ident { text, .. }, offset) = self.take_token() else {
+                    unreachable!()
+                };
+                Ok((text, offset))
             }
             _ => Err(SqlError::Syntax {
-                offset: tok.offset,
+                offset,
                 message: format!("expected {label}"),
             }),
         }
@@ -571,18 +593,16 @@ impl Parser<'_> {
     }
 
     fn parse_column_type(&mut self) -> Result<SqlType, SqlError> {
-        let tok = self.peek().clone();
-        let TokenKind::Ident {
-            text,
-            quoted: false,
-        } = tok.kind
-        else {
+        let offset = self.peek().offset;
+        if !matches!(&self.peek().kind, TokenKind::Ident { quoted: false, .. }) {
             return Err(SqlError::Syntax {
-                offset: tok.offset,
+                offset,
                 message: "expected column data type".into(),
             });
+        }
+        let (TokenKind::Ident { text, .. }, _) = self.take_token() else {
+            unreachable!()
         };
-        self.advance();
         match text.as_str() {
             "integer" | "int" | "bigint" => Ok(SqlType::Integer),
             "real" | "double" | "float" => Ok(SqlType::Real),
@@ -591,24 +611,22 @@ impl Parser<'_> {
             "varchar" => {
                 if matches!(self.peek().kind, TokenKind::LParen) {
                     self.advance();
-                    let len_tok = self.peek().clone();
-                    let n = match len_tok.kind {
-                        TokenKind::Integer(raw) => {
-                            self.advance();
-                            raw.parse::<usize>().map_err(|_| {
-                                SqlError::Bounds("VARCHAR length out of range".into())
-                            })?
-                        }
-                        _ => {
-                            return Err(SqlError::Syntax {
-                                offset: len_tok.offset,
-                                message: "expected positive integer length in VARCHAR(n)".into(),
-                            });
-                        }
+                    let len_offset = self.peek().offset;
+                    let n = if matches!(self.peek().kind, TokenKind::Integer(_)) {
+                        let (TokenKind::Integer(raw), _) = self.take_token() else {
+                            unreachable!()
+                        };
+                        raw.parse::<usize>()
+                            .map_err(|_| SqlError::Bounds("VARCHAR length out of range".into()))?
+                    } else {
+                        return Err(SqlError::Syntax {
+                            offset: len_offset,
+                            message: "expected positive integer length in VARCHAR(n)".into(),
+                        });
                     };
                     if n == 0 {
                         return Err(SqlError::Syntax {
-                            offset: len_tok.offset,
+                            offset: len_offset,
                             message: "VARCHAR(n) length must be at least 1".into(),
                         });
                     }
@@ -625,7 +643,7 @@ impl Parser<'_> {
                 }
             }
             _ => Err(SqlError::Syntax {
-                offset: tok.offset,
+                offset,
                 message: format!("unknown or unsupported column type '{text}'"),
             }),
         }
@@ -940,10 +958,7 @@ impl Parser<'_> {
                     });
                 }
                 TokenKind::Minus
-                    if matches!(
-                        self.peek_n(1).map(|t| &t.kind),
-                        Some(TokenKind::Integer(_))
-                    ) =>
+                    if matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::Integer(_))) =>
                 {
                     return Err(SqlError::Unsupported {
                         feature: "ORDER BY column position".into(),
@@ -1311,8 +1326,8 @@ impl Parser<'_> {
 
     fn parse_primary(&mut self, depth: usize) -> Result<Expr, SqlError> {
         self.check_depth(depth)?;
-        let tok = self.peek().clone();
-        match tok.kind {
+        let offset = self.peek().offset;
+        match &self.peek().kind {
             TokenKind::LParen => {
                 self.advance();
                 if self.at_kw("select") || self.at_kw("with") {
@@ -1334,36 +1349,46 @@ impl Parser<'_> {
             }
             TokenKind::Minus => {
                 self.advance();
-                let num = self.peek().clone();
-                match num.kind {
-                    TokenKind::Integer(raw) => {
-                        self.advance();
-                        let val = parse_signed_integer(&raw, true, num.offset)?;
+                let num_offset = self.peek().offset;
+                match &self.peek().kind {
+                    TokenKind::Integer(_) => {
+                        let (TokenKind::Integer(raw), _) = self.take_token() else {
+                            unreachable!()
+                        };
+                        let val = parse_signed_integer(&raw, true, num_offset)?;
                         Ok(Expr::Literal(LiteralValue::Integer(val)))
                     }
-                    TokenKind::Real(raw) => {
-                        self.advance();
-                        let val = parse_real(&raw, true, num.offset)?;
+                    TokenKind::Real(_) => {
+                        let (TokenKind::Real(raw), _) = self.take_token() else {
+                            unreachable!()
+                        };
+                        let val = parse_real(&raw, true, num_offset)?;
                         Ok(Expr::Literal(LiteralValue::Real(val)))
                     }
                     _ => Err(SqlError::Unsupported {
                         feature: "unary minus on non-literal expression".into(),
-                        offset: Some(tok.offset),
+                        offset: Some(offset),
                     }),
                 }
             }
-            TokenKind::Integer(raw) => {
-                self.advance();
-                let val = parse_signed_integer(&raw, false, tok.offset)?;
+            TokenKind::Integer(_) => {
+                let (TokenKind::Integer(raw), _) = self.take_token() else {
+                    unreachable!()
+                };
+                let val = parse_signed_integer(&raw, false, offset)?;
                 Ok(Expr::Literal(LiteralValue::Integer(val)))
             }
-            TokenKind::Real(raw) => {
-                self.advance();
-                let val = parse_real(&raw, false, tok.offset)?;
+            TokenKind::Real(_) => {
+                let (TokenKind::Real(raw), _) = self.take_token() else {
+                    unreachable!()
+                };
+                let val = parse_real(&raw, false, offset)?;
                 Ok(Expr::Literal(LiteralValue::Real(val)))
             }
-            TokenKind::String(text) => {
-                self.advance();
+            TokenKind::String(_) => {
+                let (TokenKind::String(text), _) = self.take_token() else {
+                    unreachable!()
+                };
                 Ok(Expr::Literal(LiteralValue::Text(text)))
             }
             TokenKind::Question => {
@@ -1396,18 +1421,18 @@ impl Parser<'_> {
                         "exists" => {
                             return Err(SqlError::Unsupported {
                                 feature: "EXISTS subquery".into(),
-                                offset: Some(tok.offset),
+                                offset: Some(offset),
                             });
                         }
                         "case" | "cast" => {
                             return Err(SqlError::Unsupported {
                                 feature: text.to_ascii_uppercase(),
-                                offset: Some(tok.offset),
+                                offset: Some(offset),
                             });
                         }
-                        _ if is_reserved_keyword(&text) => {
+                        _ if is_reserved_keyword(text) => {
                             return Err(SqlError::Syntax {
-                                offset: tok.offset,
+                                offset,
                                 message: format!(
                                     "unexpected keyword '{}'",
                                     text.to_ascii_uppercase()
@@ -1420,20 +1445,22 @@ impl Parser<'_> {
                 if matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::LParen)) {
                     return Err(SqlError::Unsupported {
                         feature: format!("function or aggregate call '{text}(...)'"),
-                        offset: Some(tok.offset),
+                        offset: Some(offset),
                     });
                 }
                 if matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::Dot)) {
                     return Err(SqlError::Unsupported {
                         feature: "qualified column names (table.column)".into(),
-                        offset: Some(tok.offset),
+                        offset: Some(offset),
                     });
                 }
-                self.advance();
+                let (TokenKind::Ident { text, .. }, _) = self.take_token() else {
+                    unreachable!()
+                };
                 Ok(Expr::Column(text))
             }
             _ => Err(SqlError::Syntax {
-                offset: tok.offset,
+                offset,
                 message: "expected expression".into(),
             }),
         }

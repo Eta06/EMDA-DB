@@ -2,9 +2,38 @@
 use super::exec::classify_io_error;
 use super::value::{MAX_SQL_COLUMNS, MAX_SQL_IDENTIFIER_BYTES, SqlError, SqlType};
 use crate::document::{CollectionSchema, DocumentTransaction, FieldRule};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+const MAX_CACHED_TABLES: usize = 256;
+
+#[derive(Debug)]
+pub(crate) struct CachedTable {
+    pub(crate) raw_bytes: Vec<u8>,
+    pub(crate) catalog_key: Vec<u8>,
+    pub(crate) def: Arc<TableDef>,
+    pub(crate) all_column_names: Vec<String>,
+    pub(crate) generation: u64,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct TableCache {
+    entries: RwLock<HashMap<String, Arc<CachedTable>>>,
+    next_gen: AtomicU64,
+}
+
+impl TableCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: RwLock::new(HashMap::new()),
+            next_gen: AtomicU64::new(1),
+        }
+    }
+}
 
 const SQL_CATALOG_PREFIX: &[u8] = b"\0emda-sql\x01T";
 const CATALOG_VERSION: u32 = 1;
@@ -120,15 +149,32 @@ fn catalog_key(table_name: &str) -> Result<Vec<u8>, SqlError> {
     Ok(key)
 }
 
-pub(crate) fn load_table(
+pub(crate) fn load_table_cached(
     tx: &DocumentTransaction<'_, '_>,
     table_name: &str,
-) -> Result<TableDef, SqlError> {
-    let key = catalog_key(table_name)?;
-    let raw = tx.get_raw(&key).map_err(classify_io_error)?;
+    cache: &TableCache,
+) -> Result<Arc<CachedTable>, SqlError> {
+    let cached = cache.entries.read().get(table_name).cloned();
+    let key_buf;
+    let key = match &cached {
+        Some(entry) => entry.catalog_key.as_slice(),
+        None => {
+            key_buf = catalog_key(table_name)?;
+            &key_buf
+        }
+    };
+    let raw = tx.get_raw(key).map_err(classify_io_error)?;
     let Some(bytes) = raw else {
+        if cached.is_some() {
+            cache.entries.write().remove(table_name);
+        }
         return Err(SqlError::NoSuchTable(table_name.to_owned()));
     };
+    if let Some(ref entry) = cached
+        && bytes == entry.raw_bytes
+    {
+        return Ok(Arc::clone(entry));
+    }
     let def: TableDef = serde_json::from_slice(&bytes).map_err(|err| {
         SqlError::Io(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -136,7 +182,21 @@ pub(crate) fn load_table(
         ))
     })?;
     def.validate()?;
-    Ok(def)
+    let all_column_names = def.columns.iter().map(|c| c.name.clone()).collect();
+    let generation = cache.next_gen.fetch_add(1, Ordering::Relaxed);
+    let entry = Arc::new(CachedTable {
+        raw_bytes: bytes,
+        catalog_key: key.to_vec(),
+        def: Arc::new(def),
+        all_column_names,
+        generation,
+    });
+    let mut guard = cache.entries.write();
+    if guard.len() >= MAX_CACHED_TABLES && !guard.contains_key(table_name) {
+        guard.clear();
+    }
+    guard.insert(table_name.to_owned(), Arc::clone(&entry));
+    Ok(entry)
 }
 
 pub(crate) fn create_table(

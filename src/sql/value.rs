@@ -366,6 +366,7 @@ pub(crate) fn encode_i64_pk(n: i64) -> String {
 
 /// Encodes a SQL primary key into a document ID whose ascending byte order equals
 /// ascending SQL key order.
+#[cfg(test)]
 pub(crate) fn encode_primary_key(value: &SqlValue, pk_type: SqlType) -> Result<String, SqlError> {
     match (pk_type, value) {
         (SqlType::Integer, SqlValue::Integer(n)) => Ok(encode_i64_pk(*n)),

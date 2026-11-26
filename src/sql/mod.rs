@@ -34,6 +34,7 @@ use crate::document::DocumentDatabase;
 pub struct SqlDatabase<'a> {
     db: DocumentDatabase<'a>,
     limits: SqlLimits,
+    cache: exec::SqlCache,
 }
 
 impl<'a> SqlDatabase<'a> {
@@ -42,19 +43,25 @@ impl<'a> SqlDatabase<'a> {
         Self {
             db,
             limits: SqlLimits::default(),
+            cache: exec::SqlCache::new(),
         }
     }
 
     /// Creates a SQL view over `db` with validated custom bounds.
     pub fn with_limits(db: DocumentDatabase<'a>, limits: SqlLimits) -> Result<Self, SqlError> {
         limits.validate()?;
-        Ok(Self { db, limits })
+        Ok(Self {
+            db,
+            limits,
+            cache: exec::SqlCache::new(),
+        })
     }
 
     /// Replaces the configured execution bounds after validating against hard maxima.
     pub fn set_limits(&mut self, limits: SqlLimits) -> Result<(), SqlError> {
         limits.validate()?;
         self.limits = limits;
+        self.cache.clear_statements_and_plans();
         Ok(())
     }
 
@@ -79,13 +86,17 @@ impl<'a> SqlDatabase<'a> {
         stmt: &SqlStatement,
         params: &[SqlValue],
     ) -> Result<SqlOutcome, SqlError> {
-        exec::execute_statement(&self.db, stmt, params, &self.limits, false)
+        exec::execute_statement(&self.db, stmt, params, &self.limits, &self.cache, false)
     }
 
     /// Parses and executes a single SQL statement in one atomic transaction.
     pub fn execute(&self, sql: &str, params: &[SqlValue]) -> Result<SqlOutcome, SqlError> {
-        let stmt = self.prepare(sql)?;
-        self.execute_prepared(&stmt, params)
+        if let Some(stmt) = self.cache.get_cached_statement(sql, &self.limits)? {
+            exec::execute_statement(&self.db, &stmt, params, &self.limits, &self.cache, false)
+        } else {
+            let stmt = self.prepare(sql)?;
+            exec::execute_statement(&self.db, &stmt, params, &self.limits, &self.cache, false)
+        }
     }
 
     #[doc(hidden)]
@@ -95,6 +106,6 @@ impl<'a> SqlDatabase<'a> {
         params: &[SqlValue],
     ) -> Result<SqlOutcome, SqlError> {
         let stmt = self.prepare(sql)?;
-        exec::execute_statement(&self.db, &stmt, params, &self.limits, true)
+        exec::execute_statement(&self.db, &stmt, params, &self.limits, &self.cache, true)
     }
 }

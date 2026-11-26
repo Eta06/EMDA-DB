@@ -44,7 +44,7 @@ pub(crate) fn tokenize(sql: &str, limits: &SqlLimits) -> Result<Vec<Token>, SqlE
     }
     let bytes = sql.as_bytes();
     let mut i = 0;
-    let mut tokens = Vec::new();
+    let mut tokens = Vec::with_capacity((sql.len() / 4).clamp(8, limits.max_tokens.min(256)));
 
     let push_token =
         |tokens: &mut Vec<Token>, kind: TokenKind, offset: usize| -> Result<(), SqlError> {

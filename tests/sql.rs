@@ -2034,13 +2034,13 @@ fn order_by_nulls_types_multikey_and_tiebreak_on_both_backends() {
             SqlOutcome::Rows {
                 columns: vec!["tag".into()],
                 rows: vec![
-                    vec![SqlValue::Text("".into())],   // id=3 flag=TRUE
-                    vec![SqlValue::Null],               // id=5 flag=TRUE
-                    vec![SqlValue::Text("b".into())],   // id=10 flag=TRUE
-                    vec![SqlValue::Text("Z".into())],   // id=1 flag=FALSE
-                    vec![SqlValue::Text("a".into())],   // id=2 flag=FALSE
-                    vec![SqlValue::Text("a".into())],   // id=4 flag=FALSE
-                    vec![SqlValue::Text("é".into())],   // id=8 flag=NULL (DESC => NULLS LAST)
+                    vec![SqlValue::Text("".into())],  // id=3 flag=TRUE
+                    vec![SqlValue::Null],             // id=5 flag=TRUE
+                    vec![SqlValue::Text("b".into())], // id=10 flag=TRUE
+                    vec![SqlValue::Text("Z".into())], // id=1 flag=FALSE
+                    vec![SqlValue::Text("a".into())], // id=2 flag=FALSE
+                    vec![SqlValue::Text("a".into())], // id=4 flag=FALSE
+                    vec![SqlValue::Text("é".into())], // id=8 flag=NULL (DESC => NULLS LAST)
                 ],
             }
         );
@@ -2066,18 +2066,16 @@ fn order_by_nulls_types_multikey_and_tiebreak_on_both_backends() {
         );
 
         // TEXT PK tie-break ascending on non-PK DESC sort.
-        db.execute(
-            "CREATE TABLE tpk (k TEXT PRIMARY KEY, v INTEGER)",
-            &[],
-        )
-        .unwrap();
+        db.execute("CREATE TABLE tpk (k TEXT PRIMARY KEY, v INTEGER)", &[])
+            .unwrap();
         db.execute(
             "INSERT INTO tpk VALUES ('z', 1), ('a', 1), ('é', 1), ('Z', 2)",
             &[],
         )
         .unwrap();
         assert_eq!(
-            db.execute("SELECT k FROM tpk ORDER BY v DESC", &[]).unwrap(),
+            db.execute("SELECT k FROM tpk ORDER BY v DESC", &[])
+                .unwrap(),
             SqlOutcome::Rows {
                 columns: vec!["k".into()],
                 rows: vec![
@@ -2133,9 +2131,16 @@ fn limit_offset_edges_params_early_termination_and_sort_bounds() {
         };
 
         // LIMIT/OFFSET edges: 0, at end, beyond end, huge values.
-        assert_eq!(get_ids(&db, "SELECT id FROM nums LIMIT 0", &[]), Vec::<i64>::new());
         assert_eq!(
-            get_ids(&db, "SELECT id FROM nums ORDER BY val DESC LIMIT 0 OFFSET 100", &[]),
+            get_ids(&db, "SELECT id FROM nums LIMIT 0", &[]),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            get_ids(
+                &db,
+                "SELECT id FROM nums ORDER BY val DESC LIMIT 0 OFFSET 100",
+                &[]
+            ),
             Vec::<i64>::new()
         );
         assert_eq!(
@@ -2151,11 +2156,19 @@ fn limit_offset_edges_params_early_termination_and_sort_bounds() {
             Vec::<i64>::new()
         );
         assert_eq!(
-            get_ids(&db, "SELECT id FROM nums ORDER BY id DESC LIMIT 3 OFFSET 48", &[]),
+            get_ids(
+                &db,
+                "SELECT id FROM nums ORDER BY id DESC LIMIT 3 OFFSET 48",
+                &[]
+            ),
             vec![1, 0]
         );
         assert_eq!(
-            get_ids(&db, "SELECT id FROM nums ORDER BY id DESC LIMIT 3 OFFSET 50", &[]),
+            get_ids(
+                &db,
+                "SELECT id FROM nums ORDER BY id DESC LIMIT 3 OFFSET 50",
+                &[]
+            ),
             Vec::<i64>::new()
         );
         assert_eq!(
@@ -2192,11 +2205,16 @@ fn limit_offset_edges_params_early_termination_and_sort_bounds() {
 
         // Parameter validation errors (Bounds for negative, Type for non-integer, NoSuchColumn even with LIMIT 0).
         assert!(matches!(
-            db.execute("SELECT id FROM nums LIMIT ?", &[SqlValue::Integer(-1)]).unwrap_err(),
+            db.execute("SELECT id FROM nums LIMIT ?", &[SqlValue::Integer(-1)])
+                .unwrap_err(),
             SqlError::Bounds(_)
         ));
         assert!(matches!(
-            db.execute("SELECT id FROM nums LIMIT 1 OFFSET ?", &[SqlValue::Integer(-5)]).unwrap_err(),
+            db.execute(
+                "SELECT id FROM nums LIMIT 1 OFFSET ?",
+                &[SqlValue::Integer(-5)]
+            )
+            .unwrap_err(),
             SqlError::Bounds(_)
         ));
         for bad in [
@@ -2206,16 +2224,19 @@ fn limit_offset_edges_params_early_termination_and_sort_bounds() {
             SqlValue::Boolean(true),
         ] {
             assert!(matches!(
-                db.execute("SELECT id FROM nums LIMIT ?", std::slice::from_ref(&bad)).unwrap_err(),
+                db.execute("SELECT id FROM nums LIMIT ?", std::slice::from_ref(&bad))
+                    .unwrap_err(),
                 SqlError::Type(_)
             ));
             assert!(matches!(
-                db.execute("SELECT id FROM nums LIMIT 1 OFFSET ?", &[bad]).unwrap_err(),
+                db.execute("SELECT id FROM nums LIMIT 1 OFFSET ?", &[bad])
+                    .unwrap_err(),
                 SqlError::Type(_)
             ));
         }
         assert!(matches!(
-            db.execute("SELECT id FROM nums ORDER BY nope LIMIT 0", &[]).unwrap_err(),
+            db.execute("SELECT id FROM nums ORDER BY nope LIMIT 0", &[])
+                .unwrap_err(),
             SqlError::NoSuchColumn { .. }
         ));
 
@@ -2239,25 +2260,36 @@ fn limit_offset_edges_params_early_termination_and_sort_bounds() {
             vec![0, 1, 2, 3, 4]
         );
         assert_eq!(
-            get_ids(&db, "SELECT id FROM nums ORDER BY id ASC LIMIT 3 OFFSET 2", &[]),
+            get_ids(
+                &db,
+                "SELECT id FROM nums ORDER BY id ASC LIMIT 3 OFFSET 2",
+                &[]
+            ),
             vec![2, 3, 4]
         );
         assert_eq!(
-            get_ids(&db, "SELECT id FROM nums WHERE id >= 20 ORDER BY id ASC LIMIT 5", &[]),
+            get_ids(
+                &db,
+                "SELECT id FROM nums WHERE id >= 20 ORDER BY id ASC LIMIT 5",
+                &[]
+            ),
             vec![20, 21, 22, 23, 24]
         );
         // OFFSET 2 + LIMIT 4 requires visiting 6 rows > max_visited_rows (5).
         assert!(matches!(
-            db.execute("SELECT id FROM nums ORDER BY id ASC LIMIT 4 OFFSET 2", &[]).unwrap_err(),
+            db.execute("SELECT id FROM nums ORDER BY id ASC LIMIT 4 OFFSET 2", &[])
+                .unwrap_err(),
             SqlError::Bounds(_)
         ));
         // Non-PK ORDER BY and PK DESC must scan all 50 rows > max_visited_rows (5).
         assert!(matches!(
-            db.execute("SELECT id FROM nums ORDER BY val ASC LIMIT 2", &[]).unwrap_err(),
+            db.execute("SELECT id FROM nums ORDER BY val ASC LIMIT 2", &[])
+                .unwrap_err(),
             SqlError::Bounds(_)
         ));
         assert!(matches!(
-            db.execute("SELECT id FROM nums ORDER BY id DESC LIMIT 2", &[]).unwrap_err(),
+            db.execute("SELECT id FROM nums ORDER BY id DESC LIMIT 2", &[])
+                .unwrap_err(),
             SqlError::Bounds(_)
         ));
 
@@ -2271,36 +2303,54 @@ fn limit_offset_edges_params_early_termination_and_sort_bounds() {
         })
         .unwrap();
         assert_eq!(
-            get_ids(&db, "SELECT id FROM nums ORDER BY val ASC, id ASC LIMIT 5", &[]),
+            get_ids(
+                &db,
+                "SELECT id FROM nums ORDER BY val ASC, id ASC LIMIT 5",
+                &[]
+            ),
             vec![0, 10, 20, 30, 40]
         );
         assert_eq!(
-            get_ids(&db, "SELECT id FROM nums ORDER BY val ASC LIMIT 4 OFFSET 6", &[]),
+            get_ids(
+                &db,
+                "SELECT id FROM nums ORDER BY val ASC LIMIT 4 OFFSET 6",
+                &[]
+            ),
             vec![19, 29, 39, 49]
         );
         assert_eq!(
-            get_ids(&db, "SELECT id FROM nums ORDER BY id DESC LIMIT 5 OFFSET 5", &[]),
+            get_ids(
+                &db,
+                "SELECT id FROM nums ORDER BY id DESC LIMIT 5 OFFSET 5",
+                &[]
+            ),
             vec![44, 43, 42, 41, 40]
         );
         // Full sort without LIMIT on 50 rows exceeds max_select_rows/max_sort_rows.
         assert!(matches!(
-            db.execute("SELECT id FROM nums ORDER BY val ASC", &[]).unwrap_err(),
+            db.execute("SELECT id FROM nums ORDER BY val ASC", &[])
+                .unwrap_err(),
             SqlError::Bounds(_)
         ));
         // OFFSET 8 + LIMIT 5 = 13 > max_sort_rows (10).
         assert!(matches!(
-            db.execute("SELECT id FROM nums ORDER BY val ASC LIMIT 5 OFFSET 8", &[]).unwrap_err(),
+            db.execute("SELECT id FROM nums ORDER BY val ASC LIMIT 5 OFFSET 8", &[])
+                .unwrap_err(),
             SqlError::Bounds(_)
         ));
         // LIMIT 6 > max_select_rows (5) when 50 rows match.
         assert!(matches!(
-            db.execute("SELECT id FROM nums ORDER BY val ASC LIMIT 6", &[]).unwrap_err(),
+            db.execute("SELECT id FROM nums ORDER BY val ASC LIMIT 6", &[])
+                .unwrap_err(),
             SqlError::Bounds(_)
         ));
         // OFFSET 47 + LIMIT 6 needs 53 > max_sort_rows (10), so it fails with Bounds.
         assert!(matches!(
-            db.execute("SELECT id FROM nums ORDER BY val ASC LIMIT 6 OFFSET 47", &[])
-                .unwrap_err(),
+            db.execute(
+                "SELECT id FROM nums ORDER BY val ASC LIMIT 6 OFFSET 47",
+                &[]
+            )
+            .unwrap_err(),
             SqlError::Bounds(_)
         ));
     });
@@ -2313,8 +2363,10 @@ fn limit_offset_edges_params_early_termination_and_sort_bounds() {
             ..Default::default()
         })
         .unwrap();
-        db.execute("CREATE TABLE t (id INT PRIMARY KEY, v INT)", &[]).unwrap();
-        db.execute("INSERT INTO t VALUES (1,3),(2,1),(3,2)", &[]).unwrap();
+        db.execute("CREATE TABLE t (id INT PRIMARY KEY, v INT)", &[])
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1,3),(2,1),(3,2)", &[])
+            .unwrap();
         let SqlOutcome::Rows { rows, .. } = db
             .execute("SELECT id FROM t ORDER BY v ASC LIMIT 50", &[])
             .unwrap()
@@ -2361,8 +2413,20 @@ fn randomized_order_limit_offset_differential_against_model() {
     fn cmp_model_val(a: &SqlValue, b: &SqlValue, desc: bool, nulls_first: bool) -> Ordering {
         match (a, b) {
             (SqlValue::Null, SqlValue::Null) => Ordering::Equal,
-            (SqlValue::Null, _) => if nulls_first { Ordering::Less } else { Ordering::Greater },
-            (_, SqlValue::Null) => if nulls_first { Ordering::Greater } else { Ordering::Less },
+            (SqlValue::Null, _) => {
+                if nulls_first {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                }
+            }
+            (_, SqlValue::Null) => {
+                if nulls_first {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                }
+            }
             (SqlValue::Integer(x), SqlValue::Integer(y)) => {
                 let o = x.cmp(y);
                 if desc { o.reverse() } else { o }
@@ -2551,9 +2615,195 @@ fn randomized_order_limit_offset_differential_against_model() {
                 columns: proj.iter().map(|&c| col_names[c].to_owned()).collect(),
                 rows: expected_projected,
             };
-            assert_eq!(actual, expected, "model mismatch for `{sql}` params={params:?}");
+            assert_eq!(
+                actual, expected,
+                "model mismatch for `{sql}` params={params:?}"
+            );
         }
     });
+}
+
+#[test]
+fn catalog_and_plan_caches_never_serve_stale_definitions_on_both_backends() {
+    fn check_pair<'a>(make_db: &dyn Fn() -> SqlDatabase<'a>) {
+        let mut db1 = make_db();
+        let db2 = make_db();
+
+        db1.execute(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, a INTEGER, b TEXT)",
+            &[],
+        )
+        .unwrap();
+        db1.execute("INSERT INTO items VALUES (1, 10, 'hi')", &[])
+            .unwrap();
+        let prep = db1
+            .prepare("SELECT id, a, b FROM items WHERE id = ?")
+            .unwrap();
+        assert_eq!(
+            db1.execute_prepared(&prep, &[SqlValue::Integer(1)])
+                .unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["id".into(), "a".into(), "b".into()],
+                rows: vec![vec![
+                    SqlValue::Integer(1),
+                    SqlValue::Integer(10),
+                    SqlValue::Text("hi".into()),
+                ]],
+            }
+        );
+        // Also populate db1's statement cache via execute().
+        assert_eq!(
+            db1.execute("SELECT id, a, b FROM items WHERE id = 1", &[])
+                .unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["id".into(), "a".into(), "b".into()],
+                rows: vec![vec![
+                    SqlValue::Integer(1),
+                    SqlValue::Integer(10),
+                    SqlValue::Text("hi".into()),
+                ]],
+            }
+        );
+
+        // CREATE TABLE IF NOT EXISTS from db2 does not alter or break existing table.
+        assert_eq!(
+            db2.execute(
+                "CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, completely_different TEXT)",
+                &[]
+            )
+            .unwrap(),
+            SqlOutcome::TableCreated
+        );
+        assert_eq!(
+            db2.execute("SELECT id, a, b FROM items WHERE id = 1", &[])
+                .unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["id".into(), "a".into(), "b".into()],
+                rows: vec![vec![
+                    SqlValue::Integer(1),
+                    SqlValue::Integer(10),
+                    SqlValue::Text("hi".into()),
+                ]],
+            }
+        );
+
+        // Drop collection + catalog entry via DocumentDatabase, bypassing db1's in-memory caches.
+        db2.document_database()
+            .transaction(|tx| {
+                tx.drop_collection("items")?;
+                tx.delete_raw(b"\0emda-sql\x01Titems")
+            })
+            .unwrap();
+
+        // db1 must immediately observe NoSuchTable (not serve stale cache).
+        assert!(matches!(
+            db1.execute_prepared(&prep, &[SqlValue::Integer(1)])
+                .unwrap_err(),
+            SqlError::NoSuchTable(_)
+        ));
+        assert!(matches!(
+            db1.execute("SELECT id, a, b FROM items WHERE id = 1", &[])
+                .unwrap_err(),
+            SqlError::NoSuchTable(_)
+        ));
+
+        // Recreate `items` via db2 with a completely different schema (TEXT PK, different columns).
+        db2.execute(
+            "CREATE TABLE items (id TEXT PRIMARY KEY, tag TEXT NOT NULL, score REAL)",
+            &[],
+        )
+        .unwrap();
+        db2.execute("INSERT INTO items VALUES ('k1', 'alpha', 3.5)", &[])
+            .unwrap();
+
+        // db1's old prepared statement and cached SQL string must detect the schema change.
+        assert!(matches!(
+            db1.execute_prepared(&prep, &[SqlValue::Integer(1)])
+                .unwrap_err(),
+            SqlError::NoSuchColumn { .. }
+        ));
+        assert!(matches!(
+            db1.execute("SELECT id, a, b FROM items WHERE id = 1", &[])
+                .unwrap_err(),
+            SqlError::NoSuchColumn { .. }
+        ));
+        assert_eq!(
+            db1.execute("SELECT * FROM items", &[]).unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["id".into(), "tag".into(), "score".into()],
+                rows: vec![vec![
+                    SqlValue::Text("k1".into()),
+                    SqlValue::Text("alpha".into()),
+                    SqlValue::Real(3.5),
+                ]],
+            }
+        );
+        assert_eq!(
+            db1.execute("SELECT id, tag, score FROM items WHERE id = 'k1'", &[])
+                .unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["id".into(), "tag".into(), "score".into()],
+                rows: vec![vec![
+                    SqlValue::Text("k1".into()),
+                    SqlValue::Text("alpha".into()),
+                    SqlValue::Real(3.5),
+                ]],
+            }
+        );
+
+        // set_limits clears cached statements and plans so tighter max_columns takes effect.
+        assert!(db1.execute("SELECT id, tag FROM items", &[]).is_ok());
+        db1.set_limits(SqlLimits {
+            max_columns: 1,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(matches!(
+            db1.execute("SELECT id, tag FROM items", &[]).unwrap_err(),
+            SqlError::Bounds(_)
+        ));
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let store_path = dir.path().join("store");
+    {
+        let store = Store::open(&store_path).unwrap();
+        check_pair(&|| SqlDatabase::new(DocumentDatabase::new(&store)));
+    }
+    // Reopen Store and verify persisted new schema.
+    {
+        let store = Store::open(&store_path).unwrap();
+        let db = SqlDatabase::new(DocumentDatabase::new(&store));
+        assert_eq!(
+            db.execute("SELECT * FROM items", &[]).unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["id".into(), "tag".into(), "score".into()],
+                rows: vec![vec![
+                    SqlValue::Text("k1".into()),
+                    SqlValue::Text("alpha".into()),
+                    SqlValue::Real(3.5),
+                ]],
+            }
+        );
+    }
+
+    let (ckpt, ckpt_path, digest) = open_checkpoint(dir.path());
+    check_pair(&|| SqlDatabase::new(DocumentDatabase::with_checkpoint_store(&ckpt)));
+    drop(ckpt);
+    let ckpt_reopened =
+        CheckpointStore::open(dir.path().join("checkpoint_log"), &ckpt_path, &digest).unwrap();
+    let ckpt_db = SqlDatabase::new(DocumentDatabase::with_checkpoint_store(&ckpt_reopened));
+    assert_eq!(
+        ckpt_db.execute("SELECT * FROM items", &[]).unwrap(),
+        SqlOutcome::Rows {
+            columns: vec!["id".into(), "tag".into(), "score".into()],
+            rows: vec![vec![
+                SqlValue::Text("k1".into()),
+                SqlValue::Text("alpha".into()),
+                SqlValue::Real(3.5),
+            ]],
+        }
+    );
 }
 
 #[test]
