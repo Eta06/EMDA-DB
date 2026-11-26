@@ -11,7 +11,7 @@ been demonstrated; other backup modes have not.
 | --- | --- | ---: | --- |
 | 1 | Correctness and foundations | 97% | 115 of 119 local checklist items. Full-log backup, restore, and format upgrade have scan ceilings. Broader fault and resource evidence remains open. |
 | 2 | Durable storage and core operations | 96% | 176 of 183 checklist items. Retained recovery and startup retirement share a scan ceiling. Broader writable-memory and reclamation evidence remains open. |
-| 3 | Document model and queries | 97% | 113 of 116 checklist items. Retained snapshots share bounded aggregation and pagination. Richer operators, transaction scalability, isolation and comparable server-engine measurements remain open. |
+| 3 | Document model and queries | 98% | 114 of 116 checklist items. Retained snapshots share bounded aggregation and pagination. Richer operators, transaction scalability, isolation and comparable server-engine measurements remain open. |
 | 4 | SQL | 0% | None of four SQL milestones has a working prototype. The embedded transaction engine is a prerequisite shared with earlier steps. |
 | 5 | Secure service and project isolation | 10% | One of five milestones has partial evidence from the loopback benchmark adapter. A secure API, project isolation and safe scale-to-zero remain to build. |
 | 6 | Performance and scalability | 60% | The comparative benchmark milestone has evidence. Profiling, durable group commit, hardware acceleration and scheduling each have partial evidence. Full workload and project-level scaling remain open. |
@@ -20,7 +20,7 @@ been demonstrated; other backup modes have not.
 
 Steps 1–3 count checked bullets in the [foundation and storage](FOUNDATION_FOLLOW_UP.md)
 and [document](DOCUMENT_FOLLOW_UP.md) checklists, excluding the deferred
-physical power-loss drill. Their combined count is 404 of 418 (96.7%). Each item has equal
+physical power-loss drill. Their combined count is 405 of 418 (96.9%). Each item has equal
 weight in that count. Steps 4–8 are estimates from roadmap milestones with
 one point for demonstrated delivery, half a point for a tested subset, and
 zero for design or prerequisites. The projects have different scope and the

@@ -549,6 +549,86 @@ Preserve and verify its bytes separately if the transport or storage is
 untrusted. Archive transfer preserves the logical collection and leaves
 out raw keys, maintenance state, witnesses and log history.
 
+## Planned extensions, limits and compatibility
+
+This section fixes the semantics, limits and compatibility rules that the
+next document increments must follow. It describes design, not shipped
+behavior, unless it names an existing API.
+
+**Compatibility rules for every increment.**
+
+- Adding a variant to an exhaustive public enum (`DocumentFilter`,
+  `FieldType`, `IndexValue`) is a Rust source change for exhaustive
+  downstream matches, so the changelog records it, as for `EndsWith`.
+  `DocumentUpdate` is already `#[non_exhaustive]`.
+- New public request and result structs are `#[non_exhaustive]` with
+  constructors, like `MatchOptions` and `LookupManyLimits`. Existing struct
+  literals keep compiling.
+- A change to stored semantics raises the collection metadata version, and
+  older readers fail closed, as for incremental index builds.
+- Defaults never change behavior: a new planner choice, statistic or
+  multikey form is opt-in per call or per index definition.
+- No increment claims MongoDB compatibility.
+
+**Schema types and validation.** Today `FieldType` covers `Boolean`,
+`Integer`, `IntegerRange`, `Number`, `String`, `StringBytes`, `Object` and
+`Array`, with `required` and `nullable`. Next come:
+
+- element rules for arrays: element type, length range, and an optional
+  uniqueness check using the shared equality budget;
+- closed object shapes that reject undeclared fields;
+- string enumerations of up to 256 values.
+
+Rules stay within the existing path and node caps. They are checked on every
+write and by resumable migration, with both schemas enforced during a
+migration as today.
+
+**Operators.** New filters keep the 256-byte operand cap and string-only
+semantics of `StartsWith` and `EndsWith`:
+
+- a bounded substring `Contains` with no index selection;
+- a type predicate distinguishing null, boolean, integer, number, string,
+  array and object.
+
+Regular expressions are not planned because their cost cannot be bounded by
+operand size. New updates follow the `Min`/`Max` rules: checked integer
+arithmetic, typed index order, and failure on unsupported present values.
+Aggregation adds grouped string minimum and maximum, and a distinct count
+over at most 256 groups. These share the 256-document scan limit and fail
+rather than truncate.
+
+**Arrays and multikey indexes.** A multikey index is an explicit index
+option. It writes one entry per distinct scalar element. A write fails if
+any one document would produce more than 64 entries for one index. A
+unique multikey index enforces uniqueness across documents, not within
+one. Partial guards keep their root-field meaning. Element predicates such
+as `ArrayContains` may then select the index, and residual filtering keeps
+today's same-element semantics for `ArrayElementMatch`.
+
+**Index unions.** Disjunction unions may combine different indexes, at
+most 16 probes per query. Results are deduplicated by document ID and share
+one candidate and byte budget. An ineligible branch makes the whole query a
+bounded collection scan, as today.
+
+**Relationships.** ID, unique-tuple and non-unique-tuple lookups exist,
+`lookup_many` with explicit per-source, total and byte limits. Next is
+reverse lookup from a target row to its sources through the source
+collection's index, with the same limits and failure rules. Nested or
+multi-hop lookups and general joins stay out of the document interface.
+They belong to the SQL layer.
+
+**Diagnostics, statistics and cost.** `explain_query`,
+`explain_query_estimated` and opt-in cost-based choice among eligible
+ranges exist, bounded by `DocumentEstimateLimits`. Next:
+
+- optional per-index entry counts maintained in the same transaction as
+  the entries, with stale counts detectable from the metadata version;
+- an opt-in choice between an index and a bounded collection scan from
+  those counts.
+
+The default planner stays rule-based, and every estimate stays inside its
+admission budget.
+
 ## Namespace, integrity and compatibility
 
 The versioned byte prefix `00 65 6d 64 61 2d 64 6f 63 75 6d 65 6e 74 01` is reserved for document metadata, documents and indexes. The document transaction's raw methods reject this prefix. Direct raw `Store`/`CheckpointStore` access and older binaries do not enforce the reservation; applications must not use them to modify document-owned keys. The prefix is **not** a security or tenant-isolation boundary. Invalid or unknown metadata and invalid documents fail when detected, and queries check the entries they return; checksums and these checks do not repair corruption, authenticate data, or guarantee discovery of a missing index entry. In particular, a well-formed but improperly replaced build or schema-migration cursor can skip documents and publish an incomplete index or schema. A later bounded verification or read may detect the inconsistency; publication does not independently revalidate the whole collection.
