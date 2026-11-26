@@ -347,3 +347,10 @@ path = "fuzz_targets/retained_recovery.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "sql"
+path = "fuzz_targets/sql.rs"
+test = false
+doc = false
+bench = false

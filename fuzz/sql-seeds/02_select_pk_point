@@ -1,0 +1,1 @@
+SELECT id, n, r, s, b FROM t WHERE id = 1

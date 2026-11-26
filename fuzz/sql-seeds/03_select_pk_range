@@ -1,0 +1,1 @@
+SELECT * FROM t WHERE id >= 1 AND id <= 2 AND NOT (n IS NULL)

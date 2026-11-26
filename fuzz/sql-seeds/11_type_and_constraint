@@ -1,0 +1,1 @@
+INSERT INTO t VALUES (1, 'wrong', 9007199254740993, 'too-long-string-for-varchar16', 1)

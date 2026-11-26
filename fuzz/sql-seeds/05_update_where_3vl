@@ -1,0 +1,1 @@
+UPDATE t SET n = 42, s = 'ok' WHERE (b OR NULL) AND s IS NOT NULL

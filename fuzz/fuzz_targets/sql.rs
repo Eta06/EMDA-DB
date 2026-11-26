@@ -1,0 +1,1615 @@
+#![no_main]
+
+use database_engine::{
+    CheckpointStore, DocumentDatabase, SqlDatabase, SqlError, SqlLimits, SqlOutcome, SqlValue,
+    Store,
+};
+use libfuzzer_sys::fuzz_target;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
+
+const MAX_RAW_SQL_BYTES: usize = 8 * 1024;
+const MAX_STRUCTURED_OPS: usize = 24;
+const VARCHAR_LIMIT: usize = 8;
+
+enum Backend {
+    Ordinary(Store),
+    Checkpoint(CheckpointStore),
+}
+
+impl Backend {
+    fn sql(&self) -> SqlDatabase<'_> {
+        match self {
+            Self::Ordinary(store) => SqlDatabase::new(DocumentDatabase::new(store)),
+            Self::Checkpoint(store) => {
+                SqlDatabase::new(DocumentDatabase::with_checkpoint_store(store))
+            }
+        }
+    }
+}
+
+fn open_backend(
+    path: &Path,
+    checkpoint: &Path,
+    digest: Option<&[u8; 32]>,
+    use_checkpoint: bool,
+) -> Backend {
+    if use_checkpoint {
+        Backend::Checkpoint(
+            CheckpointStore::open(path, checkpoint, digest.expect("checkpoint digest"))
+                .expect("open checkpoint store"),
+        )
+    } else {
+        Backend::Ordinary(Store::open(path).expect("open ordinary store"))
+    }
+}
+
+fn assert_documented_error(err: &SqlError) {
+    let _ = err.to_string();
+    match err {
+        SqlError::Syntax { .. }
+        | SqlError::Unsupported { .. }
+        | SqlError::Type(_)
+        | SqlError::Constraint(_)
+        | SqlError::NoSuchTable(_)
+        | SqlError::NoSuchColumn { .. }
+        | SqlError::TableExists(_)
+        | SqlError::Bounds(_)
+        | SqlError::ParameterCount { .. } => {}
+        SqlError::Conflict(io_err) => {
+            panic!("unexpected transaction conflict in single-threaded fuzz run: {io_err}");
+        }
+        SqlError::OutcomeUnknown(io_err) => {
+            panic!("unexpected unknown outcome in single-threaded fuzz run: {io_err}");
+        }
+        SqlError::Io(io_err) => {
+            panic!("unexpected storage I/O error in single-threaded fuzz run: {io_err}");
+        }
+    }
+}
+
+fn synthetic_param(byte: u8) -> SqlValue {
+    match byte % 12 {
+        0 => SqlValue::Null,
+        1 => SqlValue::Integer(0),
+        2 => SqlValue::Integer(1),
+        3 => SqlValue::Integer(-1),
+        4 => SqlValue::Integer(i64::MIN),
+        5 => SqlValue::Integer(i64::MAX),
+        6 => SqlValue::Integer((1_i64 << 53) + 1),
+        7 => SqlValue::Real(1.5),
+        8 => SqlValue::Real(-2.5),
+        9 => SqlValue::Text("alpha".into()),
+        10 => SqlValue::Text("it's".into()),
+        _ => SqlValue::Boolean(byte & 16 != 0),
+    }
+}
+
+/// Part (a): Feed arbitrary bytes as UTF-8-lossy SQL text to `prepare` / `execute` against
+/// a temporary store with a small pre-created table.
+fn fuzz_raw_sql(backend: &Backend, data: &[u8]) {
+    let mut db = backend.sql();
+    db.execute(
+        "CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER, r REAL, s VARCHAR(16), b BOOLEAN)",
+        &[],
+    )
+    .expect("create raw table");
+    db.execute(
+        "INSERT INTO t VALUES (1, 10, 1.5, 'alpha', TRUE), (2, NULL, -2.5, NULL, FALSE)",
+        &[],
+    )
+    .expect("seed raw table");
+
+    if data.first().copied().unwrap_or(0) & 0x80 != 0 {
+        let tight = SqlLimits {
+            max_sql_bytes: 512,
+            max_tokens: 128,
+            max_expr_depth: 12,
+            max_columns: 16,
+            max_insert_rows: 16,
+            max_mutation_rows: 16,
+            max_select_rows: 64,
+            max_visited_rows: 128,
+            max_params: 16,
+            max_text_bytes: 256,
+        };
+        db.set_limits(tight).expect("valid tight limits");
+    }
+
+    let bounded = &data[..data.len().min(MAX_RAW_SQL_BYTES)];
+    let sql = String::from_utf8_lossy(bounded);
+
+    match db.prepare(&sql) {
+        Err(err) => assert_documented_error(&err),
+        Ok(stmt) => {
+            if let Err(err) = db.execute_prepared(&stmt, &[]) {
+                assert_documented_error(&err);
+            }
+            let needed = stmt.param_count();
+            if needed > 0 && needed <= 16 {
+                let params: Vec<SqlValue> = (0..needed)
+                    .map(|idx| {
+                        let b = if data.is_empty() {
+                            idx as u8
+                        } else {
+                            data[idx % data.len()]
+                        };
+                        synthetic_param(b)
+                    })
+                    .collect();
+                if let Err(err) = db.execute_prepared(&stmt, &params) {
+                    assert_documented_error(&err);
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Part (b): Structured differential SQL fuzzer against an in-memory BTreeMap
+// ---------------------------------------------------------------------------
+
+struct ByteCursor<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> ByteCursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, pos: 0 }
+    }
+
+    fn next(&mut self) -> Option<u8> {
+        let b = *self.bytes.get(self.pos)?;
+        self.pos += 1;
+        Some(b)
+    }
+
+    fn next_or(&mut self, fallback: u8) -> u8 {
+        self.next().unwrap_or(fallback)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Pk {
+    Int(i64),
+    Text(String),
+}
+
+impl Pk {
+    fn to_sql_value(&self) -> SqlValue {
+        match self {
+            Self::Int(n) => SqlValue::Integer(*n),
+            Self::Text(s) => SqlValue::Text(s.clone()),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Col {
+    Id,
+    N,
+    R,
+    S,
+    B,
+    Req,
+}
+
+impl Col {
+    const ALL: [Col; 6] = [Col::Id, Col::N, Col::R, Col::S, Col::B, Col::Req];
+
+    fn from_byte(byte: u8) -> Self {
+        Self::ALL[(byte as usize) % Self::ALL.len()]
+    }
+
+    fn canonical_name(self) -> &'static str {
+        match self {
+            Self::Id => "id",
+            Self::N => "n",
+            Self::R => "r",
+            Self::S => "s",
+            Self::B => "b",
+            Self::Req => "req",
+        }
+    }
+
+    fn sql_ident(self, style: u8) -> &'static str {
+        match (self, style % 3) {
+            (Self::Id, 0) => "id",
+            (Self::Id, 1) => "ID",
+            (Self::Id, _) => "\"id\"",
+            (Self::N, 0) => "n",
+            (Self::N, 1) => "N",
+            (Self::N, _) => "\"n\"",
+            (Self::R, 0) => "r",
+            (Self::R, 1) => "R",
+            (Self::R, _) => "\"r\"",
+            (Self::S, 0) => "s",
+            (Self::S, 1) => "S",
+            (Self::S, _) => "\"s\"",
+            (Self::B, 0) => "b",
+            (Self::B, 1) => "B",
+            (Self::B, _) => "\"b\"",
+            (Self::Req, 0) => "req",
+            (Self::Req, 1) => "REQ",
+            (Self::Req, _) => "\"req\"",
+        }
+    }
+
+    fn kind(self, text_pk: bool) -> ValType {
+        match self {
+            Self::Id if text_pk => ValType::Text,
+            Self::Id | Self::N | Self::Req => ValType::Int,
+            Self::R => ValType::Real,
+            Self::S => ValType::Text,
+            Self::B => ValType::Bool,
+        }
+    }
+
+    fn not_null(self) -> bool {
+        matches!(self, Self::Id | Self::Req)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ValType {
+    Int,
+    Real,
+    Text,
+    Bool,
+}
+
+impl ValType {
+    fn is_numeric(self) -> bool {
+        matches!(self, Self::Int | Self::Real)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Row {
+    id: Pk,
+    n: Option<i64>,
+    r: Option<f64>,
+    s: Option<String>,
+    b: Option<bool>,
+    req: i64,
+}
+
+impl Row {
+    fn get(&self, col: Col) -> SqlValue {
+        match col {
+            Col::Id => self.id.to_sql_value(),
+            Col::N => self.n.map_or(SqlValue::Null, SqlValue::Integer),
+            Col::R => self.r.map_or(SqlValue::Null, SqlValue::Real),
+            Col::S => self.s.clone().map_or(SqlValue::Null, SqlValue::Text),
+            Col::B => self.b.map_or(SqlValue::Null, SqlValue::Boolean),
+            Col::Req => SqlValue::Integer(self.req),
+        }
+    }
+
+    fn set(&mut self, col: Col, value: SqlValue) {
+        match col {
+            Col::Id => unreachable!("PK updates are rejected before row mutation"),
+            Col::N => {
+                self.n = match value {
+                    SqlValue::Null => None,
+                    SqlValue::Integer(v) => Some(v),
+                    other => panic!("bad model n value: {other:?}"),
+                };
+            }
+            Col::R => {
+                self.r = match value {
+                    SqlValue::Null => None,
+                    SqlValue::Real(v) => Some(v),
+                    other => panic!("bad model r value: {other:?}"),
+                };
+            }
+            Col::S => {
+                self.s = match value {
+                    SqlValue::Null => None,
+                    SqlValue::Text(v) => Some(v),
+                    other => panic!("bad model s value: {other:?}"),
+                };
+            }
+            Col::B => {
+                self.b = match value {
+                    SqlValue::Null => None,
+                    SqlValue::Boolean(v) => Some(v),
+                    other => panic!("bad model b value: {other:?}"),
+                };
+            }
+            Col::Req => {
+                self.req = match value {
+                    SqlValue::Integer(v) => v,
+                    other => panic!("bad model req value: {other:?}"),
+                };
+            }
+        }
+    }
+
+    fn project(&self, cols: &[Col]) -> Vec<SqlValue> {
+        cols.iter().map(|&c| self.get(c)).collect()
+    }
+}
+
+#[derive(Clone, Debug)]
+enum ModelError {
+    Type,
+    Constraint,
+    Unsupported,
+}
+
+fn assert_expected_error(actual: Result<SqlOutcome, SqlError>, expected: ModelError, sql: &str) {
+    match (actual, expected) {
+        (Err(SqlError::Type(_)), ModelError::Type)
+        | (Err(SqlError::Constraint(_)), ModelError::Constraint)
+        | (Err(SqlError::Unsupported { .. }), ModelError::Unsupported) => {}
+        (other, exp) => panic!("expected {exp:?} for `{sql}`, got {other:?}"),
+    }
+}
+
+fn exact_i64_to_f64(value: i64) -> Result<f64, ModelError> {
+    let float = value as f64;
+    if float.is_finite() && (float as i128) == (value as i128) {
+        Ok(float)
+    } else {
+        Err(ModelError::Type)
+    }
+}
+
+fn compare_i64_f64(a: i64, b: f64) -> Ordering {
+    const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
+    if b >= TWO_POW_63 {
+        return Ordering::Less;
+    }
+    if b < -TWO_POW_63 {
+        return Ordering::Greater;
+    }
+    let floor = b.floor();
+    let fi = floor as i64;
+    match a.cmp(&fi) {
+        Ordering::Less => Ordering::Less,
+        Ordering::Greater => Ordering::Greater,
+        Ordering::Equal => {
+            if b == floor {
+                Ordering::Equal
+            } else {
+                Ordering::Less
+            }
+        }
+    }
+}
+
+fn compare_non_null(lhs: &SqlValue, rhs: &SqlValue) -> Result<Ordering, ModelError> {
+    match (lhs, rhs) {
+        (SqlValue::Integer(a), SqlValue::Integer(b)) => Ok(a.cmp(b)),
+        (SqlValue::Real(a), SqlValue::Real(b)) => a.partial_cmp(b).ok_or(ModelError::Type),
+        (SqlValue::Integer(a), SqlValue::Real(b)) => Ok(compare_i64_f64(*a, *b)),
+        (SqlValue::Real(a), SqlValue::Integer(b)) => Ok(compare_i64_f64(*b, *a).reverse()),
+        (SqlValue::Text(a), SqlValue::Text(b)) => Ok(a.as_bytes().cmp(b.as_bytes())),
+        (SqlValue::Boolean(a), SqlValue::Boolean(b)) => Ok(a.cmp(b)),
+        _ => Err(ModelError::Type),
+    }
+}
+
+fn coerce_for_col(
+    value: &SqlValue,
+    col: Col,
+    text_pk: bool,
+    allow_int_to_real: bool,
+) -> Result<SqlValue, ModelError> {
+    match value {
+        SqlValue::Null => {
+            if col.not_null() {
+                Err(ModelError::Constraint)
+            } else {
+                Ok(SqlValue::Null)
+            }
+        }
+        SqlValue::Integer(n) => match col.kind(text_pk) {
+            ValType::Int => Ok(SqlValue::Integer(*n)),
+            ValType::Real if allow_int_to_real => Ok(SqlValue::Real(exact_i64_to_f64(*n)?)),
+            _ => Err(ModelError::Type),
+        },
+        SqlValue::Real(f) => match col.kind(text_pk) {
+            ValType::Real => {
+                if !f.is_finite() {
+                    Err(ModelError::Type)
+                } else {
+                    Ok(SqlValue::Real(*f))
+                }
+            }
+            _ => Err(ModelError::Type),
+        },
+        SqlValue::Text(s) => match col.kind(text_pk) {
+            ValType::Text => {
+                if col == Col::S && s.chars().count() > VARCHAR_LIMIT {
+                    Err(ModelError::Constraint)
+                } else {
+                    Ok(SqlValue::Text(s.clone()))
+                }
+            }
+            _ => Err(ModelError::Type),
+        },
+        SqlValue::Boolean(b) => match col.kind(text_pk) {
+            ValType::Bool => Ok(SqlValue::Boolean(*b)),
+            _ => Err(ModelError::Type),
+        },
+    }
+}
+
+fn quote_sql_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+fn format_real_lit(v: f64) -> String {
+    let s = format!("{v}");
+    if s.contains('.') || s.contains('e') || s.contains('E') {
+        s
+    } else {
+        format!("{s}.0")
+    }
+}
+
+fn pick_int(byte: u8) -> i64 {
+    match byte % 16 {
+        0 => -4,
+        1 => -2,
+        2 => -1,
+        3 => 0,
+        4 => 1,
+        5 => 2,
+        6 => 3,
+        7 => 4,
+        8 => 10,
+        9 => i64::MIN,
+        10 => i64::MAX,
+        11 => 1_i64 << 53,
+        12 => (1_i64 << 53) + 1,
+        13 => -(1_i64 << 53),
+        14 => -(1_i64 << 53) - 1,
+        _ => 42,
+    }
+}
+
+fn pick_pk_int(byte: u8) -> i64 {
+    match byte % 12 {
+        0 => i64::MIN,
+        1 => -3,
+        2 => -1,
+        3 => 0,
+        4 => 1,
+        5 => 2,
+        6 => 3,
+        7 => 4,
+        8 => 5,
+        9 => 6,
+        10 => 7,
+        _ => i64::MAX,
+    }
+}
+
+fn pick_pk_text(byte: u8) -> String {
+    match byte % 10 {
+        0 => String::new(),
+        1 => "a".into(),
+        2 => "b".into(),
+        3 => "c".into(),
+        4 => "d".into(),
+        5 => "Z".into(),
+        6 => "it's".into(),
+        7 => "é".into(),
+        8 => "a b".into(),
+        _ => "z".into(),
+    }
+}
+
+fn pick_real(byte: u8) -> f64 {
+    match byte % 12 {
+        0 => -2.5,
+        1 => -1.0,
+        2 => 0.0,
+        3 => 0.25,
+        4 => 1.0,
+        5 => 1.5,
+        6 => 2.0,
+        7 => 10.0,
+        8 => (1_i64 << 53) as f64,
+        9 => -((1_i64 << 53) as f64),
+        10 => 9_223_372_036_854_775_808.0, // 2^63
+        _ => -9_223_372_036_854_775_808.0, // -2^63
+    }
+}
+
+fn pick_text(byte: u8) -> String {
+    match byte % 10 {
+        0 => String::new(),
+        1 => "a".into(),
+        2 => "Z".into(),
+        3 => "it's".into(),
+        4 => "éééé".into(),
+        5 => "NULL".into(),
+        6 => "beta".into(),
+        7 => "12345678".into(),  // exact VARCHAR(8) boundary
+        8 => "123456789".into(), // exceeds VARCHAR(8)
+        _ => "--comment".into(),
+    }
+}
+
+/// Generates a literal or `?` parameter value aimed at `target_type` (with occasional NULLs
+/// and occasional intentional type mismatches / edge values).
+fn gen_value_expr(
+    cur: &mut ByteCursor<'_>,
+    target_type: ValType,
+    params: &mut Vec<SqlValue>,
+    allow_null: bool,
+    allow_mismatch: bool,
+) -> (String, SqlValue, bool) {
+    let tag = cur.next_or(0);
+    let val_byte = cur.next_or(0);
+    let use_param = tag & 1 != 0;
+
+    if allow_null && tag.is_multiple_of(7) {
+        if use_param {
+            params.push(SqlValue::Null);
+            return ("?".into(), SqlValue::Null, true);
+        }
+        return ("NULL".into(), SqlValue::Null, true);
+    }
+
+    if allow_mismatch && tag % 11 == 1 {
+        let wrong = match target_type {
+            ValType::Int => SqlValue::Text("bad".into()),
+            ValType::Real => {
+                if val_byte & 1 != 0 {
+                    // Non-finite REAL parameter must fail with SqlError::Type.
+                    let non_finite = match val_byte % 3 {
+                        0 => f64::NAN,
+                        1 => f64::INFINITY,
+                        _ => f64::NEG_INFINITY,
+                    };
+                    params.push(SqlValue::Real(non_finite));
+                    return ("?".into(), SqlValue::Real(non_finite), true);
+                }
+                SqlValue::Boolean(true)
+            }
+            ValType::Text => SqlValue::Integer(7),
+            ValType::Bool => SqlValue::Integer(1),
+        };
+        return emit_value(wrong, use_param, params);
+    }
+
+    let val = match target_type {
+        ValType::Int => SqlValue::Integer(pick_int(val_byte)),
+        ValType::Real => {
+            if tag.is_multiple_of(5) {
+                // Exercise exact and non-exact INTEGER -> REAL literal/param coercion.
+                SqlValue::Integer(pick_int(val_byte))
+            } else {
+                SqlValue::Real(pick_real(val_byte))
+            }
+        }
+        ValType::Text => SqlValue::Text(pick_text(val_byte)),
+        ValType::Bool => SqlValue::Boolean(val_byte & 1 != 0),
+    };
+    emit_value(val, use_param, params)
+}
+
+fn emit_value(
+    val: SqlValue,
+    use_param: bool,
+    params: &mut Vec<SqlValue>,
+) -> (String, SqlValue, bool) {
+    if use_param {
+        params.push(val.clone());
+        ("?".into(), val, true)
+    } else {
+        let lit = match &val {
+            SqlValue::Null => "NULL".into(),
+            SqlValue::Integer(n) => format!("{n}"),
+            SqlValue::Real(f) => format_real_lit(*f),
+            SqlValue::Text(s) => quote_sql_str(s),
+            SqlValue::Boolean(true) => "TRUE".into(),
+            SqlValue::Boolean(false) => "FALSE".into(),
+        };
+        (lit, val, true)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CmpOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl CmpOp {
+    fn from_byte(b: u8) -> (Self, &'static str) {
+        match b % 7 {
+            0 => (Self::Eq, "="),
+            1 => (Self::Ne, "<>"),
+            2 => (Self::Ne, "!="),
+            3 => (Self::Lt, "<"),
+            4 => (Self::Le, "<="),
+            5 => (Self::Gt, ">"),
+            _ => (Self::Ge, ">="),
+        }
+    }
+
+    fn matches(self, ord: Ordering) -> bool {
+        match self {
+            Self::Eq => ord == Ordering::Equal,
+            Self::Ne => ord != Ordering::Equal,
+            Self::Lt => ord == Ordering::Less,
+            Self::Le => ord != Ordering::Greater,
+            Self::Gt => ord == Ordering::Greater,
+            Self::Ge => ord != Ordering::Less,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Operand {
+    Col(Col),
+    Val(SqlValue),
+}
+
+impl Operand {
+    fn val_type(&self, text_pk: bool) -> Option<ValType> {
+        match self {
+            Self::Col(c) => Some(c.kind(text_pk)),
+            Self::Val(SqlValue::Null) => None,
+            Self::Val(SqlValue::Integer(_)) => Some(ValType::Int),
+            Self::Val(SqlValue::Real(_)) => Some(ValType::Real),
+            Self::Val(SqlValue::Text(_)) => Some(ValType::Text),
+            Self::Val(SqlValue::Boolean(_)) => Some(ValType::Bool),
+        }
+    }
+
+    fn eval(&self, row: &Row) -> SqlValue {
+        match self {
+            Self::Col(c) => row.get(*c),
+            Self::Val(v) => v.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+enum WhereNode {
+    BoolLit(Option<bool>),
+    ColBool(Col),
+    IsNull {
+        col: Col,
+        negated: bool,
+    },
+    Cmp {
+        lhs: Operand,
+        op: CmpOp,
+        rhs: Operand,
+    },
+    Not(Box<WhereNode>),
+    And(Box<WhereNode>, Box<WhereNode>),
+    Or(Box<WhereNode>, Box<WhereNode>),
+}
+
+impl WhereNode {
+    fn check_types(&self, text_pk: bool) -> Result<(), ModelError> {
+        match self {
+            Self::BoolLit(_) => Ok(()),
+            Self::ColBool(col) => {
+                if col.kind(text_pk) == ValType::Bool {
+                    Ok(())
+                } else {
+                    Err(ModelError::Type)
+                }
+            }
+            Self::IsNull { .. } => Ok(()),
+            Self::Cmp { lhs, rhs, .. } => {
+                if let Operand::Val(SqlValue::Real(f)) = lhs
+                    && !f.is_finite()
+                {
+                    return Err(ModelError::Type);
+                }
+                if let Operand::Val(SqlValue::Real(f)) = rhs
+                    && !f.is_finite()
+                {
+                    return Err(ModelError::Type);
+                }
+                match (lhs.val_type(text_pk), rhs.val_type(text_pk)) {
+                    (None, _) | (_, None) => Ok(()),
+                    (Some(a), Some(b)) if a == b || (a.is_numeric() && b.is_numeric()) => Ok(()),
+                    _ => Err(ModelError::Type),
+                }
+            }
+            Self::Not(inner) => inner.check_types(text_pk),
+            Self::And(a, b) | Self::Or(a, b) => {
+                a.check_types(text_pk)?;
+                b.check_types(text_pk)
+            }
+        }
+    }
+
+    fn eval(&self, row: &Row) -> Option<bool> {
+        match self {
+            Self::BoolLit(b) => *b,
+            Self::ColBool(col) => match row.get(*col) {
+                SqlValue::Boolean(b) => Some(b),
+                SqlValue::Null => None,
+                other => panic!("non-boolean value in checked bool col: {other:?}"),
+            },
+            Self::IsNull { col, negated } => {
+                let is_null = matches!(row.get(*col), SqlValue::Null);
+                Some(if *negated { !is_null } else { is_null })
+            }
+            Self::Cmp { lhs, op, rhs } => {
+                let lv = lhs.eval(row);
+                let rv = rhs.eval(row);
+                if matches!(lv, SqlValue::Null) || matches!(rv, SqlValue::Null) {
+                    return None;
+                }
+                let ord = compare_non_null(&lv, &rv).expect("types pre-checked");
+                Some(op.matches(ord))
+            }
+            Self::Not(inner) => inner.eval(row).map(|v| !v),
+            Self::And(a, b) => match (a.eval(row), b.eval(row)) {
+                (Some(false), _) | (_, Some(false)) => Some(false),
+                (Some(true), Some(true)) => Some(true),
+                _ => None,
+            },
+            Self::Or(a, b) => match (a.eval(row), b.eval(row)) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            },
+        }
+    }
+}
+
+fn gen_pk_val(
+    cur: &mut ByteCursor<'_>,
+    text_pk: bool,
+    params: &mut Vec<SqlValue>,
+) -> (String, SqlValue) {
+    let b = cur.next_or(0);
+    let use_param = cur.next_or(0) & 1 != 0;
+    let val = if text_pk {
+        SqlValue::Text(pick_pk_text(b))
+    } else {
+        SqlValue::Integer(pick_pk_int(b))
+    };
+    let (sql, v, _) = emit_value(val, use_param, params);
+    (sql, v)
+}
+
+fn gen_where_atom(
+    cur: &mut ByteCursor<'_>,
+    text_pk: bool,
+    params: &mut Vec<SqlValue>,
+) -> (String, WhereNode) {
+    let shape = cur.next_or(0) % 10;
+    let style = cur.next_or(0);
+    match shape {
+        0 | 1 => {
+            // Primary-key point or range comparison: `id <op> val`
+            let (op, op_str) = CmpOp::from_byte(cur.next_or(0));
+            let (rhs_sql, rhs_val) = gen_pk_val(cur, text_pk, params);
+            let lhs_sql = Col::Id.sql_ident(style);
+            (
+                format!("{lhs_sql} {op_str} {rhs_sql}"),
+                WhereNode::Cmp {
+                    lhs: Operand::Col(Col::Id),
+                    op,
+                    rhs: Operand::Val(rhs_val),
+                },
+            )
+        }
+        2 => {
+            // Primary-key range conjunction: `(id >= lo AND id <= hi)`
+            let (lo_op, lo_str) = if cur.next_or(0) & 1 == 0 {
+                (CmpOp::Ge, ">=")
+            } else {
+                (CmpOp::Gt, ">")
+            };
+            let (hi_op, hi_str) = if cur.next_or(0) & 1 == 0 {
+                (CmpOp::Le, "<=")
+            } else {
+                (CmpOp::Lt, "<")
+            };
+            let (lo_sql, lo_val) = gen_pk_val(cur, text_pk, params);
+            let (hi_sql, hi_val) = gen_pk_val(cur, text_pk, params);
+            let id_sql = Col::Id.sql_ident(style);
+            let left = WhereNode::Cmp {
+                lhs: Operand::Col(Col::Id),
+                op: lo_op,
+                rhs: Operand::Val(lo_val),
+            };
+            let right = WhereNode::Cmp {
+                lhs: Operand::Col(Col::Id),
+                op: hi_op,
+                rhs: Operand::Val(hi_val),
+            };
+            (
+                format!("({id_sql} {lo_str} {lo_sql} AND {id_sql} {hi_str} {hi_sql})"),
+                WhereNode::And(Box::new(left), Box::new(right)),
+            )
+        }
+        3 => {
+            // Reversed PK comparison: `val <op> id`
+            let (op, op_str) = CmpOp::from_byte(cur.next_or(0));
+            let (lhs_sql, lhs_val) = gen_pk_val(cur, text_pk, params);
+            let rhs_sql = Col::Id.sql_ident(style);
+            (
+                format!("{lhs_sql} {op_str} {rhs_sql}"),
+                WhereNode::Cmp {
+                    lhs: Operand::Val(lhs_val),
+                    op,
+                    rhs: Operand::Col(Col::Id),
+                },
+            )
+        }
+        4 => {
+            // Column IS [NOT] NULL
+            let col = Col::from_byte(cur.next_or(0));
+            let negated = cur.next_or(0) & 1 != 0;
+            let sql = if negated {
+                format!("{} IS NOT NULL", col.sql_ident(style))
+            } else {
+                format!("{} IS NULL", col.sql_ident(style))
+            };
+            (sql, WhereNode::IsNull { col, negated })
+        }
+        5 | 6 => {
+            // Arbitrary column compared against literal/param (including NULL and rare mismatch)
+            let col = Col::from_byte(cur.next_or(0));
+            let (op, op_str) = CmpOp::from_byte(cur.next_or(0));
+            let (rhs_sql, rhs_val, _) = gen_value_expr(cur, col.kind(text_pk), params, true, true);
+            (
+                format!("{} {op_str} {rhs_sql}", col.sql_ident(style)),
+                WhereNode::Cmp {
+                    lhs: Operand::Col(col),
+                    op,
+                    rhs: Operand::Val(rhs_val),
+                },
+            )
+        }
+        7 => {
+            // Cross-column exact numeric comparison `n <op> r` or `n <op> req`
+            let (op, op_str) = CmpOp::from_byte(cur.next_or(0));
+            let rhs_col = if cur.next_or(0) & 1 == 0 {
+                Col::R
+            } else {
+                Col::Req
+            };
+            (
+                format!(
+                    "{} {op_str} {}",
+                    Col::N.sql_ident(style),
+                    rhs_col.sql_ident(style)
+                ),
+                WhereNode::Cmp {
+                    lhs: Operand::Col(Col::N),
+                    op,
+                    rhs: Operand::Col(rhs_col),
+                },
+            )
+        }
+        8 => {
+            // Boolean column directly in predicate (or occasional non-boolean col to test Type error)
+            let col = if cur.next_or(0).is_multiple_of(5) {
+                Col::N
+            } else {
+                Col::B
+            };
+            (col.sql_ident(style).to_string(), WhereNode::ColBool(col))
+        }
+        _ => {
+            // Boolean / NULL literal for 3VL testing
+            match cur.next_or(0) % 3 {
+                0 => ("TRUE".into(), WhereNode::BoolLit(Some(true))),
+                1 => ("FALSE".into(), WhereNode::BoolLit(Some(false))),
+                _ => ("NULL".into(), WhereNode::BoolLit(None)),
+            }
+        }
+    }
+}
+
+fn gen_where_expr(
+    cur: &mut ByteCursor<'_>,
+    text_pk: bool,
+    params: &mut Vec<SqlValue>,
+    depth: usize,
+) -> (String, WhereNode) {
+    if depth == 0 {
+        return gen_where_atom(cur, text_pk, params);
+    }
+    match cur.next_or(0) % 6 {
+        0 | 1 => gen_where_atom(cur, text_pk, params),
+        2 => {
+            let (sub_sql, sub_node) = gen_where_expr(cur, text_pk, params, depth - 1);
+            (
+                format!("NOT ({sub_sql})"),
+                WhereNode::Not(Box::new(sub_node)),
+            )
+        }
+        3 | 4 => {
+            let (l_sql, l_node) = gen_where_expr(cur, text_pk, params, depth - 1);
+            let (r_sql, r_node) = gen_where_expr(cur, text_pk, params, depth - 1);
+            (
+                format!("({l_sql} AND {r_sql})"),
+                WhereNode::And(Box::new(l_node), Box::new(r_node)),
+            )
+        }
+        _ => {
+            let (l_sql, l_node) = gen_where_expr(cur, text_pk, params, depth - 1);
+            let (r_sql, r_node) = gen_where_expr(cur, text_pk, params, depth - 1);
+            (
+                format!("({l_sql} OR {r_sql})"),
+                WhereNode::Or(Box::new(l_node), Box::new(r_node)),
+            )
+        }
+    }
+}
+
+fn check_full_table(db: &SqlDatabase<'_>, model: &BTreeMap<Pk, Row>) {
+    let outcome = db.execute("SELECT * FROM m", &[]).expect("SELECT * FROM m");
+    let expected_cols: Vec<String> = Col::ALL
+        .iter()
+        .map(|c| c.canonical_name().to_string())
+        .collect();
+    let expected_rows: Vec<Vec<SqlValue>> = model.values().map(|r| r.project(&Col::ALL)).collect();
+    assert_eq!(
+        outcome,
+        SqlOutcome::Rows {
+            columns: expected_cols,
+            rows: expected_rows,
+        }
+    );
+}
+
+fn exec_insert_op(
+    db: &SqlDatabase<'_>,
+    model: &mut BTreeMap<Pk, Row>,
+    cur: &mut ByteCursor<'_>,
+    text_pk: bool,
+) {
+    let row_count = 1 + (cur.next_or(0) % 3) as usize;
+    let explicit_cols = cur.next_or(0) & 1 != 0;
+    let omit_req = explicit_cols && cur.next_or(0).is_multiple_of(9);
+
+    let cols: Vec<Col> = if omit_req {
+        vec![Col::Id, Col::N, Col::R, Col::S, Col::B]
+    } else {
+        Col::ALL.to_vec()
+    };
+
+    let mut sql = String::from("INSERT INTO m");
+    if explicit_cols {
+        sql.push_str(" (");
+        for (i, c) in cols.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            sql.push_str(c.sql_ident(i as u8));
+        }
+        sql.push(')');
+    }
+    sql.push_str(" VALUES ");
+
+    let mut params = Vec::new();
+    let mut tuples: Vec<Vec<(SqlValue, bool)>> = Vec::with_capacity(row_count);
+
+    for r_idx in 0..row_count {
+        if r_idx > 0 {
+            sql.push_str(", ");
+        }
+        sql.push('(');
+        let mut vals = Vec::with_capacity(cols.len());
+        for (c_idx, &col) in cols.iter().enumerate() {
+            if c_idx > 0 {
+                sql.push_str(", ");
+            }
+            let (expr_sql, val, allow_int_to_real) = if col == Col::Id {
+                // Occasionally emit NULL PK to test NOT NULL constraint.
+                if cur.next_or(0).is_multiple_of(13) {
+                    ("NULL".into(), SqlValue::Null, true)
+                } else {
+                    let (s, v) = gen_pk_val(cur, text_pk, &mut params);
+                    (s, v, true)
+                }
+            } else {
+                gen_value_expr(cur, col.kind(text_pk), &mut params, true, true)
+            };
+            sql.push_str(&expr_sql);
+            vals.push((val, allow_int_to_real));
+        }
+        sql.push(')');
+        tuples.push(vals);
+    }
+
+    // Check parameter-level non-finite REAL error first (matches execute_statement check).
+    let mut expected_err: Option<ModelError> = None;
+    for p in &params {
+        if let SqlValue::Real(f) = p
+            && !f.is_finite()
+        {
+            expected_err = Some(ModelError::Type);
+            break;
+        }
+    }
+
+    let mut staged_rows: Vec<(Pk, Row)> = Vec::new();
+    if expected_err.is_none() && omit_req {
+        expected_err = Some(ModelError::Constraint);
+    }
+
+    if expected_err.is_none() {
+        let mut seen_pks = HashSet::new();
+        'outer: for tuple in &tuples {
+            let mut pk_val: Option<Pk> = None;
+            let mut n = None;
+            let mut r = None;
+            let mut s = None;
+            let mut b = None;
+            let mut req = 0_i64;
+            for (&col, (raw_val, allow_i2r)) in cols.iter().zip(tuple) {
+                match coerce_for_col(raw_val, col, text_pk, *allow_i2r) {
+                    Ok(coerced) => match col {
+                        Col::Id => {
+                            pk_val = Some(match coerced {
+                                SqlValue::Integer(v) => Pk::Int(v),
+                                SqlValue::Text(v) => Pk::Text(v),
+                                other => panic!("unexpected coerced pk: {other:?}"),
+                            });
+                        }
+                        Col::N => {
+                            n = match coerced {
+                                SqlValue::Null => None,
+                                SqlValue::Integer(v) => Some(v),
+                                _ => unreachable!(),
+                            };
+                        }
+                        Col::R => {
+                            r = match coerced {
+                                SqlValue::Null => None,
+                                SqlValue::Real(v) => Some(v),
+                                _ => unreachable!(),
+                            };
+                        }
+                        Col::S => {
+                            s = match coerced {
+                                SqlValue::Null => None,
+                                SqlValue::Text(v) => Some(v),
+                                _ => unreachable!(),
+                            };
+                        }
+                        Col::B => {
+                            b = match coerced {
+                                SqlValue::Null => None,
+                                SqlValue::Boolean(v) => Some(v),
+                                _ => unreachable!(),
+                            };
+                        }
+                        Col::Req => {
+                            req = match coerced {
+                                SqlValue::Integer(v) => v,
+                                _ => unreachable!(),
+                            };
+                        }
+                    },
+                    Err(e) => {
+                        expected_err = Some(e);
+                        break 'outer;
+                    }
+                }
+            }
+            let pk = pk_val.expect("pk column present");
+            if !seen_pks.insert(pk.clone()) {
+                expected_err = Some(ModelError::Constraint);
+                break;
+            }
+            staged_rows.push((
+                pk.clone(),
+                Row {
+                    id: pk,
+                    n,
+                    r,
+                    s,
+                    b,
+                    req,
+                },
+            ));
+        }
+    }
+
+    if expected_err.is_none() && staged_rows.iter().any(|(pk, _)| model.contains_key(pk)) {
+        expected_err = Some(ModelError::Constraint);
+    }
+
+    let actual = db.execute(&sql, &params);
+    if let Some(exp_err) = expected_err {
+        assert_expected_error(actual, exp_err, &sql);
+    } else {
+        assert_eq!(
+            actual.unwrap_or_else(|e| panic!("INSERT `{sql}` failed: {e}")),
+            SqlOutcome::Inserted {
+                rows: staged_rows.len(),
+            }
+        );
+        for (pk, row) in staged_rows {
+            model.insert(pk, row);
+        }
+    }
+}
+
+fn exec_select_op(
+    db: &SqlDatabase<'_>,
+    model: &BTreeMap<Pk, Row>,
+    cur: &mut ByteCursor<'_>,
+    text_pk: bool,
+) {
+    let select_all = cur.next_or(0) & 1 == 0;
+    let mut cols = Vec::new();
+    let mut sql = String::from("SELECT ");
+    if select_all {
+        sql.push('*');
+        cols.extend_from_slice(&Col::ALL);
+    } else {
+        let count = 1 + (cur.next_or(0) % 4) as usize;
+        for i in 0..count {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            let c = Col::from_byte(cur.next_or(0));
+            sql.push_str(c.sql_ident(cur.next_or(0)));
+            cols.push(c);
+        }
+    }
+    sql.push_str(" FROM m");
+
+    let mut params = Vec::new();
+    let where_node = if !cur.next_or(0).is_multiple_of(5) {
+        let (w_sql, w_node) = gen_where_expr(cur, text_pk, &mut params, 2);
+        sql.push_str(" WHERE ");
+        sql.push_str(&w_sql);
+        Some(w_node)
+    } else {
+        None
+    };
+
+    let mut bind_err = None;
+    for p in &params {
+        if let SqlValue::Real(f) = p
+            && !f.is_finite()
+        {
+            bind_err = Some(ModelError::Type);
+            break;
+        }
+    }
+    if bind_err.is_none()
+        && let Some(ref w) = where_node
+        && let Err(e) = w.check_types(text_pk)
+    {
+        bind_err = Some(e);
+    }
+
+    let actual = db.execute(&sql, &params);
+    if let Some(exp_err) = bind_err {
+        assert_expected_error(actual, exp_err, &sql);
+        return;
+    }
+
+    let expected_cols: Vec<String> = cols
+        .iter()
+        .map(|c| c.canonical_name().to_string())
+        .collect();
+    let expected_rows: Vec<Vec<SqlValue>> = model
+        .values()
+        .filter(|row| {
+            where_node
+                .as_ref()
+                .is_none_or(|w| w.eval(row) == Some(true))
+        })
+        .map(|row| row.project(&cols))
+        .collect();
+    let outcome = actual.unwrap_or_else(|e| panic!("SELECT `{sql}` failed: {e}"));
+    assert_eq!(
+        outcome,
+        SqlOutcome::Rows {
+            columns: expected_cols,
+            rows: expected_rows,
+        },
+        "SELECT mismatch for `{sql}` with params={params:?}"
+    );
+}
+
+#[derive(Clone, Debug)]
+enum AssignRhs {
+    Col(Col),
+    Val {
+        val: SqlValue,
+        allow_int_to_real: bool,
+        is_param: bool,
+    },
+}
+
+fn exec_update_op(
+    db: &SqlDatabase<'_>,
+    model: &mut BTreeMap<Pk, Row>,
+    cur: &mut ByteCursor<'_>,
+    text_pk: bool,
+) {
+    let mut params = Vec::new();
+    let mut assigns: Vec<(Col, AssignRhs)> = Vec::new();
+    let mut sql = String::from("UPDATE m SET ");
+
+    let mode = cur.next_or(0) % 6;
+    if mode == 0 {
+        // Attempt PK update -> must fail with Unsupported.
+        let before_params = params.len();
+        let (v_sql, v_val) = gen_pk_val(cur, text_pk, &mut params);
+        sql.push_str(&format!("id = {v_sql}"));
+        assigns.push((
+            Col::Id,
+            AssignRhs::Val {
+                val: v_val,
+                allow_int_to_real: true,
+                is_param: params.len() > before_params,
+            },
+        ));
+    } else if mode == 1 {
+        // Simultaneous column swap `n = req, req = n` (tests reading old row for all SET exprs).
+        sql.push_str("n = req, req = n");
+        assigns.push((Col::N, AssignRhs::Col(Col::Req)));
+        assigns.push((Col::Req, AssignRhs::Col(Col::N)));
+    } else {
+        let count = 1 + (cur.next_or(0) % 2) as usize;
+        let non_pk = [Col::N, Col::R, Col::S, Col::B, Col::Req];
+        let mut used = Vec::new();
+        for i in 0..count {
+            let col = non_pk[(cur.next_or(0) as usize) % non_pk.len()];
+            if used.contains(&col) {
+                continue;
+            }
+            used.push(col);
+            if !assigns.is_empty() {
+                sql.push_str(", ");
+            }
+            let (rhs_sql, rhs) = if cur.next_or(0).is_multiple_of(5) {
+                // Column-to-column assignment (including int col -> real col Type error probe).
+                let src = Col::from_byte(cur.next_or(0));
+                (src.sql_ident(i as u8).to_string(), AssignRhs::Col(src))
+            } else {
+                let before_params = params.len();
+                let (s, v, allow_i2r) =
+                    gen_value_expr(cur, col.kind(text_pk), &mut params, true, true);
+                (
+                    s,
+                    AssignRhs::Val {
+                        val: v,
+                        allow_int_to_real: allow_i2r,
+                        is_param: params.len() > before_params,
+                    },
+                )
+            };
+            sql.push_str(&format!("{} = {rhs_sql}", col.sql_ident(i as u8)));
+            assigns.push((col, rhs));
+        }
+    }
+
+    let where_node = if !cur.next_or(0).is_multiple_of(4) {
+        let (w_sql, w_node) = gen_where_expr(cur, text_pk, &mut params, 2);
+        sql.push_str(" WHERE ");
+        sql.push_str(&w_sql);
+        Some(w_node)
+    } else {
+        None
+    };
+
+    // 1. Parameter non-finite REAL check.
+    let mut expected_err: Option<ModelError> = None;
+    let mut has_non_exact_int_param_to_real = false;
+    for p in &params {
+        if let SqlValue::Real(f) = p
+            && !f.is_finite()
+        {
+            expected_err = Some(ModelError::Type);
+            break;
+        }
+    }
+
+    // 2. Bind-time assignment checks (PK unsupported, assignment type compatibility).
+    if expected_err.is_none() {
+        for (col, rhs) in &assigns {
+            if *col == Col::Id {
+                expected_err = Some(ModelError::Unsupported);
+                break;
+            }
+            let target_ty = col.kind(text_pk);
+            match rhs {
+                AssignRhs::Col(src) => {
+                    if src.kind(text_pk) != target_ty {
+                        expected_err = Some(ModelError::Type);
+                        break;
+                    }
+                }
+                AssignRhs::Val {
+                    val,
+                    allow_int_to_real,
+                    is_param,
+                } => match val {
+                    SqlValue::Null => {}
+                    SqlValue::Integer(n) => {
+                        if target_ty == ValType::Int {
+                            // exact match
+                        } else if target_ty == ValType::Real && *allow_int_to_real {
+                            if exact_i64_to_f64(*n).is_err() {
+                                if *is_param {
+                                    has_non_exact_int_param_to_real = true;
+                                } else {
+                                    expected_err = Some(ModelError::Type);
+                                    break;
+                                }
+                            }
+                        } else {
+                            expected_err = Some(ModelError::Type);
+                            break;
+                        }
+                    }
+                    SqlValue::Real(_) if target_ty == ValType::Real => {}
+                    SqlValue::Text(_) if target_ty == ValType::Text => {}
+                    SqlValue::Boolean(_) if target_ty == ValType::Bool => {}
+                    _ => {
+                        expected_err = Some(ModelError::Type);
+                        break;
+                    }
+                },
+            }
+        }
+    }
+
+    // 3. Bind-time WHERE type check.
+    if expected_err.is_none()
+        && let Some(ref w) = where_node
+        && let Err(e) = w.check_types(text_pk)
+    {
+        expected_err = Some(e);
+    }
+
+    // 4. Per-matched-row evaluation & coercion (atomic: any failure rolls back all rows).
+    let mut staged_updates: Vec<(Pk, Row)> = Vec::new();
+    if expected_err.is_none() {
+        'rows: for (pk, old_row) in model.iter() {
+            if !where_node
+                .as_ref()
+                .is_none_or(|w| w.eval(old_row) == Some(true))
+            {
+                continue;
+            }
+            let mut new_row = old_row.clone();
+            for (col, rhs) in &assigns {
+                let (val, allow_i2r) = match rhs {
+                    AssignRhs::Col(src) => (old_row.get(*src), false),
+                    AssignRhs::Val {
+                        val,
+                        allow_int_to_real,
+                        ..
+                    } => (val.clone(), *allow_int_to_real),
+                };
+                match coerce_for_col(&val, *col, text_pk, allow_i2r) {
+                    Ok(coerced) => new_row.set(*col, coerced),
+                    Err(e) => {
+                        expected_err = Some(e);
+                        break 'rows;
+                    }
+                }
+            }
+            staged_updates.push((pk.clone(), new_row));
+        }
+    }
+
+    let actual = db.execute(&sql, &params);
+    if let Some(exp_err) = expected_err {
+        assert_expected_error(actual, exp_err, &sql);
+    } else if staged_updates.is_empty() && has_non_exact_int_param_to_real {
+        // Non-exact INTEGER param assigned to REAL when 0 rows match may fail at bind time
+        // or succeed with 0 updated rows; either way, model is unchanged.
+        match actual {
+            Ok(SqlOutcome::Updated { rows: 0 }) | Err(SqlError::Type(_)) => {}
+            other => {
+                panic!("unexpected result for 0-row non-exact int param UPDATE `{sql}`: {other:?}")
+            }
+        }
+    } else {
+        assert_eq!(
+            actual.unwrap_or_else(|e| panic!("UPDATE `{sql}` failed: {e}")),
+            SqlOutcome::Updated {
+                rows: staged_updates.len(),
+            }
+        );
+        for (pk, row) in staged_updates {
+            model.insert(pk, row);
+        }
+    }
+}
+
+fn exec_delete_op(
+    db: &SqlDatabase<'_>,
+    model: &mut BTreeMap<Pk, Row>,
+    cur: &mut ByteCursor<'_>,
+    text_pk: bool,
+) {
+    let mut sql = String::from("DELETE FROM m");
+    let mut params = Vec::new();
+    let where_node = if !cur.next_or(0).is_multiple_of(5) {
+        let (w_sql, w_node) = gen_where_expr(cur, text_pk, &mut params, 2);
+        sql.push_str(" WHERE ");
+        sql.push_str(&w_sql);
+        Some(w_node)
+    } else {
+        None
+    };
+
+    let mut bind_err = None;
+    for p in &params {
+        if let SqlValue::Real(f) = p
+            && !f.is_finite()
+        {
+            bind_err = Some(ModelError::Type);
+            break;
+        }
+    }
+    if bind_err.is_none()
+        && let Some(ref w) = where_node
+        && let Err(e) = w.check_types(text_pk)
+    {
+        bind_err = Some(e);
+    }
+
+    let actual = db.execute(&sql, &params);
+    if let Some(exp_err) = bind_err {
+        assert_expected_error(actual, exp_err, &sql);
+        return;
+    }
+
+    let to_delete: Vec<Pk> = model
+        .iter()
+        .filter(|(_, row)| {
+            where_node
+                .as_ref()
+                .is_none_or(|w| w.eval(row) == Some(true))
+        })
+        .map(|(pk, _)| pk.clone())
+        .collect();
+    assert_eq!(
+        actual.unwrap_or_else(|e| panic!("DELETE `{sql}` failed: {e}")),
+        SqlOutcome::Deleted {
+            rows: to_delete.len(),
+        }
+    );
+    for pk in to_delete {
+        model.remove(&pk);
+    }
+}
+
+fn exec_error_probe(db: &SqlDatabase<'_>, selector: u8) {
+    match selector % 5 {
+        0 => assert!(matches!(
+            db.execute("CREATE TABLE m (id INTEGER PRIMARY KEY)", &[])
+                .unwrap_err(),
+            SqlError::TableExists(_)
+        )),
+        1 => assert_eq!(
+            db.execute("CREATE TABLE IF NOT EXISTS m (id INTEGER PRIMARY KEY)", &[])
+                .unwrap(),
+            SqlOutcome::TableCreated
+        ),
+        2 => assert!(matches!(
+            db.execute("SELECT * FROM missing_tbl", &[]).unwrap_err(),
+            SqlError::NoSuchTable(_)
+        )),
+        3 => assert!(matches!(
+            db.execute("SELECT nonexistent_col FROM m", &[])
+                .unwrap_err(),
+            SqlError::NoSuchColumn { .. }
+        )),
+        _ => {
+            let prep = db.prepare("SELECT id FROM m WHERE n = ?").unwrap();
+            assert!(matches!(
+                db.execute_prepared(&prep, &[]).unwrap_err(),
+                SqlError::ParameterCount {
+                    expected: 1,
+                    actual: 0
+                }
+            ));
+        }
+    }
+}
+
+fn fuzz_structured_model(root: &Path, data: &[u8]) -> Backend {
+    let mut cur = ByteCursor::new(data);
+    let flags = cur.next_or(0);
+    let use_checkpoint = flags & 1 != 0;
+    let text_pk = flags & 2 != 0;
+
+    let store_path = root.join("model_store");
+    let ckpt_path = root.join("model_ckpt");
+    let digest = if use_checkpoint {
+        let initial = Store::open(&store_path).expect("create initial model store");
+        let d = initial
+            .checkpoint_to(&ckpt_path)
+            .expect("checkpoint initial model store");
+        drop(initial);
+        Some(d)
+    } else {
+        None
+    };
+
+    let mut backend = open_backend(&store_path, &ckpt_path, digest.as_ref(), use_checkpoint);
+    let create_sql = if text_pk {
+        "CREATE TABLE m (id TEXT PRIMARY KEY, n INTEGER, r REAL, s VARCHAR(8), b BOOLEAN, req INTEGER NOT NULL)"
+    } else {
+        "CREATE TABLE m (id INTEGER PRIMARY KEY, n INTEGER, r REAL, s VARCHAR(8), b BOOLEAN, req INTEGER NOT NULL)"
+    };
+    assert_eq!(
+        backend.sql().execute(create_sql, &[]).expect("create m"),
+        SqlOutcome::TableCreated
+    );
+
+    let mut model = BTreeMap::<Pk, Row>::new();
+
+    for _ in 0..MAX_STRUCTURED_OPS {
+        let Some(op) = cur.next() else {
+            break;
+        };
+        match op % 8 {
+            0 | 1 => {
+                exec_insert_op(&backend.sql(), &mut model, &mut cur, text_pk);
+                check_full_table(&backend.sql(), &model);
+            }
+            2 | 3 => {
+                exec_select_op(&backend.sql(), &model, &mut cur, text_pk);
+            }
+            4 => {
+                exec_update_op(&backend.sql(), &mut model, &mut cur, text_pk);
+                check_full_table(&backend.sql(), &model);
+            }
+            5 => {
+                exec_delete_op(&backend.sql(), &mut model, &mut cur, text_pk);
+                check_full_table(&backend.sql(), &model);
+            }
+            6 => {
+                drop(backend);
+                backend = open_backend(&store_path, &ckpt_path, digest.as_ref(), use_checkpoint);
+                check_full_table(&backend.sql(), &model);
+            }
+            _ => {
+                exec_error_probe(&backend.sql(), cur.next_or(0));
+            }
+        }
+    }
+
+    drop(backend);
+    let reopened = open_backend(&store_path, &ckpt_path, digest.as_ref(), use_checkpoint);
+    check_full_table(&reopened.sql(), &model);
+    reopened
+}
+
+fuzz_target!(|data: &[u8]| {
+    let root = tempfile::tempdir().expect("tempdir");
+    let backend = fuzz_structured_model(root.path(), data);
+    fuzz_raw_sql(&backend, data);
+});

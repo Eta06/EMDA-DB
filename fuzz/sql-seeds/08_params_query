@@ -1,0 +1,1 @@
+SELECT id, s FROM t WHERE id = ? OR n > ? AND r <= ?

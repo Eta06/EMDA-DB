@@ -1,0 +1,1 @@
+DELETE FROM t WHERE n IS NULL OR id <> 1
