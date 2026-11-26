@@ -349,3 +349,119 @@ fn process_kill_during_inactive_slot_removal_is_recoverable() {
         assert_eq!(reopened.get(b"d").unwrap().as_deref(), Some(&b"four"[..]));
     }
 }
+
+// Logical bytes a budgeted reopen must charge: the store tree, an external
+// selected checkpoint and one spare budget-record length.
+fn measured_charge(path: &Path) -> u64 {
+    let store = fs::canonicalize(path).unwrap();
+    let selected = crate::checkpoint_store::selection::load(path)
+        .unwrap()
+        .unwrap()
+        .checkpoint;
+    let external = if selected.starts_with(&store) {
+        0
+    } else {
+        crate::staging::tree_bytes(&selected).unwrap()
+    };
+    crate::staging::tree_bytes(&store).unwrap()
+        + external
+        + crate::checkpoint_store::disk_budget::RECORD_BYTES as u64
+}
+
+#[test]
+fn process_kill_during_a_budgeted_rollover_reopens_with_every_file_charged() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::Duration;
+    for phase in [
+        "slot-staged",
+        "slot-published",
+        "selection-staged",
+        "selection-published",
+    ] {
+        let (dir, path, store) = managed_fixture(1024, 1, 64);
+        let online = crate::OnlineCheckpointStore::from_store(store).unwrap();
+        online.set_disk_budget(Some(u64::MAX)).unwrap();
+        online
+            .with_store(CheckpointStore::enable_automatic_checkpoints)
+            .unwrap();
+        online
+            .with_store(|store| store.put(b"a", b"acknowledged"))
+            .unwrap();
+        drop(online);
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "checkpoint_store::tests::automatic::crash::automatic_rollover_crash_child",
+                "--nocapture",
+            ])
+            .env("EMDA_AUTO_CRASH_PATH", dir.path())
+            .env("EMDA_AUTO_CRASH_PHASE", phase)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (send, receive) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if line.contains("AUTOMATIC_ROLLOVER_BOUNDARY_REACHED") {
+                    let _ = send.send(());
+                    break;
+                }
+            }
+        });
+        let reached = receive.recv_timeout(Duration::from_secs(20));
+        let _ = child.kill();
+        let _ = child.wait();
+        reader.join().unwrap();
+        reached.expect("child did not reach automatic rollover boundary");
+        // Reopen without manual cleanup: the open removes leftover stages
+        // and measures every remaining file before admitting anything.
+        let reopened = retry_lock(|| crate::OnlineCheckpointStore::open_managed(&path)).unwrap();
+        let status = reopened.disk_budget_status().unwrap().unwrap();
+        // No stage of the killed rollover survives to be charged.
+        let root = crate::checkpoint_store::automatic::root(&path);
+        for directory in [&path, &root] {
+            let stages = fs::read_dir(directory)
+                .unwrap()
+                .filter(|entry| {
+                    entry
+                        .as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".emda-stage-v1-")
+                })
+                .count();
+            assert_eq!(stages, 0, "{phase}: {}", directory.display());
+        }
+        assert_eq!(status.pending, crate::DiskBudgetPending::None, "{phase}");
+        assert_eq!(status.automatic_reserved, 0, "{phase}");
+        assert_eq!(status.charged, measured_charge(&path), "{phase}");
+        assert!(
+            reopened
+                .with_store(CheckpointStore::automatic_checkpoints_enabled)
+                .unwrap()
+        );
+        reopened
+            .with_store(|store| {
+                assert_eq!(store.get(b"a")?.as_deref(), Some(&b"acknowledged"[..]));
+                // Both writes roll over under the reopened charge.
+                store.put(b"b", b"after")?;
+                store.put(b"c", b"after-again")
+            })
+            .unwrap();
+        assert_eq!(
+            reopened.disk_budget_status().unwrap().unwrap().charged,
+            measured_charge(&path),
+            "{phase}"
+        );
+        drop(reopened);
+        let store = retry_lock(|| CheckpointStore::open_managed(&path)).unwrap();
+        assert_eq!(
+            store.get(b"c").unwrap().as_deref(),
+            Some(&b"after-again"[..])
+        );
+    }
+}
