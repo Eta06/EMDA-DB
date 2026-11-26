@@ -4,6 +4,12 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add `begin_rotation`, `RetainedRotationJob::prepare` and
+  `complete_rotation` to managed and authorized retained catalogs. The
+  successor is prepared off the writer path while writes continue, then
+  completed with a brief catch-up of later writes, under a catalog quota
+  reservation.
+
 - Let independent writing `Store` transactions share a group-commit sync.
   They take shared barrier access and validate against both the published
   index and every queued but unpublished write. A transaction overlapping a

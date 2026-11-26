@@ -674,6 +674,21 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   regression checks that the marker survives a failed payload-removal sync,
   then reopens and verifies the selected state and cleanup retry after either
   final sync boundary.
+  Rotation no longer has to be synchronous. `begin_rotation`,
+  `RetainedRotationJob::prepare` and `complete_rotation` prepare the
+  successor on another thread while writes continue, then catch up the
+  writes made since the capture. Managed and authorized catalogs keep their
+  selection and authority publication. A catalog quota reserves the
+  successor during preparation and admits catch-up exactly. The
+  [regressions](../src/retained_candidate/writable/managed/tests.rs) cover
+  concurrent writes during preparation, with reopen and reclamation. They
+  also cover an authorized rotation that advances the authority, a dropped
+  job, a child process that exits mid-job, refusal after another rotation
+  or without preparation, and the quota refused one byte short. Removing
+  the catch-up or the reservation fails a test. In a
+  [200,000-key run](../benchmarks/results/2026-11-26-retained-rotation-job/README.md)
+  writers were excluded for about 10 to 37 ms instead of about 100 ms for
+  `compact`. Recovery at deployment scale still needs a defined deployment.
   A process-kill regression interrupts retirement on both sides of its
   rename and then interrupts a subsequent document commit before its witness
   advances. Bounded startup checks both interrupted operations together.

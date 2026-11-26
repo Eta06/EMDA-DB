@@ -53,7 +53,7 @@ pub struct Limits {
 }
 
 /// Self-consistent metadata only; none of these fields establishes provenance.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Validated {
     pub source_id: [u8; 16],
     pub base_id: [u8; 16],

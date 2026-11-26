@@ -61,7 +61,7 @@ impl DetachedSuffix {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct Overlay {
     entries: Vec<OverlayEntry>,
     key_bytes: usize,
@@ -69,11 +69,13 @@ pub(super) struct Overlay {
     operations: u64,
 }
 
+#[derive(Clone)]
 struct OverlayEntry {
     key: Vec<u8>,
     value: Option<ValueLocation>,
 }
 
+#[derive(Clone)]
 struct ValueLocation {
     range: Range<usize>,
     digest: [u8; 32],

@@ -66,6 +66,7 @@ impl BlockLayout {
     }
 }
 
+#[derive(Clone)]
 struct Block {
     first_key: Range<usize>, // Within the shared anchor buffer.
     start: u64,
@@ -424,6 +425,17 @@ impl IndexedBase {
 
     /// Check that the pinned file still contains the exact bytes parsed at
     /// open. The validated length already includes admission for one EOF probe.
+    /// An independent handle to the same verified base, sharing nothing
+    /// mutable. The base file is immutable once verified.
+    pub(crate) fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self {
+            file: self.file.try_clone()?,
+            blocks: self.blocks.clone(),
+            anchors: self.anchors.clone(),
+            metadata: self.metadata.clone(),
+        })
+    }
+
     pub(crate) fn verify(&self) -> io::Result<()> {
         let length = self.metadata.file_bytes;
         let reader = PositionalReader::new(&self.file, 0).take(length + 1);

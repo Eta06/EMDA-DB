@@ -140,6 +140,24 @@ the API cannot verify that obligation. It assumes the source and directories
 are not modified by non-cooperating actors. The caller supplies the base ID
 and is responsible for uniqueness. A failure after publication starts has an
 uncertain outcome; inspect the destination before retrying.
+Managed and authorized retained catalogs can rotate with the expensive work
+off the writer path. `begin_rotation` makes `compact`'s pre-allocation
+checks and verifies the commit witness. It captures the committed state as
+duplicated read-only handles and an overlay copy. Under a catalog quota it
+reserves the base bound (current base plus suffix), a stage marker and a
+64 KiB metadata allowance, and later appends are admitted against that
+reservation. `RetainedRotationJob::prepare` borrows nothing. It verifies the
+captured suffix bytes and every base block, then writes and opens the
+successor in a private stage, so it can run on another thread while writes
+are acknowledged. `complete_rotation` checks that the catalog has not
+rotated and that the bytes after the capture extend the captured suffix
+digest to the live one. It replays those records in commit order into the
+successor, merged into bounded batches whose exact encoded size is admitted
+first. It then rechecks the live generation's files and witness, and
+publishes the successor and the selection or authority record as `compact`
+does, with the same classified outcomes. Dropping an unfinished job removes
+its stage and releases the reservation. After a process kill the stage
+remains for `cleanup_abandoned_staging`. Only one job may be outstanding.
 `CheckpointStore::rollover_to_detailed` classifies unmanaged checkpoint
 rollover: if the call fails after publication, the prior view remains active,
 the destination may exist and no new digest is returned. This classification

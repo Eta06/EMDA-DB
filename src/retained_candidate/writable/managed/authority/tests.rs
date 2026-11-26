@@ -1592,3 +1592,43 @@ fn file_provider_fences_catalog_rollback_after_rotation() {
         .is_err()
     );
 }
+
+#[test]
+fn an_authorized_rotation_prepared_off_the_writer_path_advances_the_authority() {
+    let mut f = Fixture::prepare();
+    f.register();
+    let mut store = f.open();
+    store.put(b"before", b"capture").unwrap();
+    let source = store.current.committed.generation;
+    let mut job = store.begin_rotation().unwrap();
+    let preparing = std::thread::spawn(move || {
+        job.prepare().unwrap();
+        job
+    });
+    // Acknowledged writes during preparation advance the current authority.
+    store.put(b"during", b"preparation").unwrap();
+    store
+        .write_batch(&[
+            BatchOperation::Delete { key: b"before" },
+            BatchOperation::Put {
+                key: b"batched",
+                value: b"together",
+            },
+        ])
+        .unwrap();
+    let job = preparing.join().unwrap();
+    let expected = store.scan(None, None, 16).unwrap();
+    let generation = store.complete_rotation(job).unwrap();
+    assert_ne!(generation, source);
+    // The authority names the successor, whose suffix holds the catch-up.
+    let record = f.provider.read().unwrap().unwrap();
+    assert_eq!(record.committed.generation, generation);
+    assert_eq!(store.scan(None, None, 16).unwrap(), expected);
+    assert!(store.reclaim_inactive().unwrap());
+    store.put(b"after", b"rotation").unwrap();
+    let expected = store.scan(None, None, 16).unwrap();
+    drop(store);
+    let mut reopened = f.open();
+    assert_eq!(reopened.current.committed.generation, generation);
+    assert_eq!(reopened.scan(None, None, 16).unwrap(), expected);
+}

@@ -34,7 +34,8 @@ pub use managed::{
     AuthorityPoint, AuthorityRecord, AuthorizedReclamationFailure, AuthorizedRestoreFailure,
     AuthorizedRetainedStore, CatalogStorageLimits, CutoverArchiveBinding,
     CutoverArchiveRetirementFailure, CutoverArchiveRetirementStep, FileRetainedAuthority,
-    ManagedRetainedStore, ReclamationFenceOutcome, RetainedAuthority, RetainedStartupLimits,
+    ManagedRetainedStore, ReclamationFenceOutcome, RetainedAuthority, RetainedRotationJob,
+    RetainedStartupLimits,
 };
 mod rebase;
 
@@ -776,6 +777,7 @@ fn random_id() -> io::Result<[u8; 16]> {
     Ok(id)
 }
 
+#[derive(Clone)]
 struct Header {
     bytes: [u8; QUOTA_HEADER_BYTES],
     len: usize,

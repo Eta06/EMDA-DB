@@ -188,7 +188,9 @@ impl InitialLimits {
 
 mod authority;
 mod backup;
+mod rotation_job;
 mod storage;
+pub use rotation_job::RetainedRotationJob;
 pub use storage::CatalogStorageLimits;
 use storage::{CatalogStorage, intersect};
 
@@ -220,6 +222,9 @@ pub struct ManagedRetainedStore {
     cleanup_pending: bool,
     storage: Option<CatalogStorage>,
     requested_storage: Option<CatalogStorageLimits>,
+    // An outstanding rotation job and the logical bytes it may still
+    // allocate in its stage.
+    rotation: std::sync::Arc<rotation_job::RotationState>,
     lock: StoreLock,
 }
 
@@ -691,6 +696,7 @@ impl ManagedRetainedStore {
                 cleanup_pending: false,
                 storage,
                 requested_storage,
+                rotation: Default::default(),
                 lock,
             },
             recovery,
@@ -925,6 +931,14 @@ impl ManagedRetainedStore {
         } else {
             (encoded_bytes, 0)
         };
+        // A prepared rotation still holds room for the rest of its base.
+        let reserved = self
+            .rotation
+            .reserved
+            .load(std::sync::atomic::Ordering::Acquire);
+        let bytes = bytes
+            .checked_add(reserved)
+            .ok_or_else(storage::byte_limit)?;
         self.storage_room(bytes, entries)?;
         Ok(())
     }

@@ -2804,3 +2804,181 @@ fn managed_creation_imports_a_detached_suffix() {
         source.scan(None, None, 8).unwrap()
     );
 }
+
+// Writes made while a rotation is prepared: singles, a delete and a batch.
+fn write_during_preparation(store: &mut ManagedRetainedStore) {
+    store.put(b"b", b"during").unwrap();
+    store.delete(b"a").unwrap();
+    store
+        .write_batch(&[
+            BatchOperation::Put {
+                key: b"c",
+                value: b"batched",
+            },
+            BatchOperation::Put {
+                key: b"b",
+                value: b"overwritten",
+            },
+        ])
+        .unwrap();
+}
+
+#[test]
+fn a_rotation_prepared_off_the_writer_path_keeps_concurrent_writes() {
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open();
+    store.put(b"m", b"before").unwrap();
+    let source = store.generation_id().unwrap();
+    let mut job = store.begin_rotation().unwrap();
+    // Preparation runs on another thread while the store keeps writing.
+    let preparing = std::thread::spawn(move || {
+        job.prepare().unwrap();
+        job
+    });
+    write_during_preparation(&mut store);
+    let job = preparing.join().unwrap();
+    assert!(job.is_prepared());
+    let expected = store.scan(None, None, 16).unwrap();
+    let generation = store.complete_rotation(job).unwrap();
+    assert_ne!(generation, source);
+    assert_eq!(store.generation_id().unwrap(), generation);
+    assert_eq!(store.scan(None, None, 16).unwrap(), expected);
+    // The previous generation is reclaimable and the successor writable.
+    assert!(store.reclaim_inactive().unwrap());
+    store.put(b"after", b"rotation").unwrap();
+    let expected = store.scan(None, None, 16).unwrap();
+    drop(store);
+    let reopened = f.open();
+    assert_eq!(reopened.generation_id().unwrap(), generation);
+    assert_eq!(reopened.scan(None, None, 16).unwrap(), expected);
+}
+
+#[test]
+fn an_abandoned_or_interrupted_job_leaves_the_catalog_usable() {
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open();
+    let source = store.generation_id().unwrap();
+    // Dropping a prepared job removes its stage.
+    let mut job = store.begin_rotation().unwrap();
+    job.prepare().unwrap();
+    drop(job);
+    assert!(!crate::staging::has_unowned_stage(&f.root).unwrap());
+    store.put(b"b", b"kept").unwrap();
+    let expected = store.scan(None, None, 16).unwrap();
+    drop(store);
+    // A child process prepares a job and exits without cleanup, as after a
+    // process kill, leaving its stage behind.
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "retained_candidate::writable::managed::tests::rotation_job_exit_child",
+            "--nocapture",
+        ])
+        .env("EMDA_ROTATION_JOB_CATALOG", &f.root)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(crate::staging::has_unowned_stage(&f.root).unwrap());
+    crate::cleanup_abandoned_staging(&f.root).unwrap();
+    let mut reopened = f.open();
+    assert_eq!(reopened.generation_id().unwrap(), source);
+    assert_eq!(reopened.scan(None, None, 16).unwrap(), expected);
+    let mut job = reopened.begin_rotation().unwrap();
+    job.prepare().unwrap();
+    assert_ne!(reopened.complete_rotation(job).unwrap(), source);
+    assert_eq!(reopened.scan(None, None, 16).unwrap(), expected);
+}
+
+#[test]
+fn a_job_is_refused_after_another_rotation_or_without_preparation() {
+    let f = Fixture::new(LIMITS);
+    let mut store = f.open();
+    let job = store.begin_rotation().unwrap();
+    // Only one job at a time.
+    assert_eq!(
+        store.begin_rotation().err().unwrap().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    let failure = store.complete_rotation(job).unwrap_err();
+    assert!(
+        failure.to_string().contains("prepare the rotation first"),
+        "{failure}"
+    );
+    let mut job = store.begin_rotation().unwrap();
+    job.prepare().unwrap();
+    store.compact().unwrap();
+    let rotated = store.generation_id().unwrap();
+    let failure = store.complete_rotation(job).unwrap_err();
+    assert!(
+        failure
+            .to_string()
+            .contains("rotated since this job was captured"),
+        "{failure}"
+    );
+    assert_eq!(store.generation_id().unwrap(), rotated);
+    store.put(b"b", b"still writable").unwrap();
+}
+
+#[test]
+fn a_catalog_quota_reserves_the_successor_during_preparation() {
+    let f = Fixture::new(LIMITS);
+    let used = catalog_usage(&f.root);
+    let probe = f.open();
+    // Reservation: base bound, stage marker and metadata allowance.
+    let reserved =
+        probe.store.rebase_bound() + crate::staging::Stage::DIRECTORY_MARKER_BYTES + 64 * 1024;
+    drop(probe);
+    let record = record::encode(Operation::Put, b"b", b"fits").unwrap().len() as u64;
+    let limit = |bytes| CatalogStorageLimits {
+        bytes,
+        entries: used.entries + 64,
+    };
+    // One byte short of the reservation refuses the job before staging.
+    let mut store = ManagedRetainedStore::open_with_storage_limits(
+        &f.root,
+        LIMITS,
+        limit(used.bytes + reserved - 1),
+        None,
+    )
+    .unwrap();
+    let error = store.begin_rotation().err().unwrap();
+    assert_eq!(error.to_string(), "catalog byte limit exceeded");
+    assert!(!crate::staging::has_unowned_stage(&f.root).unwrap());
+    drop(store);
+    // With room for the reservation and one append, a second append is
+    // refused while the job holds its room.
+    let mut store = ManagedRetainedStore::open_with_storage_limits(
+        &f.root,
+        LIMITS,
+        limit(used.bytes + reserved + record + 4096),
+        None,
+    )
+    .unwrap();
+    let mut job = store.begin_rotation().unwrap();
+    store.put(b"b", b"fits").unwrap();
+    assert!(matches!(
+        store.put(b"c", &[b'x'; 4096]),
+        Err(MutationFailure::Rejected(ref error)) if error.to_string() == "catalog byte limit exceeded"
+    ));
+    job.prepare().unwrap();
+    let expected = store.scan(None, None, 16).unwrap();
+    store.complete_rotation(job).unwrap();
+    assert_eq!(store.scan(None, None, 16).unwrap(), expected);
+    // Dropping a job releases its reservation.
+    assert!(store.reclaim_inactive().unwrap());
+    let job = store.begin_rotation().unwrap();
+    drop(job);
+    store.put(b"c", b"after release").unwrap();
+}
+
+#[test]
+fn rotation_job_exit_child() {
+    let Ok(root) = std::env::var("EMDA_ROTATION_JOB_CATALOG") else {
+        return;
+    };
+    let mut store = ManagedRetainedStore::open(&root, LIMITS).unwrap();
+    let mut job = store.begin_rotation().unwrap();
+    job.prepare().unwrap();
+    // Exit without running destructors, as a killed process would.
+    std::process::exit(0);
+}

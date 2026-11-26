@@ -859,6 +859,40 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
         )
     }
 
+    /// Captures a rotation prepared off the writer path, as
+    /// [`ManagedRetainedStore::begin_rotation`] does, after verifying the
+    /// current authority record.
+    pub fn begin_rotation(&mut self) -> io::Result<super::RetainedRotationJob> {
+        self.verify_current()?;
+        self.inner.capture_rotation(self.inner.store.limits)
+    }
+
+    /// Completes a prepared rotation as
+    /// [`ManagedRetainedStore::complete_rotation`] does, then advances the
+    /// authority record to the successor, exactly as `compact` does.
+    pub fn complete_rotation(
+        &mut self,
+        job: super::RetainedRotationJob,
+    ) -> Result<[u8; 16], RetainedRotationFailure> {
+        crate::publication_outcome::track_retained_rotation(|tracker| {
+            self.verify_current()?;
+            let mut next = self.current.finalized(self.current.committed)?;
+            let (active, store, storage) =
+                self.inner.publish_rotation_job(job, &tracker.checkpoint)?;
+            let point = AuthorityPoint::from_store(active.catalog, &store);
+            next.committed = point;
+            tracker.selection.begin_publication();
+            self.inner.uncertain = true;
+            self.advance(next)?;
+            self.inner.store = store;
+            self.inner.active = active;
+            self.inner.storage = storage;
+            self.inner.uncertain = false;
+            self.cleanup_pending = self.auto_reclaim.is_some();
+            Ok(point.generation)
+        })
+    }
+
     fn compact_detailed_using(
         &mut self,
         limits: RetainedStoreLimits,
