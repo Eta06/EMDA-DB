@@ -134,6 +134,24 @@ impl Default for CheckpointStoreLimits {
 
 type OpenLimits = CheckpointStoreLimits;
 
+// Recovery options for one open. Existing callers pass a limits tuple.
+#[derive(Clone, Copy)]
+struct RecoveryOptions {
+    limits: CheckpointRecoveryLimits,
+    max_total_scan_bytes: Option<u64>,
+    defer_prefix: bool,
+}
+
+impl From<(CheckpointRecoveryLimits, Option<u64>)> for RecoveryOptions {
+    fn from((limits, max_total_scan_bytes): (CheckpointRecoveryLimits, Option<u64>)) -> Self {
+        Self {
+            limits,
+            max_total_scan_bytes,
+            defer_prefix: false,
+        }
+    }
+}
+
 /// Additional admission limits for writable checkpoint recovery.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CheckpointRecoveryLimits {
@@ -194,6 +212,9 @@ pub struct CheckpointStore {
     max_log_bytes: Option<u64>,
     checkpoint_view_limits: CheckpointViewLimits,
     disk_budget: RwLock<Option<Arc<disk_budget::DiskBudget>>>,
+    // The covered prefix and digest of a checkpoint opened without hashing
+    // its prefix, until `verify_covered_prefix` succeeds.
+    unverified_prefix: Mutex<Option<(u64, [u8; 32])>>,
     // Must remain the last field: its release marks every descriptor closed.
     generation_token: Arc<disk_budget::GenerationToken>,
 }
@@ -479,11 +500,83 @@ impl CheckpointStore {
         )
     }
 
+    /// Opens a managed selection without hashing the checkpoint's covered log
+    /// prefix, so recovery reads the checkpoint and the suffix but not the
+    /// covered history. `max_total_scan_bytes` bounds that work as for
+    /// [`Self::open_managed_with_total_recovery_scan_limit`]. A pending tail
+    /// still needs the full hash to adopt it, so that open verifies the
+    /// prefix and is charged for it.
+    ///
+    /// Until [`Self::verify_covered_prefix`] succeeds, damage to covered
+    /// bytes that no read touches stays undetected: obsolete records, and
+    /// record headers and keys. Each value read still checks the CRC-32 that
+    /// the trusted, SHA-256-authenticated checkpoint records for it, so a
+    /// damaged live value fails its read. CRC-32 detects accidental damage,
+    /// not deliberate substitution. Checkpoint rollover and compaction
+    /// replay and check the complete log as they always do.
+    pub fn open_managed_deferring_prefix_verification(
+        path: impl AsRef<Path>,
+        limits: CheckpointStoreLimits,
+        recovery: CheckpointRecoveryLimits,
+        max_total_scan_bytes: Option<u64>,
+    ) -> Result<Self, RecoveryOpenFailure> {
+        Self::open_recovery_using(
+            path.as_ref(),
+            OpenSource::Managed,
+            limits,
+            RecoveryOptions {
+                limits: recovery,
+                max_total_scan_bytes,
+                defer_prefix: true,
+            },
+        )
+    }
+
+    /// Whether the covered log prefix of the checkpoint this store opened
+    /// has been hashed and matched, either during open or later.
+    pub fn covered_prefix_verified(&self) -> io::Result<bool> {
+        Ok(self
+            .unverified_prefix
+            .lock()
+            .map_err(|_| io::Error::other("prefix verification state poisoned"))?
+            .is_none())
+    }
+
+    /// Hashes the covered log prefix deferred at open and compares it with
+    /// the checkpoint's digest. It reads at most `max_scan_bytes` when set,
+    /// refusing with `InvalidInput` before reading a longer prefix. A
+    /// mismatch returns `InvalidData` and fails the store closed until it is
+    /// reopened. When nothing was deferred it returns at once. The prefix
+    /// is immutable, so writers continue during the scan.
+    pub fn verify_covered_prefix(&self, max_scan_bytes: Option<u64>) -> io::Result<()> {
+        let mut pending = self
+            .unverified_prefix
+            .lock()
+            .map_err(|_| io::Error::other("prefix verification state poisoned"))?;
+        let Some((prefix, digest)) = *pending else {
+            return Ok(());
+        };
+        if max_scan_bytes.is_some_and(|limit| prefix > limit) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "covered prefix verification exceeds its scan limit",
+            ));
+        }
+        if let Err(error) = crate::checkpoint::verify_prefix_digest(&self.log, prefix, &digest) {
+            if error.kind() == io::ErrorKind::InvalidData {
+                self.state.write().map_err(|_| uncertain())?.failed = true;
+            }
+            return Err(error);
+        }
+        *pending = None;
+        Ok(())
+    }
+
     fn open_recovery_using(
         path: &Path,
         source: OpenSource<'_>,
         limits: CheckpointStoreLimits,
-        recovery: (CheckpointRecoveryLimits, Option<u64>),
+        recovery: impl Into<RecoveryOptions>,
     ) -> Result<Self, RecoveryOpenFailure> {
         track_recovery_open(|tracker| {
             Self::open_source_using(
@@ -569,7 +662,7 @@ impl CheckpointStore {
         path: &Path,
         source: OpenSource<'_>,
         limits: OpenLimits,
-        (recovery, max_total_scan_bytes): (CheckpointRecoveryLimits, Option<u64>),
+        recovery: impl Into<RecoveryOptions>,
         open_writer: impl FnOnce(&Path, u64, u64) -> io::Result<Log>,
         sync_selection: impl FnOnce(&Path) -> io::Result<()>,
         adoption_tracker: Option<&TailAdoptionTracker>,
@@ -581,6 +674,11 @@ impl CheckpointStore {
             max_log_bytes,
             checkpoint_view,
         } = limits;
+        let RecoveryOptions {
+            limits: recovery,
+            max_total_scan_bytes,
+            defer_prefix,
+        } = recovery.into();
         checkpoint_view.validate()?;
         RecoveredCheckpointView::validate_limits(
             max_tail_bytes,
@@ -649,6 +747,7 @@ impl CheckpointStore {
                     log_bytes: recovery.max_log_scan_bytes,
                     total_bytes: max_total_scan_bytes,
                     prefix_only: false,
+                    defer_prefix,
                 },
             },
         )?;
@@ -717,6 +816,7 @@ impl CheckpointStore {
             }
             Ok(config)
         };
+        let mut unverified_prefix = None;
         let (base, log, automatic_config) = if let Some(suffix_digest) = suffix.adoption_digest {
             let log = open_writer(&path, boundary, length)?;
             let base = prepared.verify_for_adoption(&log, &suffix_digest)?;
@@ -736,7 +836,13 @@ impl CheckpointStore {
             }
             (base, log, (config, disk_budget))
         } else {
-            let (base, _) = prepared.verify()?;
+            // Without a tail to adopt, the covered prefix hash can wait.
+            let base = if defer_prefix {
+                unverified_prefix = Some(prepared.covered_prefix());
+                prepared.defer_prefix()?
+            } else {
+                prepared.verify()?.0
+            };
             let log = open_writer(&path, boundary, length)?;
             log.require_same_checkpoint_log(&base.log)?;
             let config = stabilize_configuration()?;
@@ -796,6 +902,7 @@ impl CheckpointStore {
             max_log_bytes,
             checkpoint_view_limits: checkpoint_view,
             disk_budget: RwLock::new(disk_budget),
+            unverified_prefix: Mutex::new(unverified_prefix),
             generation_token: disk_budget::generation_token(),
         })
     }

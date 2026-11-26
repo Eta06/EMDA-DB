@@ -4,6 +4,13 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add `CheckpointStore::open_managed_deferring_prefix_verification`,
+  `verify_covered_prefix` and `covered_prefix_verified`. The opt-in open
+  reads the checkpoint and suffix without hashing the covered log history,
+  so recovery cost no longer grows with that history. Live values are still
+  checked on read, and a bounded later verification restores the full check.
+  Default opens are unchanged.
+
 - Let ordinary writers proceed while `Store::compare_exchange` or
   `increment_i64` waits for its sync, and let a blind `write_batch` without
   live-key limits use shared access. Atomics and other exclusive writers

@@ -256,6 +256,7 @@ impl WitnessIo for FaultWitness {
 mod automatic;
 mod commit_faults;
 mod compaction;
+mod deferred_prefix;
 mod detailed_document_fault_tests;
 mod direct_admission;
 mod document_faults;

@@ -220,6 +220,23 @@ impl PreparedCheckpoint {
         Ok((self.base, covered_log_hash))
     }
 
+    /// The covered log prefix length and its digest from the checkpoint.
+    pub(crate) fn covered_prefix(&self) -> (u64, [u8; 32]) {
+        (self.base.prefix, self.base.log_digest)
+    }
+
+    /// Returns the view without hashing the covered prefix. Each value read
+    /// still checks the checksum the authenticated checkpoint records for it.
+    /// The caller records that the prefix digest remains to be verified.
+    pub(crate) fn defer_prefix(self) -> io::Result<CheckpointView> {
+        if self.base.log.len()? != self.log_length {
+            return Err(record::invalid_data(
+                "log length changed while opening checkpoint view",
+            ));
+        }
+        Ok(self.base)
+    }
+
     // Verify the covered bytes on the final writer descriptor, and bind the
     // suffix to the exact bytes that were replayed via the view's descriptor.
     pub(crate) fn verify_for_adoption(

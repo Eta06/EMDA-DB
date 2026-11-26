@@ -681,6 +681,14 @@ pub(crate) fn verify_log_prefix(log: &Log, verified: &VerifiedCheckpoint) -> io:
     Ok(hasher)
 }
 
+// Hashes the covered prefix and compares it with the checkpoint's digest.
+pub(crate) fn verify_prefix_digest(log: &Log, prefix: u64, digest: &[u8; 32]) -> io::Result<()> {
+    if hash_log_prefix(log, prefix)?.finalize().as_slice() != digest {
+        return Err(record::invalid_data("checkpoint does not match log prefix"));
+    }
+    Ok(())
+}
+
 pub(crate) fn checked_tail_bytes(length: u64, prefix: u64, limit: u64) -> io::Result<u64> {
     let tail_bytes = length
         .checked_sub(prefix)
@@ -699,6 +707,9 @@ pub(crate) struct RecoveryScanLimits {
     pub(crate) log_bytes: Option<u64>,
     pub(crate) total_bytes: Option<u64>,
     pub(crate) prefix_only: bool,
+    // A writable open that defers hashing the covered prefix reads only the
+    // suffix, unless a pending tail requires the full hash for adoption.
+    pub(crate) defer_prefix: bool,
 }
 
 impl RecoveryScanLimits {
@@ -728,6 +739,8 @@ impl RecoveryScanLimits {
             Some(prefix)
         } else if length > witnessed_boundary {
             length.checked_add(length - prefix)
+        } else if self.defer_prefix {
+            length.checked_sub(prefix)
         } else {
             Some(length)
         };
@@ -867,11 +880,13 @@ pub(crate) fn visit_index_file(
     // checked after reading the header, before visiting any entries.
     admission.recovery_scan.admit_total(
         length,
-        Some(if admission.recovery_scan.prefix_only {
-            0
-        } else {
-            log_length
-        }),
+        Some(
+            if admission.recovery_scan.prefix_only || admission.recovery_scan.defer_prefix {
+                0
+            } else {
+                log_length
+            },
+        ),
     )?;
     let mut reader = BufReader::new(PositionalReader::new(file, 0).take(length));
     let mut digest = Sha256::new();

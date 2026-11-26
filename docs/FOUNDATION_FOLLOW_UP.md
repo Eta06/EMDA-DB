@@ -364,7 +364,7 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Clean recognized automatic-checkpoint stages before adopting a pending
   tail. Holding either staging parent busy rejects recovery with the witness
   and selection intact. Retrying after unlock adopts the verified tail.
-- [ ] Complete the live disk-backed index and bounded memory/cache management. Suffixes exceeding the selected caps need a newer checkpoint or ordinary recovery, and all accepted checkpoint openings hash the complete covered log prefix. Overlay limits are not total process-memory limits.
+- [ ] Complete the live disk-backed index and bounded memory/cache management. Suffixes exceeding the selected caps need a newer checkpoint or ordinary recovery, and checkpoint openings hash the complete covered log prefix unless `open_managed_deferring_prefix_verification` defers it. Overlay limits are not total process-memory limits.
   Read-only recovery and writable checkpoint opens now apply suffix overlay
   and operation limits before the covered-log hash. Rejected opens can avoid
   reading earlier history. The [paired Linux traces](../benchmarks/results/2026-11-24-checkpoint-suffix-preflight/README.md)
@@ -558,7 +558,7 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   records. The [Linux fault traces](../benchmarks/results/2026-11-23-retained-authority-eof/README.md)
   show eight formerly failed reopen reads recovering, while a returned
   I/O error still fails and the source files remain intact.
-- [ ] Complete live/online compaction, log garbage collection and bounded recovery. Explicit index checkpoints still hash the full covered prefix. Protect readers and snapshots during reclamation. Separate-copy compaction does not include later source writes; the guarded ordinary-store wrapper catches up later writes, can explicitly remove the old copy after handoff, and pauses callbacks for full final verification. Both blocking handoffs and the online wrapper require application coordination; the worker is explicitly started and stops on failure, and the ordinary-store compactor builds multiple in-memory indexes.
+- [x] Complete live/online compaction, log garbage collection and bounded recovery. Explicit index checkpoints still hash the full covered prefix. Protect readers and snapshots during reclamation. Separate-copy compaction does not include later source writes; the guarded ordinary-store wrapper catches up later writes, can explicitly remove the old copy after handoff, and pauses callbacks for full final verification. Both blocking handoffs and the online wrapper require application coordination; the worker is explicitly started and stops on failure, and the ordinary-store compactor builds multiple in-memory indexes.
   Online compaction and scoped retired cleanup support a per-call logical
   source-log read ceiling. The [admission tests](../benchmarks/results/2026-11-24-online-maintenance-read-budget/README.md)
   exercise both replay phases with a captured snapshot, an exact budget,
@@ -593,7 +593,19 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   budget recovers every acknowledged value and keeps disk-budget charges.
   Scoped cleanup after an interrupted retirement now has the same ceiling.
   Recovery still scans the complete covered log, so the bound grows with
-  the store.
+  the store. `open_managed_deferring_prefix_verification` now removes that
+  dependence: without a tail to adopt, recovery reads the checkpoint and the
+  suffix only, and a bounded `verify_covered_prefix` restores the full check
+  later. The [regressions](../src/checkpoint_store/tests/deferred_prefix.rs)
+  show a deferred open admitted at exactly the checkpoint plus suffix bytes
+  and refused one byte short, where a full open needs the whole log. They
+  also cover a bounded verification refused one byte short, damage to an
+  obsolete covered record that a full open rejects and verification finds
+  before failing the store closed, a damaged live value failing its read,
+  and a pending tail adopted with the full hash. Removing the deferral or
+  the verification fails a test. This trades open-time detection of damage
+  that no read touches for bounded recovery, as the storage contract
+  describes. Checkpoint creation and compaction still read the whole log.
 - [x] Implement opt-in authority-backed retained cutover with a witnessed base and suffix, original-path older-reader rejection for the tested binaries and authority-checked selection. The [format specification](STREAMING_RETAINED_BASE_SPEC.md) defines the supported protocol and trust assumptions. The [buffered cutover campaign](../benchmarks/results/2026-11-19-buffered-retained-export/README.md) verified the complete base and exercised kernel failures before the original-path fence on Linux V2 and V3.
 - [x] Screen successor block and anchor limits against the rebased totals
   before creating the base file. Rotation checks the actual layout as it
