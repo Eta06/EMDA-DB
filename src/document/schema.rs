@@ -81,10 +81,11 @@ pub(super) fn field<'a>(value: &'a Value, path: &[String]) -> Option<&'a Value> 
 }
 
 pub(super) fn validate_tree(document: &Value) -> io::Result<()> {
-    let mut pending = vec![(document, 0_usize)];
+    let mut pending = Vec::new();
     let mut nodes = 0_usize;
     let mut raw_bytes = 0_usize;
-    while let Some((value, depth)) = pending.pop() {
+    let mut current = Some((document, 0_usize));
+    while let Some((value, depth)) = current.take().or_else(|| pending.pop()) {
         nodes += 1;
         if depth > 64 || nodes + pending.len() > 131_072 {
             return Err(key::invalid("document exceeds nesting or node limits"));
@@ -112,7 +113,33 @@ pub(super) fn validate_tree(document: &Value) -> io::Result<()> {
                 if nodes + pending.len() + values.len() > 131_072 {
                     return Err(key::invalid("document exceeds node limit"));
                 }
-                pending.extend(values.values().map(|value| (value, depth + 1)));
+                for child in values.values() {
+                    match child {
+                        Value::Array(_) | Value::Object(_) => {
+                            pending.push((child, depth + 1));
+                        }
+                        Value::String(s) => {
+                            if depth + 1 > 64 {
+                                return Err(key::invalid(
+                                    "document exceeds nesting or node limits",
+                                ));
+                            }
+                            nodes += 1;
+                            raw_bytes = raw_bytes.saturating_add(s.len());
+                            if raw_bytes > 1024 * 1024 {
+                                return Err(key::invalid("document string data exceeds 1 MiB"));
+                            }
+                        }
+                        _ => {
+                            if depth + 1 > 64 {
+                                return Err(key::invalid(
+                                    "document exceeds nesting or node limits",
+                                ));
+                            }
+                            nodes += 1;
+                        }
+                    }
+                }
             }
             _ => {}
         }
