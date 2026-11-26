@@ -44,7 +44,8 @@ version changes and release tags for intentional releases.
 
 ## Preparing and publishing a release
 
-The current `0.1.0` package version is a prototype and has **not** been tagged or published. When a maintainer intentionally prepares a release:
+The current package version is `0.2.0`. It is experimental and has **not** been
+tagged or published. When a maintainer intentionally prepares a release:
 
 1. Choose the version using the policy above. Update `Cargo.toml` and refresh `Cargo.lock` if the package version changed.
 2. Move the relevant `Unreleased` entries into a heading such as `## [0.1.0] - 2026-11-03`. Use the actual release preparation date, and leave a new empty `Unreleased` section for subsequent work.

@@ -4,6 +4,8 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Advance the experimental Rust package version to `0.2.0`.
+
 - Add `begin_rotation`, `RetainedRotationJob::prepare` and
   `complete_rotation` to managed and authorized retained catalogs. The
   successor is prepared off the writer path while writes continue, then
@@ -1163,8 +1165,6 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 - A blocking Linux compact-and-replace handoff uses a verified sibling and atomic directory exchange, retains the old copy, preserves per-open limits, and rejects stale lock descriptors. Failure and process-kill tests do not establish power-loss safety.
 - Experimental document collections, JSON schemas, atomic CRUD/bulk updates, conditional operators, compound/unique/partial indexes, bounded queries, index verification and repair, basic aggregation and ID lookup over the existing transaction engine. See the document guide for limits and compatibility.
-
-The package version is currently `0.1.0`, but no version has been tagged or published yet.
 
 ### Added
 
