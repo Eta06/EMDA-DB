@@ -4,6 +4,11 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Let ordinary writers proceed while `Store::compare_exchange` or
+  `increment_i64` waits for its sync, and let a blind `write_batch` without
+  live-key limits use shared access. Atomics and other exclusive writers
+  still wait for the acknowledgement.
+
 - Add `OnlineCheckpointStore::set_disk_budget_detailed` and
   `reconcile_disk_budget_detailed`. Each returns a `PublicationFailure`
   separating a refusal before the budget record changes from an uncertain

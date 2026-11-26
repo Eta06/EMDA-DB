@@ -22,14 +22,27 @@ pub(crate) struct ReadGuard<'a, T> {
 }
 
 pub(crate) struct WriteGuard<'a, T> {
-    inner: RwLockWriteGuard<'a, T>,
+    // `None` only after `downgrade` moved the guard out.
+    inner: Option<RwLockWriteGuard<'a, T>>,
     poisoned: &'a AtomicBool,
     acquired_during_panic: bool,
 }
 
+impl<'a, T> WriteGuard<'a, T> {
+    /// Atomically converts exclusive access into shared access, so readers
+    /// may enter while no writer can. Shared access does not poison on panic,
+    /// as for any reader.
+    pub(crate) fn downgrade(mut self) -> ReadGuard<'a, T> {
+        let inner = self.inner.take().expect("write guard is held");
+        ReadGuard {
+            inner: RwLockWriteGuard::downgrade(inner),
+        }
+    }
+}
+
 impl<T> Drop for WriteGuard<'_, T> {
     fn drop(&mut self) {
-        if !self.acquired_during_panic && std::thread::panicking() {
+        if self.inner.is_some() && !self.acquired_during_panic && std::thread::panicking() {
             self.poisoned.store(true, Ordering::Release);
         }
     }
@@ -56,12 +69,12 @@ impl<T> Deref for ReadGuard<'_, T> {
 impl<T> Deref for WriteGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
-        &self.inner
+        self.inner.as_ref().expect("write guard is held")
     }
 }
 impl<T> DerefMut for WriteGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
-        &mut self.inner
+        self.inner.as_mut().expect("write guard is held")
     }
 }
 
@@ -88,7 +101,7 @@ impl<T> ControlledRwLock<T> {
 
     fn wrap_write<'a>(&'a self, inner: RwLockWriteGuard<'a, T>) -> LockResult<WriteGuard<'a, T>> {
         let guard = WriteGuard {
-            inner,
+            inner: Some(inner),
             poisoned: &self.poisoned,
             acquired_during_panic: std::thread::panicking(),
         };

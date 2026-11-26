@@ -33,6 +33,19 @@ impl Store {
         tracker: Option<&crate::transaction_outcome::Tracker>,
     ) -> io::Result<()> {
         let _admission = self.direct_writes.acquire()?;
+        // A blind batch is one record and reads nothing, so like an ordinary
+        // put it needs only shared access. Live-key limits are checked over
+        // the current membership, which only exclusive access keeps stable.
+        if self.max_live_keys.is_none() && self.max_live_key_bytes.is_none() {
+            let _writer = self
+                .writes
+                .read()
+                .map_err(|_| io::Error::other("write barrier poisoned"))?;
+            let batch = BatchLayout::new(operations)?;
+            return self
+                .write_batch_locked(batch, tracker, || Ok(()))
+                .map_err(TimedTransactionError::into_io);
+        }
         let _writer = self
             .writes
             .write()
@@ -42,7 +55,9 @@ impl Store {
             .map_err(TimedTransactionError::into_io)
     }
 
-    // Caller holds the exclusive writes barrier through durable publication.
+    // Caller holds the writes barrier through durable publication: exclusive
+    // access when live-key limits apply or for a transaction, otherwise at
+    // least shared access.
     pub(super) fn write_batch_locked(
         &self,
         batch: BatchLayout<'_>,

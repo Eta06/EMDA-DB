@@ -656,7 +656,7 @@ impl Store {
             .write()
             .map_err(|_| io::Error::other("write barrier poisoned"))?;
         let (log, location) = self.current_value(key)?;
-        let (_writer, matches) =
+        let (writer, matches) =
             if location.is_some_and(|location| location.length > INLINE_VALUE_COMPARE_BYTES) {
                 // The captured log location is immutable while this store is
                 // borrowed. Let writes proceed during the streamed checksum,
@@ -682,7 +682,16 @@ impl Store {
         if !matches {
             return Ok(false);
         }
-        self.commit_limited_tracked(operation, key, value, tracker)?;
+        // Once the record is queued, any later record is appended after it.
+        // Keep shared access until it is synchronized: ordinary writers to
+        // other keys can then join its group commit, while every exclusive
+        // writer, including another compare-exchange of this key, still waits
+        // for its acknowledgement.
+        let mut shared = None;
+        self.commit_limited_then(operation, key, value, tracker, || {
+            shared = Some(writer.downgrade());
+        })?;
+        drop(shared);
         Ok(true)
     }
 
@@ -716,7 +725,7 @@ impl Store {
     ) -> io::Result<i64> {
         record::validate_key(key)?;
         let _admission = self.direct_writes.acquire()?;
-        let _writer = self
+        let writer = self
             .writes
             .write()
             .map_err(|_| io::Error::other("write barrier poisoned"))?;
@@ -725,7 +734,12 @@ impl Store {
         let next = current.checked_add(delta).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "integer increment overflow")
         })?;
-        self.commit_limited_tracked(Operation::Put, key, &next.to_le_bytes(), tracker)?;
+        // As for compare-exchange: shared access once queued.
+        let mut shared = None;
+        self.commit_limited_then(Operation::Put, key, &next.to_le_bytes(), tracker, || {
+            shared = Some(writer.downgrade());
+        })?;
+        drop(shared);
         Ok(next)
     }
 
@@ -1117,6 +1131,21 @@ impl Store {
         value: &[u8],
         tracker: Option<&crate::transaction_outcome::Tracker>,
     ) -> io::Result<()> {
+        self.commit_limited_then(operation, key, value, tracker, || {})
+    }
+
+    // Like `commit_limited_tracked`, calling `after_enqueue` once the record
+    // is queued. The live-key accounting is updated before returning, so a
+    // caller that keeps shared barrier access until then still excludes
+    // every membership-changing writer.
+    fn commit_limited_then(
+        &self,
+        operation: Operation,
+        key: &[u8],
+        value: &[u8],
+        tracker: Option<&crate::transaction_outcome::Tracker>,
+        after_enqueue: impl FnOnce(),
+    ) -> io::Result<()> {
         if self.commits.failed() {
             return Err(uncertain_error());
         }
@@ -1155,7 +1184,7 @@ impl Store {
                 next_key_bytes = Some(next);
             }
         }
-        self.commit_with_log_quota_tracked(operation, key, value, tracker)?;
+        self.commit_with_log_quota_then(operation, key, value, tracker, after_enqueue)?;
         if let Some(bytes) = next_key_bytes {
             self.live_key_bytes.store(bytes, Ordering::Relaxed);
         }
@@ -1169,10 +1198,25 @@ impl Store {
         value: &[u8],
         tracker: Option<&crate::transaction_outcome::Tracker>,
     ) -> io::Result<()> {
+        self.commit_with_log_quota_then(operation, key, value, tracker, || {})
+    }
+
+    fn commit_with_log_quota_then(
+        &self,
+        operation: Operation,
+        key: &[u8],
+        value: &[u8],
+        tracker: Option<&crate::transaction_outcome::Tracker>,
+        after_enqueue: impl FnOnce(),
+    ) -> io::Result<()> {
         let Some(quota) = &self.log_quota else {
-            return self
-                .commits
-                .commit(&self.log, &self.inner, operation, key, value, tracker);
+            return self.commits.commit_then(
+                &self.log,
+                &self.inner,
+                (operation, key, value),
+                tracker,
+                after_enqueue,
+            );
         };
         if self.commits.failed() {
             return Err(uncertain_error());
@@ -1188,8 +1232,13 @@ impl Store {
         // A coordinator error after append poisons the store. Before-append
         // errors release the reservation; uncertain outcomes cannot be retried
         // on this open instance and are re-counted from the log after reopen.
-        self.commits
-            .commit(&self.log, &self.inner, operation, key, value, tracker)?;
+        self.commits.commit_then(
+            &self.log,
+            &self.inner,
+            (operation, key, value),
+            tracker,
+            after_enqueue,
+        )?;
         reservation.committed();
         Ok(())
     }
@@ -1233,6 +1282,8 @@ mod transaction_snapshot_release_tests;
 #[cfg(test)]
 mod detailed_checkpoint_tests;
 
+#[cfg(test)]
+mod atomic_contention_tests;
 #[cfg(test)]
 mod group_tests;
 

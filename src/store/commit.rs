@@ -406,14 +406,16 @@ impl Coordinator {
         self.reserve(bytes)
     }
 
-    pub(super) fn commit(
+    /// Submits one record and waits until it is synchronized, calling
+    /// `after_enqueue` once it is in the submission queue. Any record
+    /// submitted later is appended after this one.
+    pub(super) fn commit_then(
         &self,
         log: &Log,
         inner: &RwLock<Inner>,
-        operation: Operation,
-        key: &[u8],
-        value: &[u8],
+        (operation, key, value): (Operation, &[u8], &[u8]),
         tracker: Option<&crate::transaction_outcome::Tracker>,
+        after_enqueue: impl FnOnce(),
     ) -> io::Result<()> {
         // Store::append validates key and value lengths before admission.
         let bytes = HEADER_SIZE + key.len() + value.len() + CHECKSUM_SIZE;
@@ -421,8 +423,15 @@ impl Coordinator {
         let encoded = record::encode(operation, key, value)?;
         let checksum = crc32fast::hash(value);
         let entry = Entry::new(operation, key.to_vec(), encoded, value.len(), checksum);
-        self.submit(log, inner, entry, reservation, tracker, || Ok(()))
-            .map_err(TimedTransactionError::into_io)
+        self.submit(
+            log,
+            inner,
+            entry,
+            reservation,
+            tracker,
+            (|| Ok(()), after_enqueue),
+        )
+        .map_err(TimedTransactionError::into_io)
     }
 
     pub(super) fn commit_batch(
@@ -439,7 +448,14 @@ impl Coordinator {
         let encoded = batch.encode()?;
         let checksum = crc32fast::hash(&encoded[PAYLOAD_START..PAYLOAD_START + value_len]);
         let entry = Entry::new(Operation::Batch, vec![0], encoded, value_len, checksum);
-        self.submit(log, inner, entry, reservation, tracker, before_submit)
+        self.submit(
+            log,
+            inner,
+            entry,
+            reservation,
+            tracker,
+            (before_submit, || {}),
+        )
     }
 
     fn submit(
@@ -449,7 +465,10 @@ impl Coordinator {
         entry: Entry,
         mut reservation: Reservation<'_>,
         tracker: Option<&crate::transaction_outcome::Tracker>,
-        before_submit: impl FnOnce() -> Result<(), TimedTransactionError>,
+        (before_submit, after_enqueue): (
+            impl FnOnce() -> Result<(), TimedTransactionError>,
+            impl FnOnce(),
+        ),
     ) -> Result<(), TimedTransactionError> {
         let completion = Arc::clone(&entry.completion);
         let mut state = self.lock()?;
@@ -472,6 +491,9 @@ impl Coordinator {
         }
         state.queue.push_back(entry);
         reservation.active = false;
+        // Still under the queue mutex, so no later record can be queued
+        // ahead of this one.
+        after_enqueue();
         loop {
             if completion.done.load(Ordering::Acquire) {
                 return Ok(());

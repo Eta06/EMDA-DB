@@ -652,7 +652,18 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Add bounded multi-key reads from one captured index state, preserving input order and missing keys. This is not a multi-key transaction.
 - [x] Provide the same bounded multi-key read semantics on the checkpoint-backed store, with concurrent batch-visibility and response-limit tests.
 - [x] Implement bounded atomic multi-key write batches as single synchronized DB02 records, including failure, crash-state, format-compatibility and recovery checks. DB02 records are unreadable by earlier revisions; batch writes require witnessed stores.
-- [ ] Profile and reduce compare-exchange/increment/batch contention without weakening their semantics; they currently exclude all concurrent writers, including writers to other keys.
+- [x] Profile and reduce compare-exchange/increment/batch contention without weakening their semantics; they currently exclude all concurrent writers, including writers to other keys.
+  Compare-exchange and increment now downgrade the exclusive barrier to
+  shared access once their record is queued, so ordinary writers join their
+  group commit. Every exclusive writer, including another atomic of the
+  same key, still waits for the acknowledgement. A blind batch without
+  live-key limits takes shared access like a put. The
+  [contention run](../benchmarks/results/2026-11-26-atomic-write-contention/README.md)
+  measured median put p50 falling from 18.1 to 12.9 ms and wall time from
+  3.78 to 2.65 s on APFS. Its regressions hold a sync open and check
+  queueing, same-key ordering, visibility and reopen, with two mutation
+  checks. Atomics of different keys still serialize, and `CheckpointStore`
+  atomics are unchanged.
   Ordinary and checkpoint compare-exchange, checkpoint conditional batches,
   and integer increments verify stored values through fixed scratch
   buffers. The [macOS allocation comparison](../benchmarks/results/2026-11-24-streamed-conditions/README.md)
