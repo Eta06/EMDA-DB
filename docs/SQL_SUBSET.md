@@ -1,4 +1,4 @@
-# Embedded SQL Subset (Slice 1)
+# Embedded SQL Subset
 
 This document describes the experimental embedded SQL subset in `database_engine::sql`. It runs in-process over `DocumentDatabase` and the shared witnessed storage and transaction engine (`Store`, `CheckpointStore`, and the retained backends).
 
@@ -60,7 +60,12 @@ insert         := INSERT INTO ident ["(" ident ("," ident)* ")"]
                   VALUES tuple ("," tuple)*
 tuple          := "(" expr ("," expr)* ")"
 
-select         := SELECT ("*" | ident ("," ident)*) FROM ident [WHERE expr]
+select         := SELECT ("*" | ident ("," ident)*) FROM ident
+                  [WHERE expr]
+                  [ORDER BY order_item ("," order_item)*]
+                  [LIMIT limit_val [OFFSET limit_val]]
+order_item     := ident [ASC | DESC] [NULLS FIRST | NULLS LAST]
+limit_val      := non_neg_integer_lit | "?"
 
 update         := UPDATE ident SET assign ("," assign)* [WHERE expr]
 assign         := ident "=" expr
@@ -84,7 +89,9 @@ literal        := integer_lit | real_lit | string_lit | TRUE | FALSE | NULL
 Notes on specific constructs:
 - `VARCHAR(n)` enforces a maximum length of `n` UTF-8 characters (`1 <= n <= max_text_bytes`).
 - Updating a `PRIMARY KEY` column in `UPDATE ... SET` is rejected as `SqlError::Unsupported`.
-- Recognized SQL outside this grammar (`JOIN`, comma joins, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`, `OFFSET`, `DISTINCT`, `UNION`/`INTERSECT`/`EXCEPT`, aggregates/function calls, subqueries, `CREATE INDEX`, `DROP`, `ALTER`, `BEGIN`/`COMMIT`/`ROLLBACK`, `RETURNING`, `ON CONFLICT`, `DEFAULT`, `CHECK`, `FOREIGN KEY`/`REFERENCES`, `UNIQUE`, `IN`, `BETWEEN`, `LIKE`, `CASE`, `CAST`, arithmetic operators, qualified `table.column`, aliases `AS`) fails with `SqlError::Unsupported` naming the feature.
+- `ORDER BY` column positions (`ORDER BY 1`), expressions or qualified names in `ORDER BY`, standalone `OFFSET` without `LIMIT`, and `ORDER BY` / `LIMIT` / `OFFSET` on `UPDATE` or `DELETE` are rejected as `SqlError::Unsupported`.
+- `LIMIT` and `OFFSET` values must be non-negative `INTEGER` literals or `?` parameters (`SqlError::Bounds` for negative `INTEGER` values; `SqlError::Type` for `NULL`, `REAL`, `TEXT`, or `BOOLEAN`; `SqlError::Syntax` for out-of-`i64`-range integer literals).
+- Recognized SQL outside this grammar (`JOIN`, comma joins, `GROUP BY`, `HAVING`, `DISTINCT`, `UNION`/`INTERSECT`/`EXCEPT`, aggregates/function calls, subqueries, `CREATE INDEX`, `DROP`, `ALTER`, `BEGIN`/`COMMIT`/`ROLLBACK`, `RETURNING`, `ON CONFLICT`, `DEFAULT`, `CHECK`, `FOREIGN KEY`/`REFERENCES`, `UNIQUE`, `IN`, `BETWEEN`, `LIKE`, `CASE`, `CAST`, arithmetic operators, qualified `table.column`, aliases `AS`) fails with `SqlError::Unsupported` naming the feature.
 
 ## Types, coercion, and NULL semantics
 
@@ -122,7 +129,29 @@ Type rules:
   - `INTEGER` primary keys encode `(value ^ i64::MIN) as u64` as `i:<16 lowercase hex digits>`.
   - `TEXT` primary keys encode `t:<utf8_bytes>` (maximum `254` UTF-8 bytes to fit the 256-byte document ID limit; longer keys fail with `SqlError::Bounds`).
   - Ascending document ID byte order equals ascending SQL primary-key order (`i64` numerical order for `INTEGER`; UTF-8 byte order for `TEXT`).
-  - **Slice 1 guarantees that `SELECT` without `ORDER BY` returns rows in ascending primary-key order**.
+  - `SELECT` without `ORDER BY` returns rows in ascending primary-key order.
+
+## `ORDER BY`, `LIMIT`, and `OFFSET` semantics and execution
+
+- **NULL ordering**: By default, `NULL` sorts as smallest—`NULLS FIRST` for `ASC` and `NULLS LAST` for `DESC` (matching SQLite). Explicit `NULLS FIRST` or `NULLS LAST` overrides the default.
+- **Value comparison**:
+  - `INTEGER` and `REAL` compare numerically with exact precision (finite `REAL` with `-0.0 == 0.0`).
+  - `TEXT` compares by UTF-8 byte order.
+  - `BOOLEAN` compares `FALSE < TRUE`.
+- **Deterministic tie-breaking**: Multi-key `ORDER BY` keys are compared left-to-right; remaining ties break deterministically by **primary key ascending**.
+- **Unprojected sort keys**: `ORDER BY` may reference any column of the table, even if it is not in the `SELECT` projection list.
+- **Execution strategies**:
+  - `LIMIT 0` returns `0` rows without scanning or reading rows (after bind-time validation of table, columns, `WHERE`, `ORDER BY`, `LIMIT`, and `OFFSET`).
+  - **Streaming ascending PK path**: `SELECT` with no `ORDER BY` or with primary key `ASC` as its first sort key streams from the chosen access path in ascending PK order and stops immediately after `OFFSET + LIMIT` matching rows without sorting or extra row visits. When `WHERE` is absent and `LIMIT` is present, scan page size is also capped to the remaining needed rows.
+  - **Descending PK path**: `ORDER BY pk DESC` uses a bounded `VecDeque` ring buffer of `OFFSET + LIMIT` rows when `LIMIT` is present, or collects within `max_select_rows` / `max_sort_rows` and reverses when `LIMIT` is absent.
+  - **General `ORDER BY` path**: Non-PK sorts use a bounded top-K max-heap (`BinaryHeap`) retaining at most `OFFSET + LIMIT` rows (bounded by `max_sort_rows`) when `LIMIT` is present, or a full bounded sort (under `max_select_rows` and `max_sort_rows`) when `LIMIT` is absent. Exceeding `max_sort_rows` or `max_select_rows` fails with `SqlError::Bounds` and never silently truncates.
+
+## Statement and catalog caching
+
+`SqlDatabase` maintains bounded in-memory caches for parsed statements (in `execute`), decoded `TableDef` catalog entries, and table-bound execution plans:
+- Every statement still runs inside a `ReadSet` transaction and reads `\0emda-sql\x01T<table>` via `tx.get_raw` in the same transaction, comparing the stored catalog bytes against the cached entry.
+- Read-set validation covers the catalog key on commit, and any catalog change or drop invalidates the cached `TableDef` and any dependent bound plans immediately so stale definitions are never served.
+- `SqlDatabase::set_limits` clears cached statements and bound plans so updated limits take effect immediately.
 
 ## Access paths (`SELECT`, `UPDATE`, `DELETE`)
 
@@ -148,6 +177,7 @@ All bounds live in `SqlLimits` (implementing `Default`), configurable via `SqlDa
 | `max_insert_rows` | 1,024 | 1,024 | Rows per `INSERT` statement |
 | `max_mutation_rows` | 1,024 | 1,024 | Rows modified per `UPDATE` or `DELETE` |
 | `max_select_rows` | 10,000 | 10,000 | Rows returned per `SELECT` |
+| `max_sort_rows` | 32,768 | 131,072 | Rows buffered in `ORDER BY` sort / top-K heap |
 | `max_visited_rows` | 32,768 | 131,072 | Rows visited while scanning in one statement |
 | `max_params` | 1,024 | 1,024 | Positional `?` parameters |
 | `max_text_bytes` | 262,144 (256 KiB) | 262,144 | UTF-8 bytes of a `TEXT` literal/param/value |
@@ -185,5 +215,5 @@ Every SQL statement runs inside a single `DocumentDatabase::transaction_detailed
 
 ## Implemented vs planned
 
-- **Implemented (Slice 1)**: `CREATE TABLE [IF NOT EXISTS]`, `INSERT`, `SELECT` (`*` or column list, `WHERE`), `UPDATE`, `DELETE`, `SqlValue`/`SqlLimits`/`SqlError`/`SqlStatement` prepared reuse, 3VL expressions, exact numeric comparisons, ascending PK order guarantee, primary-key point (`=`) and range (`>`, `>=`, `<`, `<=`) access paths with bounded full-collection scan fallback via `DocumentTransaction::scan_documents`, `ReadSet` optimistic concurrency, and row PK/document-ID integrity verification.
-- **Planned (later slices)**: `ORDER BY`, `LIMIT` / `OFFSET`, secondary indexes (`CREATE INDEX`) and cost-based SQL query planning, `JOIN`, `GROUP BY` / aggregates, subqueries, multi-statement explicit SQL transactions (`BEGIN` / `COMMIT` / `ROLLBACK`), schema migrations (`ALTER` / `DROP`), and `EXPLAIN` / SQL diagnostics.
+- **Implemented**: `CREATE TABLE [IF NOT EXISTS]`, `INSERT`, `SELECT` (`*` or column list, `WHERE`, `ORDER BY` with `ASC`/`DESC`/`NULLS FIRST`/`NULLS LAST`, `LIMIT`/`OFFSET`), `UPDATE`, `DELETE`, `SqlValue`/`SqlLimits`/`SqlError`/`SqlStatement` prepared reuse, per-`SqlDatabase` catalog/statement/plan caching, 3VL expressions, exact numeric comparisons, ascending PK order guarantee and streaming `ORDER BY pk ASC`, bounded `ORDER BY pk DESC` and top-K / full sort, primary-key point (`=`) and range (`>`, `>=`, `<`, `<=`) access paths with bounded full-collection scan fallback via `DocumentTransaction::scan_documents`, `ReadSet` optimistic concurrency, and row PK/document-ID integrity verification.
+- **Planned (later slices)**: secondary indexes (`CREATE INDEX`) and cost-based SQL query planning, `JOIN`, `GROUP BY` / aggregates, subqueries, multi-statement explicit SQL transactions (`BEGIN` / `COMMIT` / `ROLLBACK`), schema migrations (`ALTER` / `DROP`), and `EXPLAIN` / SQL diagnostics.
