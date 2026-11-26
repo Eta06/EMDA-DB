@@ -94,6 +94,38 @@ struct Entry {
     value_len: usize,
     checksum: u32,
     completion: Arc<Completion>,
+    // Keys this record writes, registered as pending from the moment it is
+    // queued until its index update is published.
+    pending_keys: Vec<Vec<u8>>,
+}
+
+/// Keys written by records that are queued or being synchronized but whose
+/// index updates are not yet published. Shown to a submission's validation
+/// under the queue mutex, so no record can be queued between the check and
+/// the submission.
+pub(super) struct PendingWrites<'a>(&'a BTreeMap<Vec<u8>, usize>);
+
+impl PendingWrites<'_> {
+    pub(super) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(super) fn contains(&self, key: &[u8]) -> bool {
+        self.0.contains_key(key)
+    }
+
+    /// Whether a pending key lies strictly between the optional bounds.
+    pub(super) fn any_between(&self, after: Option<&[u8]>, before: Option<&[u8]>) -> bool {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let lower = after.map_or(Unbounded, Excluded);
+        let upper = before.map_or(Unbounded, Excluded);
+        if let (Some(after), Some(before)) = (after, before) {
+            if after >= before {
+                return false;
+            }
+        }
+        self.0.range::<[u8], _>((lower, upper)).next().is_some()
+    }
 }
 
 impl Entry {
@@ -115,6 +147,7 @@ impl Entry {
                 waiting: AtomicBool::new(false),
                 changed: Condvar::new(),
             }),
+            pending_keys: Vec::new(),
         }
     }
 }
@@ -143,11 +176,14 @@ struct State {
     active: bool,
     active_completions: Vec<Arc<Completion>>,
     failure: Option<Failure>,
+    pending: BTreeMap<Vec<u8>, usize>,
 }
 
 pub(super) struct Coordinator {
     state: Mutex<State>,
     admission_changed: Condvar,
+    // Notified whenever pending writes are published.
+    pending_changed: Condvar,
     failed: AtomicBool,
     #[cfg(test)]
     snapshot_copy_hook: Mutex<Option<SnapshotCopyHook>>,
@@ -175,8 +211,10 @@ impl Coordinator {
                 active: false,
                 active_completions: Vec::new(),
                 failure: None,
+                pending: BTreeMap::new(),
             }),
             admission_changed: Condvar::new(),
+            pending_changed: Condvar::new(),
             failed: AtomicBool::new(false),
             #[cfg(test)]
             snapshot_copy_hook: Mutex::new(None),
@@ -243,6 +281,7 @@ impl Coordinator {
                 waiting: AtomicBool::new(false),
                 changed: Condvar::new(),
             }),
+            pending_keys: Vec::new(),
         });
     }
 
@@ -324,6 +363,32 @@ impl Coordinator {
             entry.completion.changed.notify_one();
         }
         self.admission_changed.notify_all();
+    }
+
+    /// Waits while `blocked` holds for the pending writes, for example while
+    /// a queued write overlaps a transaction's observations. It returns once
+    /// they are published, the store fails, the deadline passes or the
+    /// transaction is cancelled.
+    pub(super) fn wait_while_pending(
+        &self,
+        mut blocked: impl FnMut(&PendingWrites<'_>) -> bool,
+        deadline: Option<std::time::Instant>,
+        cancellation: Option<&crate::CancellationToken>,
+    ) -> Result<(), TimedTransactionError> {
+        let mut state = self.lock()?;
+        while !self.failed() && blocked(&PendingWrites(&state.pending)) {
+            if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                return Err(TimedTransactionError::DeadlineExceeded);
+            }
+            crate::cancellation::check(cancellation)?;
+            // Bounded waits keep deadlines and cancellation responsive.
+            state = self
+                .pending_changed
+                .wait_timeout(state, std::time::Duration::from_millis(5))
+                .map_err(|_| io::Error::other("commit coordinator poisoned"))?
+                .0;
+        }
+        Ok(())
     }
 
     fn lock(&self) -> io::Result<MutexGuard<'_, State>> {
@@ -436,14 +501,15 @@ impl Coordinator {
         let reservation = self.reserve(bytes)?;
         let encoded = record::encode(operation, key, value)?;
         let checksum = crc32fast::hash(value);
-        let entry = Entry::new(operation, key.to_vec(), encoded, value.len(), checksum);
+        let mut entry = Entry::new(operation, key.to_vec(), encoded, value.len(), checksum);
+        entry.pending_keys.push(key.to_vec());
         self.submit(
             log,
             inner,
             entry,
             reservation,
             tracker,
-            (|| Ok(()), after_enqueue),
+            (|_: &PendingWrites<'_>| Ok(()), after_enqueue),
         )
         .map_err(TimedTransactionError::into_io)
     }
@@ -454,14 +520,19 @@ impl Coordinator {
         inner: &RwLock<Inner>,
         batch: BatchLayout<'_>,
         tracker: Option<&crate::transaction_outcome::Tracker>,
-        before_submit: impl FnOnce() -> Result<(), TimedTransactionError>,
+        before_submit: impl FnOnce(&PendingWrites<'_>) -> Result<(), TimedTransactionError>,
     ) -> Result<(), TimedTransactionError> {
         const PAYLOAD_START: usize = HEADER_SIZE + 1;
         let value_len = batch.payload_len();
         let reservation = self.reserve(batch.encoded_len())?;
         let encoded = batch.encode()?;
         let checksum = crc32fast::hash(&encoded[PAYLOAD_START..PAYLOAD_START + value_len]);
-        let entry = Entry::new(Operation::Batch, vec![0], encoded, value_len, checksum);
+        let mut entry = Entry::new(Operation::Batch, vec![0], encoded, value_len, checksum);
+        entry.pending_keys = batch
+            .operations()
+            .iter()
+            .map(|operation| operation.fields().1.to_vec())
+            .collect();
         self.submit(
             log,
             inner,
@@ -480,7 +551,7 @@ impl Coordinator {
         mut reservation: Reservation<'_>,
         tracker: Option<&crate::transaction_outcome::Tracker>,
         (before_submit, after_enqueue): (
-            impl FnOnce() -> Result<(), TimedTransactionError>,
+            impl FnOnce(&PendingWrites<'_>) -> Result<(), TimedTransactionError>,
             impl FnOnce(),
         ),
     ) -> Result<(), TimedTransactionError> {
@@ -493,7 +564,7 @@ impl Coordinator {
         }
         // Read the control state under the queue mutex before publishing the
         // entry. Drop the mutex before unwinding the byte reservation.
-        if let Err(error) = before_submit() {
+        if let Err(error) = before_submit(&PendingWrites(&state.pending)) {
             drop(state);
             return Err(error);
         }
@@ -502,6 +573,9 @@ impl Coordinator {
         // submitted this call, even if a different call remains uncertain.
         if let Some(tracker) = tracker {
             tracker.commit();
+        }
+        for key in &entry.pending_keys {
+            *state.pending.entry(key.clone()).or_default() += 1;
         }
         state.queue.push_back(entry);
         reservation.active = false;
@@ -676,11 +750,21 @@ impl Coordinator {
         // lead the next batch. Timed rechecks let other writers take over if
         // that head is delayed; this is not a latency or fairness guarantee.
         for entry in batch {
+            // Published: validation now sees these writes in the index.
+            for key in &entry.pending_keys {
+                if let Some(count) = state.pending.get_mut(key.as_slice()) {
+                    *count -= 1;
+                    if *count == 0 {
+                        state.pending.remove(key.as_slice());
+                    }
+                }
+            }
             entry.completion.done.store(true, Ordering::Release);
             if entry.completion.waiting.load(Ordering::Relaxed) {
                 entry.completion.changed.notify_one();
             }
         }
+        self.pending_changed.notify_all();
         state.active_completions.clear();
         state.active = false;
         if let Some(next) = state.queue.front() {

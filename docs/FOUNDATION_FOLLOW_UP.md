@@ -740,6 +740,20 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Add optional operation-boundary deadlines for all transaction modes, including timed FIFO queue removal and a distinct pre-commit expiry result. Tests verify expiry while waiting for the writer, successful synchronization finishing after expiry, and a synchronization timeout retaining an unknown outcome.
 - [x] Avoid a full ordinary-store snapshot for standalone document point reads while retaining shared active-read admission, stored-value verification, conservative generation validation, conflict handling and uncertain-write rejection. Explicit transactions and checkpoint-backed reads still use their existing snapshot paths and limits.
 - [ ] Extend transaction model checking, fault campaigns, benchmarks and resource limits. Both validation modes retain a bounded full-index snapshot root, and writes may copy the index; callbacks are not automatically retried; read-set validation compares complete ranges while holding the writer barrier and does not provide absence-version tracking. A small [SQLite comparison](BENCHMARKS.md#two-key-transaction-comparison) found high prototype p99 under eight clients despite no disjoint read-set conflicts. Optional FIFO reduced that sampled tail at the cost of higher median latency and, for shared keys, many more retries; investigate admission and compare equivalent transactional workloads with PostgreSQL and other suitable engines.
+  Writing ordinary-store transactions now take shared barrier access and
+  validate under the group-commit queue mutex. Validation checks the
+  published index and every queued, unpublished key, so independent
+  transactions share syncs without weakening serializability. A
+  transaction that conflicts with a pending write waits for it to publish.
+  In the [paired measurement](../benchmarks/results/2026-11-26-pipelined-transaction-commit/README.md),
+  8 disjoint read-set clients rose from about 165 to 680 transactions per
+  second, with p99 from about 55 to 14 ms. Contended and conservative
+  workloads kept their throughput and reported about four times as many
+  conflicts. The [regressions](../src/store/pipelined_commit_tests.rs) hold
+  a sync open and check disjoint queueing, point, range and conservative
+  conflicts after publication, exclusive writers waiting, and invariants
+  across reopen. Removing either mechanism fails a test. PostgreSQL is not
+  installed here, so the equivalent comparison still needs it.
 - [x] Share immutable ordinary-store index roots between snapshots and prepare a copy on write when necessary. Per-view and aggregate admission still count logical keys and key bytes for each snapshot. Index identity, generation and failure checks protect publication. The [contention comparison](SHARED_SNAPSHOT_COMPARISON_2026_11_04.md) records improved sampled writer throughput alongside mixed reader tails; writes can still copy the full index, and this is not a total-memory or persistent-index guarantee.
 - [x] Release an ordinary transaction's private snapshot after validation while
   retaining the writer barrier, before committing. Other snapshots remain valid;

@@ -43,7 +43,7 @@ impl Store {
                 .map_err(|_| io::Error::other("write barrier poisoned"))?;
             let batch = BatchLayout::new(operations)?;
             return self
-                .write_batch_locked(batch, tracker, || Ok(()))
+                .write_batch_locked(batch, tracker, |_| Ok(()))
                 .map_err(TimedTransactionError::into_io);
         }
         let _writer = self
@@ -51,7 +51,7 @@ impl Store {
             .write()
             .map_err(|_| io::Error::other("write barrier poisoned"))?;
         let batch = BatchLayout::new(operations)?;
-        self.write_batch_locked(batch, tracker, || Ok(()))
+        self.write_batch_locked(batch, tracker, |_| Ok(()))
             .map_err(TimedTransactionError::into_io)
     }
 
@@ -62,7 +62,9 @@ impl Store {
         &self,
         batch: BatchLayout<'_>,
         tracker: Option<&crate::transaction_outcome::Tracker>,
-        before_submit: impl FnOnce() -> Result<(), TimedTransactionError>,
+        before_submit: impl FnOnce(
+            &super::commit::PendingWrites<'_>,
+        ) -> Result<(), TimedTransactionError>,
     ) -> Result<(), TimedTransactionError> {
         if self.commits.failed() {
             return Err(uncertain_error().into());
@@ -183,8 +185,9 @@ mod tests {
             .unwrap();
         {
             let _writer = store.writes.write().unwrap();
-            let outcome = store
-                .write_batch_locked(batch, None, || Err(TimedTransactionError::DeadlineExceeded));
+            let outcome = store.write_batch_locked(batch, None, |_| {
+                Err(TimedTransactionError::DeadlineExceeded)
+            });
             assert!(matches!(
                 outcome,
                 Err(TimedTransactionError::DeadlineExceeded)

@@ -4,6 +4,12 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Let independent writing `Store` transactions share a group-commit sync.
+  They take shared barrier access and validate against both the published
+  index and every queued but unpublished write. A transaction overlapping a
+  pending write waits for it to publish, then conflicts. Exclusive writers
+  still wait for every pending transaction.
+
 - Add `DocumentTransaction::request_usage` and
   `DocumentSnapshot::request_usage`, which report admitted read units and
   bytes and staged write units and bytes in the units of the request

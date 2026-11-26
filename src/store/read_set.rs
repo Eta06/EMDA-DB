@@ -40,6 +40,16 @@ pub(super) struct ReadSet {
 }
 
 impl ReadSet {
+    /// Whether a queued, unpublished write touches an observed point or
+    /// lies inside an observed range.
+    pub(super) fn touches(&self, pending: &super::commit::PendingWrites<'_>) -> bool {
+        self.points.iter().any(|key| pending.contains(key))
+            || self
+                .ranges
+                .iter()
+                .any(|range| pending.any_between(range.after.as_deref(), range.before.as_deref()))
+    }
+
     pub(super) fn with_validation_limit(validation_limit: Option<u64>) -> Self {
         Self {
             validation_limit,

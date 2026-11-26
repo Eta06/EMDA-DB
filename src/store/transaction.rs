@@ -114,38 +114,46 @@ impl Drop for Transaction<'_> {
     }
 }
 
+// Checks a transaction's observations against the published index.
+fn validate(
+    snapshot: &Snapshot<'_>,
+    read_set: &Option<Mutex<super::read_set::ReadSet>>,
+    current: &Inner,
+) -> Result<(), TimedTransactionError> {
+    let same_generation = current.generation == snapshot.generation
+        && current.log_generation == snapshot.log_generation;
+    let valid = if let Some(read_set) = read_set {
+        let read_set = read_set
+            .lock()
+            .map_err(|_| io::Error::other("transaction read set poisoned"))?;
+        if same_generation {
+            true
+        } else {
+            let snapshot = snapshot
+                .read_index()
+                .map_err(classify_validation_snapshot_error)?;
+            read_set.matches(
+                &snapshot.index,
+                &current.index,
+                snapshot.log_generation,
+                current.log_generation,
+            )?
+        }
+    } else {
+        same_generation
+    };
+    if !valid {
+        return Err(crate::transaction_conflict::conflict(
+            "transaction conflict: observed state changed since snapshot",
+        )
+        .into());
+    }
+    Ok(())
+}
+
 impl Transaction<'_> {
     fn validate_against(&self, current: &Inner) -> Result<(), TimedTransactionError> {
-        let same_generation = current.generation == self.snapshot.generation
-            && current.log_generation == self.snapshot.log_generation;
-        let valid = if let Some(read_set) = &self.read_set {
-            let read_set = read_set
-                .lock()
-                .map_err(|_| io::Error::other("transaction read set poisoned"))?;
-            if same_generation {
-                true
-            } else {
-                let snapshot = self
-                    .snapshot
-                    .read_index()
-                    .map_err(classify_validation_snapshot_error)?;
-                read_set.matches(
-                    &snapshot.index,
-                    &current.index,
-                    snapshot.log_generation,
-                    current.log_generation,
-                )?
-            }
-        } else {
-            same_generation
-        };
-        if !valid {
-            return Err(crate::transaction_conflict::conflict(
-                "transaction conflict: observed state changed since snapshot",
-            )
-            .into());
-        }
-        Ok(())
+        validate(&self.snapshot, &self.read_set, current)
     }
 
     /// Reads from staged changes first, then from the initial snapshot.
@@ -658,6 +666,11 @@ impl Store {
                 Err(std::sync::TryLockError::WouldBlock) => {}
             }
         }
+        if self.max_live_keys.is_none() && self.max_live_key_bytes.is_none() {
+            return self
+                .commit_pipelined(txn, deadline, cancellation, tracker)
+                .map(|()| result);
+        }
         let _writer =
             crate::cancellation::write_lock(&self.writes, deadline, cancellation, || {
                 io::Error::other("write barrier poisoned")
@@ -692,7 +705,7 @@ impl Store {
             let batch = BatchLayout::new(&operations)?;
             check_deadline(deadline)?;
             crate::cancellation::check(cancellation)?;
-            self.write_batch_locked(batch, tracker, || {
+            self.write_batch_locked(batch, tracker, |_| {
                 check_deadline(deadline)?;
                 crate::cancellation::check(cancellation)?;
                 Ok(())
@@ -702,6 +715,104 @@ impl Store {
             crate::cancellation::check(cancellation)?;
         }
         Ok(result)
+    }
+
+    // Commits a writing transaction under shared barrier access, so
+    // independent transactions and ordinary writes share group commits.
+    // Validation runs under the coordinator's queue mutex, immediately
+    // before the batch is queued, against both the published index and the
+    // keys of every queued but unpublished record. Every record ordered
+    // before this one is therefore either published, and checked by the
+    // usual validation, or pending, and checked against the observations. A
+    // read-set transaction conflicts when a pending write touches an
+    // observed point or range; a conservative one conflicts on any pending
+    // write. Shared access is held until acknowledgement, so exclusive
+    // writers and maintenance still see no unacknowledged writes in flight.
+    fn commit_pipelined(
+        &self,
+        mut txn: Transaction<'_>,
+        deadline: Option<Instant>,
+        cancellation: Option<&crate::CancellationToken>,
+        tracker: Option<&crate::transaction_outcome::Tracker>,
+    ) -> Result<(), TimedTransactionError> {
+        let _writer = crate::cancellation::read_lock(&self.writes, deadline, cancellation, || {
+            io::Error::other("write barrier poisoned")
+        })?;
+        check_deadline(deadline)?;
+        crate::cancellation::check(cancellation)?;
+        if self.commits.failed() {
+            return Err(uncertain_error().into());
+        }
+        // Disjoint borrows: the batch borrows the staged values while the
+        // submission validates against the snapshot and read set.
+        let Transaction {
+            snapshot,
+            staged,
+            read_set,
+            ..
+        } = &mut txn;
+        let (staged, read_set) = (&*staged, &*read_set);
+        // Deletions first avoid a transient quota overshoot when a
+        // transaction atomically replaces one key with another.
+        let mut operations = Vec::with_capacity(staged.len());
+        for (key, value) in staged.iter() {
+            if value.is_none() {
+                operations.push(BatchOperation::Delete { key });
+            }
+        }
+        for (key, value) in staged.iter() {
+            if let Some(value) = value {
+                operations.push(BatchOperation::Put { key, value });
+            }
+        }
+        let batch = BatchLayout::new(&operations)?;
+        check_deadline(deadline)?;
+        crate::cancellation::check(cancellation)?;
+        let touched = |pending: &super::commit::PendingWrites<'_>| -> io::Result<bool> {
+            Ok(match read_set {
+                Some(read_set) => read_set
+                    .lock()
+                    .map_err(|_| io::Error::other("transaction read set poisoned"))?
+                    .touches(pending),
+                None => !pending.is_empty(),
+            })
+        };
+        let mut overlapped = false;
+        let submitted = self.write_batch_locked(batch, tracker, |pending| {
+            check_deadline(deadline)?;
+            crate::cancellation::check(cancellation)?;
+            {
+                let current = self.read()?;
+                validate(snapshot, read_set, &current)?;
+            }
+            if touched(pending)? {
+                overlapped = true;
+                return Err(crate::transaction_conflict::conflict(
+                    "transaction conflict: a queued write overlaps the observed state",
+                )
+                .into());
+            }
+            // Validation can wait for the index lock; recheck the controls
+            // before the batch is queued, as the exclusive path does.
+            check_deadline(deadline)?;
+            crate::cancellation::check(cancellation)?;
+            // The private snapshot is no longer observed. Releasing it before
+            // the batch is queued avoids pinning the index root, which
+            // would make publication copy it.
+            snapshot.cancel();
+            Ok(())
+        });
+        if overlapped {
+            // Report the conflict only once the overlapping writes are
+            // published, so a retry sees them rather than spinning while
+            // they synchronize, as it would have waited for the barrier.
+            self.commits.wait_while_pending(
+                |pending| touched(pending).unwrap_or(false),
+                deadline,
+                cancellation,
+            )?;
+        }
+        submitted
     }
 
     fn check_read_only_validation(&self) -> io::Result<()> {
@@ -831,7 +942,9 @@ mod tests {
         resume_tx.send(()).unwrap();
         let mut writer_acquired = false;
         while Instant::now() < deadline {
-            if store.writes.try_read().is_err() {
+            // A writing transaction holds the barrier, shared, through
+            // validation and synchronization.
+            if store.writes.try_write_for(Duration::ZERO).is_err() {
                 writer_acquired = true;
                 break;
             }

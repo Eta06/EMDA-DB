@@ -1286,6 +1286,8 @@ mod detailed_checkpoint_tests;
 mod atomic_contention_tests;
 #[cfg(test)]
 mod group_tests;
+#[cfg(test)]
+mod pipelined_commit_tests;
 
 #[cfg(test)]
 mod initialization_tests;
