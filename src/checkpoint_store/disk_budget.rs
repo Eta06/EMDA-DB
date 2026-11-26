@@ -711,27 +711,45 @@ impl DiskBudget {
     /// record fails, the in-memory charge is kept, which is never less than
     /// either visible record charges.
     pub(crate) fn reconcile(&self) -> io::Result<bool> {
-        let mut state = lock_reliable(&self.state)?;
+        self.reconcile_tracked().map_err(|failure| match failure {
+            crate::PublicationFailure::NotPublished(error)
+            | crate::PublicationFailure::OutcomeUnknown(error) => error,
+        })
+    }
+
+    /// Like [`Self::reconcile`]. An uncertain idle-record publication is
+    /// `OutcomeUnknown`; the charge is then kept in memory. Either visible
+    /// record is safe, because the idle record is written only once nothing
+    /// the maintenance could have allocated remains.
+    pub(crate) fn reconcile_tracked(&self) -> Result<bool, crate::PublicationFailure> {
+        use crate::PublicationFailure::{NotPublished, OutcomeUnknown};
+        let mut state = lock_reliable(&self.state).map_err(NotPublished)?;
         let clean = match &state.pending {
             Pending::Idle => return Ok(true),
             // Copy stages record no owner, so any one keeps the charge.
             Pending::Compacting { previous, .. } => {
                 fs::symlink_metadata(previous)
                     .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
-                    && !crate::staging::has_unowned_stage(&self.parent)?
+                    && !crate::staging::has_unowned_stage(&self.parent).map_err(NotPublished)?
             }
-            Pending::Retiring { .. } => self.named_retired_locked(&state)? == 0,
+            Pending::Retiring { .. } => {
+                self.named_retired_locked(&state).map_err(NotPublished)? == 0
+            }
         };
         if !clean {
             return Ok(false);
         }
-        write(
+        match write_tracked(
             &self.store,
             &Record {
                 limit: state.limit,
                 pending: Pending::Idle,
             },
-        )?;
+        ) {
+            Ok(()) => {}
+            Err(WriteFailure::NotPublished(error)) => return Err(NotPublished(error)),
+            Err(failure) => return Err(OutcomeUnknown(failure.into_io())),
+        }
         state.maintenance = 0;
         state.pending = Pending::Idle;
         // Names are gone; an owned snapshot may still hold the generation.

@@ -107,3 +107,57 @@ fn an_uncertain_removal_keeps_enforcing_the_budget_until_reopen() {
     drop(online);
     assert_eq!(reopened(&fixture.source), model);
 }
+
+#[test]
+fn an_uncertain_reconciliation_keeps_the_charge_and_a_retry_clears_it() {
+    let (fixture, online, model) = fixture(false);
+    online.set_disk_budget(Some(u64::MAX)).unwrap();
+    // A handoff refused under the final barrier leaves its candidate and
+    // reservation behind.
+    online.set_retired_snapshot_log_limit(Some(0)).unwrap();
+    let mut during = None;
+    let result = online.compact_reclaim_detailed_with_hooks(
+        &fixture.previous,
+        &Default::default(),
+        (
+            |point| {
+                if point == Point::InitialCopy {
+                    during = Some(online.snapshot()?);
+                }
+                Ok(())
+            },
+            crate::directory::sync_existing,
+        ),
+        |_| Ok(()),
+    );
+    assert!(result.is_err());
+    drop(during);
+    let pending = online.disk_budget_status().unwrap().unwrap();
+    assert_eq!(pending.pending, crate::DiskBudgetPending::Compaction);
+    // While the candidate remains, reconciliation keeps the charge.
+    let kept = online.reconcile_disk_budget_detailed().unwrap().unwrap();
+    assert_eq!(kept.pending, crate::DiskBudgetPending::Compaction);
+    fs::remove_dir_all(&fixture.previous).unwrap();
+    crate::cleanup_abandoned_staging(fixture.root.path()).unwrap();
+    let failure = with_failed_sync(|| online.reconcile_disk_budget_detailed()).unwrap_err();
+    assert!(
+        matches!(failure, PublicationFailure::OutcomeUnknown(_)),
+        "{failure:?}"
+    );
+    // The handle keeps the charge and stays usable; a retry clears it.
+    let kept = online.disk_budget_status().unwrap().unwrap();
+    assert_eq!(
+        (kept.pending, kept.maintenance_reserved),
+        (pending.pending, pending.maintenance_reserved)
+    );
+    let idle = online.reconcile_disk_budget_detailed().unwrap().unwrap();
+    assert_eq!(idle.pending, crate::DiskBudgetPending::None);
+    assert_eq!(idle.maintenance_reserved, 0);
+    drop(online);
+    let online = retry_lock(|| OnlineCheckpointStore::open_managed(&fixture.source)).unwrap();
+    assert_eq!(
+        online.disk_budget_status().unwrap().unwrap().pending,
+        crate::DiskBudgetPending::None
+    );
+    assert_eq!(live(&online), model);
+}

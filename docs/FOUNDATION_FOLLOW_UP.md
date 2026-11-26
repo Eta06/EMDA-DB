@@ -233,7 +233,7 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   still be uncertain, and rejection does not establish store health. [Local
   concurrency and performance evidence](COORDINATOR_ADMISSION_OUTCOMES_2026_11_14.md)
   records the scope.
-- [ ] Specify structured outcomes for other maintenance publications and
+- [x] Specify structured outcomes for other maintenance publications and
   refine safe classifications where further boundaries can be proven.
   Existing error types are unchanged and unknown outcomes cannot be retried
   solely from error kind.
@@ -266,6 +266,13 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   budget enforced. [Tests](../src/checkpoint_store/online/tests/budget_outcomes.rs)
   inject a directory sync failure after each publication and check the
   record a reopen loads. `set_disk_budget` returns the same errors as before.
+  `reconcile_disk_budget_detailed` classifies the idle-record publication.
+  After an uncertain write it keeps the charge, which is safe because the
+  record is written only once nothing charged remains, and a retry clears
+  it. With these, every public maintenance call on `Store`, both online
+  stores, `CheckpointStore`, automatic checkpoint configuration, retained
+  catalogs and backups that publishes a file has a classified form. The
+  basic calls are wrappers that return the same errors.
 - [x] Inject errors during pending-tail witness updates and sync through
   ordinary, full bounded and suffix bounded managed rebuilds. Both witness
   formats report uncertain tail adoption, preserve the old checkpoint

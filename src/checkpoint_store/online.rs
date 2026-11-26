@@ -652,23 +652,43 @@ impl OnlineCheckpointStore {
     /// [`Self::cleanup_retired_staging_detailed`] or remove the named copy.
     /// While anything remains, the charge is kept.
     pub fn reconcile_disk_budget(&self) -> io::Result<Option<crate::DiskBudgetStatus>> {
-        Access::check_not_active(self.id())?;
+        self.reconcile_disk_budget_detailed()
+            .map_err(|failure| match failure {
+                crate::PublicationFailure::NotPublished(error)
+                | crate::PublicationFailure::OutcomeUnknown(error) => error,
+            })
+    }
+
+    /// Like [`Self::reconcile_disk_budget`], classifying a failure.
+    /// `NotPublished` leaves the pending record visible. `OutcomeUnknown`
+    /// means the idle record may or may not be durable; this handle keeps
+    /// the charge, and either record is safe because it is written only once
+    /// nothing the maintenance could have allocated remains. Retry, or
+    /// reopen to load the visible record.
+    pub fn reconcile_disk_budget_detailed(
+        &self,
+    ) -> Result<Option<crate::DiskBudgetStatus>, crate::PublicationFailure> {
+        use crate::PublicationFailure::NotPublished;
+        Access::check_not_active(self.id()).map_err(NotPublished)?;
         let _maintenance = match self.maintenance.try_lock() {
             Ok(guard) => guard,
             Err(TryLockError::WouldBlock) => {
-                return Err(io::Error::new(io::ErrorKind::WouldBlock, MaintenanceBusy));
+                return Err(NotPublished(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    MaintenanceBusy,
+                )));
             }
-            Err(TryLockError::Poisoned(_)) => return Err(uncertain()),
+            Err(TryLockError::Poisoned(_)) => return Err(NotPublished(uncertain())),
         };
-        let state = self.state.read().map_err(|_| uncertain())?;
+        let state = self.state.read().map_err(|_| NotPublished(uncertain()))?;
         if state.failed {
-            return Err(uncertain());
+            return Err(NotPublished(uncertain()));
         }
-        let Some(budget) = state.store.disk_budget()? else {
+        let Some(budget) = state.store.disk_budget().map_err(NotPublished)? else {
             return Ok(None);
         };
-        budget.reconcile()?;
-        budget.status().map(Some)
+        budget.reconcile_tracked()?;
+        budget.status().map(Some).map_err(NotPublished)
     }
 
     /// Sets an optional inclusive ceiling on logical source reads for each
