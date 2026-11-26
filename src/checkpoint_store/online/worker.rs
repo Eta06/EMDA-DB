@@ -161,7 +161,7 @@ impl OnlineCheckpointStore {
                 .retired
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
-            retired.retain(|token| token.strong_count() != 0);
+            retired.retain(|(token, _)| token.strong_count() != 0);
             !retired.is_empty()
         };
         if pinned {

@@ -46,6 +46,18 @@ impl std::fmt::Display for ScheduledDeferral {
 
 impl std::error::Error for ScheduledDeferral {}
 
+// Owned snapshots would pin more retired log history than the handle allows.
+#[derive(Debug)]
+struct RetiredSnapshotLimit;
+
+impl std::fmt::Display for RetiredSnapshotLimit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("retired checkpoint generations pinned by snapshots exceed the limit")
+    }
+}
+
+impl std::error::Error for RetiredSnapshotLimit {}
+
 thread_local! { static ACTIVE_ACCESS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) }; }
 
 struct Access(usize);
@@ -114,6 +126,7 @@ struct State {
     store: Arc<CheckpointStore>,
     failed: bool,
     maintenance_source_read_limit: Option<u64>,
+    retired_limit: Option<u64>,
 }
 
 /// A guarded managed checkpoint-backed store that can compact its log while
@@ -127,9 +140,10 @@ pub struct OnlineCheckpointStore {
     state: RwLock<State>,
     maintenance: Mutex<()>,
     reclamation_worker: std::sync::atomic::AtomicBool,
-    // Previous generations replaced through this handle. A live token means
-    // an owned snapshot still holds that generation and its disk blocks.
-    retired: Mutex<Vec<std::sync::Weak<super::disk_budget::GenerationToken>>>,
+    // Previous generations replaced through this handle, with their final
+    // log lengths. A live token means an owned snapshot still holds that
+    // generation and its disk blocks.
+    retired: Mutex<Vec<(std::sync::Weak<super::disk_budget::GenerationToken>, u64)>>,
 }
 
 /// An owned read-only view captured from an online checkpoint store.
@@ -421,6 +435,7 @@ impl OnlineCheckpointStore {
                 store: Arc::new(store),
                 failed: false,
                 maintenance_source_read_limit: None,
+                retired_limit: None,
             }),
             maintenance: Mutex::new(()),
             reclamation_worker: std::sync::atomic::AtomicBool::new(false),
@@ -632,6 +647,71 @@ impl OnlineCheckpointStore {
             return Err(uncertain());
         }
         state.maintenance_source_read_limit = limit;
+        Ok(())
+    }
+
+    /// Sets an optional limit on logical log bytes of retired generations
+    /// that owned snapshots still pin. Each pinned generation counts its final
+    /// log length once, however many snapshots hold it, and stops counting
+    /// when the last of them is released. A manual or scheduled handoff that
+    /// would exceed the limit returns `WouldBlock` before it reads, reserves
+    /// or writes anything when the current generation is already pinned. A
+    /// generation first pinned during the copy is refused under the final
+    /// barrier, before the exchange, leaving the unselected candidate as any
+    /// failure there does. Snapshots are never cancelled and writes are never
+    /// refused. A limit below the current pinned total is rejected with
+    /// `WouldBlock` and leaves the old limit.
+    ///
+    /// The limit is local to this handle and resets on reopen. It excludes
+    /// checkpoint files and automatic slots, the active log, unpinned named
+    /// copies, staging and filesystem allocation; a disk budget charges the
+    /// whole pinned tree. It must not be called from a callback of this
+    /// handle.
+    pub fn set_retired_snapshot_log_limit(&self, limit: Option<u64>) -> io::Result<()> {
+        Access::check_not_active(self.id())?;
+        let mut state = self.state.write().map_err(|_| uncertain())?;
+        if state.failed {
+            return Err(uncertain());
+        }
+        if limit.is_some_and(|limit| self.retired_bytes() > limit) {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                RetiredSnapshotLimit,
+            ));
+        }
+        state.retired_limit = limit;
+        Ok(())
+    }
+
+    /// Logical log bytes of retired generations that owned snapshots still
+    /// pin. It can decrease at any time as snapshots are released.
+    pub fn retired_snapshot_log_bytes(&self) -> io::Result<u64> {
+        let _access = Access::enter(self.id())?;
+        if self.state.read().map_err(|_| uncertain())?.failed {
+            return Err(uncertain());
+        }
+        Ok(self.retired_bytes())
+    }
+
+    // Sums the final log lengths of retired generations still alive.
+    fn retired_bytes(&self) -> u64 {
+        let mut retired = self
+            .retired
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        retired.retain(|(token, _)| token.strong_count() != 0);
+        retired
+            .iter()
+            .fold(0_u64, |total, (_, bytes)| total.saturating_add(*bytes))
+    }
+
+    fn admit_retired(&self, limit: Option<u64>, bytes: u64) -> io::Result<()> {
+        if limit.is_some_and(|limit| self.retired_bytes().saturating_add(bytes) > limit) {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                RetiredSnapshotLimit,
+            ));
+        }
         Ok(())
     }
 
@@ -923,8 +1003,15 @@ impl OnlineCheckpointStore {
             if state.failed {
                 return Err(uncertain());
             }
+            let current = Arc::clone(&state.store);
+            // The handle and `current` own two references; any other is an
+            // owned snapshot that would pin this generation after handoff.
+            // Its final length is at least the current one.
+            if Arc::strong_count(&current) > 2 {
+                self.admit_retired(state.retired_limit, current.log.len()?)?;
+            }
             (
-                Arc::clone(&state.store),
+                current,
                 SourceReadBudget(state.maintenance_source_read_limit),
             )
         };
@@ -1059,6 +1146,10 @@ impl OnlineCheckpointStore {
                 "final compaction suffix exceeds configured limit",
             ));
         }
+        // The state guard excludes new captures, so the references beyond the
+        // handle's and `current` are exactly the snapshots that will pin it.
+        let pinned = Arc::strong_count(&current) > 2;
+        self.admit_retired(state.retired_limit, if pinned { final_boundary } else { 0 })?;
         // Reserve the complete source confirmation before the final replay.
         reads.charge(final_boundary)?;
         replay(
@@ -1214,8 +1305,8 @@ impl OnlineCheckpointStore {
                 .retired
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
-            retired.retain(|token| token.strong_count() != 0);
-            retired.push(current.generation_token());
+            retired.retain(|(token, _)| token.strong_count() != 0);
+            retired.push((current.generation_token(), final_boundary));
         }
         drop(_writer);
         drop(snapshot);

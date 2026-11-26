@@ -582,4 +582,5 @@ mod budget;
 mod copy_budget;
 mod maintenance_reads;
 mod recovery_budget;
+mod retired_limit;
 mod verify;

@@ -693,7 +693,7 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Add cooperative cancellation with an optional deadline for key-value and document transactions on both writable stores. FIFO admission checks cancellation while waiting and removes cancelled waiters; callbacks, other internal lock waits and I/O remain non-interruptible. Tests cover atomic document/index/raw rollback, queued followers, cancellation around locks and automatic rollover, and successful or failed synchronization after cancellation. [Local stress](../benchmarks/results/2026-11-04-controlled-transaction-stress.json) repeated fault, queue and six-client recovery tests 20 times; [model fuzzing](../benchmarks/results/2026-11-04-controlled-transaction-fuzz.json) exercised 11,160 controlled cases and 30,185 regression cases. A [paired overhead comparison](TRANSACTION_CANCELLATION_COMPARISON_2026_11_04.md) showed mixed results and noisy tails. Engine-confirmed cancellation is distinct from an unknown I/O outcome.
 - [x] Make pre-commit writer-barrier admission and transaction state-lock admission responsive to cancellation and deadlines. The lock queues timed waiters, wakes them on release, preserves fail-closed writer-panic behavior, and rechecks controls before submission. Targeted tests cover held locks, poisoned stores, FIFO followers, reservations and recovery; see [measurements and limitations](INTERRUPTIBLE_TRANSACTION_LOCKS_2026_11_05.md). Callback work, other internal locks and I/O are not interrupted; scheduling and completion remain unbounded.
 - [x] Run combined [document budget, controlled-transaction and checkpoint read-set models](../benchmarks/results/2026-11-05-combined-admission-filter-fuzz.json) after merging the lock and filter changes; three finite campaigns exercised 22,336 inputs. The merged stable/Rust 1.85 hosted CI and targeted local checks passed. Broader concurrency and crash models remain open.
-- [ ] Add safe live-log reclamation compatible with all snapshot lifetimes. The optional snapshot worker does not bound reclamation latency and stops on error. Snapshot counters are not total process-memory or cross-store quotas.
+- [x] Add safe live-log reclamation compatible with all snapshot lifetimes. The optional snapshot worker does not bound reclamation latency and stops on error. Snapshot counters are not total process-memory or cross-store quotas.
   Owned online snapshots retain their captured values through Linux
   handoff and reclamation. One aggregate budget accounts for live and
   retired generations. Drop or cancellation releases the captured
@@ -718,7 +718,21 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   `OnlineCheckpointSnapshot` views keep their generation's descriptors, so
   reclamation unlinks the old names at handoff and the disk space returns
   when the last view is dropped. The measured release matched the retired
-  log length on APFS and Linux. No byte limit caps space pinned this way.
+  log length on APFS and Linux. `OnlineCheckpointStore` now has the same
+  per-handle `set_retired_snapshot_log_limit`. A handoff is refused before
+  it reads, reserves or writes anything when the current generation is
+  already pinned, and under the final barrier, before the exchange, when a
+  view first pins it during the copy. The
+  [regressions](../src/checkpoint_store/online/tests/retired_limit.rs) cover
+  exact and one-short limits with a held snapshot, history accumulating
+  across two handoffs and released by each generation's last view, a view
+  taken during the copy, reopen and cleanup after that refusal, and
+  concurrent readers and writers during a pinned handoff. Removing either
+  admission point makes a test fail. Borrowed snapshots and transaction
+  views live inside callbacks, which handoffs exclude. Long-lived owned views
+  still postpone compaction, the limit counts logical log bytes only (a disk
+  budget charges the whole pinned tree), and reclamation latency stays
+  unbounded.
 - [x] Add per-open ordinary-store group-commit byte/record reservation limits and status, including live reconfiguration, rejection before submission and preservation across supported handoffs. [Fault, stress and performance evidence](GROUP_COMMIT_LIMITS_2026_11_05.md) records limitations and mixed measurements. These logical caps do not bound caller threads, other locks, checkpoint-store writes, process memory or project resources.
 - [x] Add per-open direct-write admission on both writable backends, including lock waiters, atomic reconfiguration, failure/unwind release and compaction-handoff preservation. [Measurements and limitations](DIRECT_WRITE_ADMISSION_2026_11_05.md) document workload variability; transactions use separate limits and this is not a project quota.
 - [x] Add an opt-in per-open active-call limit for independent key-value `get`, `get_many` and `scan` on both writable stores, enabled before sharing, including waiters, atomic reconfiguration and handoff preservation. An [earlier always-on prototype](../benchmarks/results/2026-11-05-direct-read-fuzz.json) was exercised by three finite model runs with 45,094 generated inputs without a finding. The [opt-in version](DIRECT_READ_ADMISSION_2026_11_05.md) has separate stress, model and paired performance evidence, including observed regressions. Transactions, snapshots, document APIs, maintenance, other stores and total resources remain outside this counter.

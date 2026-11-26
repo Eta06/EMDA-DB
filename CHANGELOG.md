@@ -4,6 +4,13 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add `OnlineCheckpointStore::set_retired_snapshot_log_limit` and
+  `retired_snapshot_log_bytes`, matching `OnlineStore`. A per-handle limit
+  on retired log history that owned snapshots still pin. A handoff that
+  would exceed it returns `WouldBlock`, before any work when the current
+  generation is already pinned. Releasing the last view of a generation
+  releases its charge.
+
 - Add `lookup_many` and `lookup_many_planned` to `DocumentDatabase`,
   `DocumentTransaction` and `DocumentSnapshot`. They return every foreign
   document whose entry in a named non-unique index carries the source
