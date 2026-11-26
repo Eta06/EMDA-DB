@@ -666,7 +666,12 @@ impl Store {
                 Err(std::sync::TryLockError::WouldBlock) => {}
             }
         }
-        if self.max_live_keys.is_none() && self.max_live_key_bytes.is_none() {
+        // A read-only transaction reaches here only when the index was busy;
+        // it validates on the exclusive path, which appends nothing.
+        if !txn.staged.is_empty()
+            && self.max_live_keys.is_none()
+            && self.max_live_key_bytes.is_none()
+        {
             return self
                 .commit_pipelined(txn, deadline, cancellation, tracker)
                 .map(|()| result);

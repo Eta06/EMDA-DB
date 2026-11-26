@@ -227,3 +227,30 @@ fn concurrent_disjoint_and_contended_transfers_keep_every_acknowledged_result() 
         .sum();
     assert_eq!(total, 800);
 }
+
+#[test]
+fn a_read_only_transaction_that_finds_the_index_busy_still_commits() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(dir.path()).unwrap());
+    store.put(b"k", b"v").unwrap();
+    // Holding the index lock at commit sends a read-only transaction down
+    // the commit path, which must not build an empty batch
+    // (run 45858214220).
+    let (ready_tx, ready) = mpsc::channel();
+    let (resume, resume_rx) = mpsc::channel::<()>();
+    let reading = Arc::clone(&store);
+    let reader = thread::spawn(move || {
+        reading.transaction_with_read_set(|tx| {
+            let value = tx.get(b"k")?.unwrap();
+            ready_tx.send(()).unwrap();
+            resume_rx.recv().unwrap();
+            Ok(value)
+        })
+    });
+    ready.recv_timeout(Duration::from_secs(10)).unwrap();
+    let index = store.inner.write().unwrap();
+    resume.send(()).unwrap();
+    thread::sleep(Duration::from_millis(50));
+    drop(index);
+    assert_eq!(reader.join().unwrap().unwrap(), b"v");
+}
