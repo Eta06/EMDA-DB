@@ -1094,9 +1094,7 @@ fn project_row_with_pk(
     let pk_idx = table.primary_key_index;
     let mut projected = Vec::with_capacity(proj_indices.len());
     for (&idx, &is_last) in proj_indices.iter().zip(proj_is_last) {
-        if idx == pk_idx
-            && let Some(n) = verified_int_pk
-        {
+        if let Some(n) = verified_int_pk.filter(|_| idx == pk_idx) {
             projected.push(SqlValue::Integer(n));
             continue;
         }
@@ -1239,7 +1237,7 @@ fn exec_select(
     }
 
     // Fast path for single-row PK equality point lookups (`WHERE pk = <lit|param>`).
-    if !force_full_scan && let Some(pk_src) = &plan.simple_pk_eq {
+    if let Some(pk_src) = plan.simple_pk_eq.as_ref().filter(|_| !force_full_scan) {
         let pk_col = &table.columns[table.primary_key_index];
         let pk_val = match pk_src {
             PkEqSource::IntLit(n) => SqlValueRef::Integer(*n),
@@ -1507,16 +1505,17 @@ fn exec_select(
                                 },
                                 specs: Rc::clone(&specs),
                             });
-                        } else if let Some(mut top) = heap.peek_mut()
-                            && compare_sort_keys_to_row(&keys, seq, &top.row, &specs)
+                        } else if let Some(mut top) = heap.peek_mut() {
+                            if compare_sort_keys_to_row(&keys, seq, &top.row, &specs)
                                 == Ordering::Less
-                        {
-                            top.row = SortRow {
-                                keys,
-                                scan_seq: seq,
-                                verified_pk,
-                                obj,
-                            };
+                            {
+                                top.row = SortRow {
+                                    keys,
+                                    scan_seq: seq,
+                                    verified_pk,
+                                    obj,
+                                };
+                            }
                         }
                         Ok(ControlFlow::Continue(()))
                     },

@@ -2471,24 +2471,24 @@ fn randomized_order_limit_offset_differential_against_model() {
             }
             ins_sql.push_str("(?, ?, ?, ?, ?)");
             let id = i * 3 - 50;
-            let n = if next().is_multiple_of(4) {
+            let n = if next() % 4 == 0 {
                 None
             } else {
                 Some(((next() % 7) as i64) - 3)
             };
-            let r = if next().is_multiple_of(4) {
+            let r = if next() % 4 == 0 {
                 None
             } else {
                 let vals = [-2.5, -0.0, 0.0, 1.5, 2.0];
                 Some(vals[(next() as usize) % vals.len()])
             };
-            let s = if next().is_multiple_of(4) {
+            let s = if next() % 4 == 0 {
                 None
             } else {
                 let vals = ["", "A", "a", "b", "é"];
                 Some(vals[(next() as usize) % vals.len()].to_owned())
             };
-            let b = if next().is_multiple_of(4) {
+            let b = if next() % 4 == 0 {
                 None
             } else {
                 Some(next() & 1 != 0)
@@ -2534,7 +2534,7 @@ fn randomized_order_limit_offset_differential_against_model() {
             };
 
             let mut order_spec = Vec::new();
-            if !next().is_multiple_of(6) {
+            if next() % 6 != 0 {
                 sql.push_str(" ORDER BY ");
                 let key_cnt = 1 + (next() % 3) as usize;
                 for i in 0..key_cnt {
@@ -2562,7 +2562,7 @@ fn randomized_order_limit_offset_differential_against_model() {
                 }
             }
 
-            let (limit, offset) = if !next().is_multiple_of(5) {
+            let (limit, offset) = if next() % 5 != 0 {
                 let lim = match next() % 6 {
                     0 => 0,
                     1 => 1,

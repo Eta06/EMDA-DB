@@ -170,9 +170,7 @@ pub(crate) fn load_table_cached(
         }
         return Err(SqlError::NoSuchTable(table_name.to_owned()));
     };
-    if let Some(ref entry) = cached
-        && bytes == entry.raw_bytes
-    {
+    if let Some(entry) = cached.as_ref().filter(|entry| bytes == entry.raw_bytes) {
         return Ok(Arc::clone(entry));
     }
     let def: TableDef = serde_json::from_slice(&bytes).map_err(|err| {
