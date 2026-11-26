@@ -22,7 +22,7 @@ pub use writable::{
     AuthorizedRetainedStore, CatalogStorageLimits, CutoverArchiveBinding,
     CutoverArchiveRetirementFailure, CutoverArchiveRetirementStep, FileRetainedAuthority,
     ManagedRetainedStore, ReclamationFenceOutcome, RetainedAuthority, RetainedRotationJob,
-    RetainedStartupLimits, RetainedStore, RetainedStoreLimits,
+    RetainedStartupLimits, RetainedStore, RetainedStoreLimits, RetainedSuffixUsage,
 };
 
 /// An independently retained copy of the exact candidate header and witness.

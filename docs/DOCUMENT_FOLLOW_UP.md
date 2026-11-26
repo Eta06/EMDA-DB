@@ -314,6 +314,11 @@ remain open.
   Tests cover cumulative read limits, rotation and reopen, and rejection
   when local selection or independent authority changes before capture.
 - [ ] Add an authenticated service and genuine project isolation in the later security/service priority. The raw reserved prefix is not an isolation boundary; uncooperative raw writes can corrupt document metadata or create undetected omissions until bounded verification.
+  No local work remains at the Steps 1–3 milestone: the document layer has
+  no service or project boundary to test. Its acceptance is [roadmap step 5](ROADMAP.md#priority-4-secure-service-and-project-isolation):
+  "Enforce project isolation at each layer and test cross-project access,
+  unauthorized operations, malformed requests, and resource exhaustion".
+  The [isolation design](PROJECT_ISOLATION.md) lists the evidence required.
 - [x] Establish versioned migration, import/export and compatibility policy
   before a stable release. The [version 1 archive](VERSIONING.md#portable-collection-archives)
   moves a bounded logical collection through an atomic import. Fixed-format

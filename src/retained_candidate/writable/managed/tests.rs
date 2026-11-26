@@ -2,7 +2,7 @@ use super::*;
 use crate::record::Operation;
 use crate::retained_base_v2::Limits;
 use crate::retained_candidate::writable::encode_batch;
-use crate::retained_candidate::{IndexLimits, OverlayLimits, SuffixLimits};
+use crate::retained_candidate::{IndexLimits, OverlayLimits, RetainedSuffixUsage, SuffixLimits};
 use crate::{RetainedExportLimits, Store};
 use std::fs::OpenOptions;
 use std::os::unix::fs::FileExt;
@@ -2981,4 +2981,74 @@ fn rotation_job_exit_child() {
     job.prepare().unwrap();
     // Exit without running destructors, as a killed process would.
     std::process::exit(0);
+}
+
+#[test]
+fn suffix_usage_reports_occupancy_until_rejection_and_resets_on_rotation() {
+    let fixture = Fixture::new(LIMITS);
+    let mut store = fixture.open();
+    let empty = store.suffix_usage().unwrap();
+    assert_eq!(
+        empty,
+        RetainedSuffixUsage {
+            bytes: 0,
+            operations: 0,
+            work: 0,
+            overlay_entries: 0,
+            overlay_key_bytes: 0,
+        }
+    );
+    assert_eq!(empty.max_fraction_used(&LIMITS), 0.0);
+
+    let mut previous = empty;
+    for index in 0..30 {
+        store.put(format!("k{index:02}").as_bytes(), b"v").unwrap();
+        let usage = store.suffix_usage().unwrap();
+        assert_eq!(usage.operations, index + 1);
+        assert_eq!(usage.overlay_entries, index + 1);
+        assert_eq!(usage.overlay_key_bytes, 3 * (index + 1));
+        assert!(usage.bytes > previous.bytes);
+        assert!(usage.work >= previous.work);
+        previous = usage;
+    }
+    store
+        .write_batch(&[
+            BatchOperation::Put {
+                key: b"a",
+                value: b"new",
+            },
+            BatchOperation::Delete { key: b"z" },
+        ])
+        .unwrap();
+    let full = store.suffix_usage().unwrap();
+    assert_eq!((full.operations, full.overlay_entries), (32, 32));
+    assert_eq!(full.max_fraction_used(&LIMITS), 1.0);
+    drop(store);
+
+    // Usage is recomputed from the committed suffix on reopen.
+    let mut store = fixture.open();
+    assert_eq!(store.suffix_usage().unwrap(), full);
+    // Rewriting a touched key fits; a new key would exceed the overlay.
+    store.put(b"k00", b"w").unwrap();
+    assert!(matches!(
+        store.put(b"new", b"v"),
+        Err(MutationFailure::Rejected(_))
+    ));
+    assert_eq!(store.suffix_usage().unwrap().overlay_entries, 32);
+
+    // A prepared rotation starts the successor with only the catch-up.
+    let mut job = store.begin_rotation().unwrap();
+    job.prepare().unwrap();
+    store.put(b"k01", b"caught up").unwrap();
+    store.complete_rotation(job).unwrap();
+    let rotated = store.suffix_usage().unwrap();
+    assert_eq!((rotated.operations, rotated.overlay_entries), (1, 1));
+    assert!(rotated.max_fraction_used(&LIMITS) < 0.1);
+    store.put(b"new", b"v").unwrap();
+    assert_eq!(store.get(b"k01", 16).unwrap().unwrap(), b"caught up");
+    assert_eq!(store.get(b"z", 16).unwrap(), None);
+
+    assert!(store.reclaim_inactive().unwrap());
+    store.compact().unwrap();
+    assert_eq!(store.suffix_usage().unwrap(), empty);
 }

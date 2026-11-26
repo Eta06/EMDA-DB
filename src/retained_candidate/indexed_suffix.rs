@@ -210,6 +210,11 @@ impl Overlay {
         self.operations
     }
 
+    /// Distinct touched keys, their bytes, and cumulative replay work.
+    pub(super) fn occupancy(&self) -> (usize, usize, u64) {
+        (self.entries.len(), self.key_bytes, self.work)
+    }
+
     pub(super) fn visit_merged(
         &self,
         base: &IndexedBase,

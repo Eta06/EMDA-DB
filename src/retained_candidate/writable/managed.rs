@@ -796,6 +796,13 @@ impl ManagedRetainedStore {
         Ok(self.store.limits)
     }
 
+    /// Committed suffix occupancy of the selected generation. A worker can
+    /// call [`Self::begin_rotation`] before a write would be refused.
+    pub fn suffix_usage(&self) -> io::Result<super::RetainedSuffixUsage> {
+        self.ensure_selected()?;
+        self.store.suffix_usage()
+    }
+
     pub fn get(&self, key: &[u8], max_value_bytes: usize) -> io::Result<Option<Vec<u8>>> {
         self.ensure_selected()?;
         self.store.get(key, max_value_bytes)

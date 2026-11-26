@@ -158,6 +158,14 @@ publishes the successor and the selection or authority record as `compact`
 does, with the same classified outcomes. Dropping an unfinished job removes
 its stage and releases the reservation. After a process kill the stage
 remains for `cleanup_abandoned_staging`. Only one job may be outstanding.
+`suffix_usage` on retained stores and managed or authorized catalogs reports
+the committed suffix bytes, operations, replay work and overlay keys against
+the generation's persisted limits, so a worker can begin a rotation before
+a write would be refused. It reserves nothing: admission still checks each
+write, and a write that would exceed a limit is rejected before append.
+During a job it reports the live generation, not the successor. Rotation
+completion and `reclaim_inactive` take the catalog mutably, so writers
+wait for both.
 `CheckpointStore::rollover_to_detailed` classifies unmanaged checkpoint
 rollover: if the call fails after publication, the prior view remains active,
 the destination may exist and no new digest is returned. This classification

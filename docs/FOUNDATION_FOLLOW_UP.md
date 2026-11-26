@@ -133,7 +133,19 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Strengthen the two recovery fuzzers to stop on unclassified errors and add tested long valid V2/V3 log and checkpoint-tail seeds. A [180-second campaign per target](LONG_RECOVERY_FUZZ_2026_11_06.md) exercised 81,011 inputs with address sanitizer; logs and resulting corpora are retained. This remains finite serial fuzzing, without actual I/O faults or physical power loss.
 - [x] Repeat the two [recovery fuzzers after the witness changes](LONG_RECOVERY_FUZZ_2026_11_06.md#post-witness-retry-run), using separately built address-sanitized binaries. The 90-second campaigns completed 44,608 inputs without a finding; logs and corpora are retained. This does not exhaust malformed inputs or inject hardware failures.
 - [x] Add a staged-cleanup reference model covering malformed and valid markers, unexpected payloads, symlinks, unrelated files and repeat cleanup. A [64,687-input local campaign](../benchmarks/results/2026-11-06-staging-cleanup-fuzz.json) completed with address sanitizer on `298005a`; a scheduled CI shard repeats a short run. This does not simulate sync failures, noncooperating mutation or physical power loss.
-- [ ] Measure memory, I/O and recovery behavior under workloads representative of the intended deployment. The [200,000-key index comparison](WRITABLE_INDEX_RESOURCE_COMPARISON_2026_11_04.md) and [one-million-key concurrent-write and repeated-restart comparison against SQLite](SQLITE_RESTART_RESOURCES_2026_11_06.md) record process RSS, I/O and verification. A [cache-advice follow-up](FILE_CACHE_RECOVERY_2026_11_06.md) records observed I/O and interference. These synthetic local workloads do not establish memory or recovery bounds, independently cold caches, production representativeness or a comprehensive ranking.
+- [x] Measure memory, I/O and recovery behavior under workloads representative of the intended deployment. The [200,000-key index comparison](WRITABLE_INDEX_RESOURCE_COMPARISON_2026_11_04.md) and [one-million-key concurrent-write and repeated-restart comparison against SQLite](SQLITE_RESTART_RESOURCES_2026_11_06.md) record process RSS, I/O and verification. A [cache-advice follow-up](FILE_CACHE_RECOVERY_2026_11_06.md) records observed I/O and interference. These synthetic local workloads do not establish memory or recovery bounds, independently cold caches, production representativeness or a comprehensive ranking.
+  The [R1 reference deployment](REFERENCE_DEPLOYMENT.md) defines the
+  intended configuration concretely: one worker process, a managed
+  retained catalog of 1,048,576 keys under a 512 MiB quota, mixed reads
+  and synchronized batches, and rotation driven by suffix occupancy. On
+  macOS APFS with a warm cache, [six trials and six kill drills](../benchmarks/results/2026-11-26-reference-deployment-r1/README.md)
+  measured worker RSS of 9.7 to 11.5 MB and a catalog peak of about
+  237 MB. They also measured device writes per batch and per rotation,
+  and restart in 103 to 167 ms at 3.1 to 6.2 MB. Every acknowledged batch
+  survived every kill. Three trials had unexplained write stalls of more
+  than a second. These are reference results, not production
+  measurements. Cold caches, Linux and several databases per host remain
+  unmeasured.
 - [x] Stream put/delete and atomic-batch values through a 64 KiB replay buffer and check record/value checksums, multi-buffer corruption, short reads, ordered batch quotas and witness boundaries. Up to 1,024 child keys are retained until a batch validates; the live index and total memory remain outside that bound. Small local macOS warm-cache comparisons for [individual puts](../benchmarks/results/2026-11-15-replay-streaming-macos-local.json) and [batches](../benchmarks/results/2026-11-15-batch-replay-macos-local.json) record samples and limitations; they are not Linux, cold-cache, total-memory or competitor comparisons. V3 targeted Linux tests exist; broader runtime fault campaigns remain open.
 - [x] Measure [1, 10 and 100 simultaneously open databases](MULTI_STORE_RESOURCES_2026_11_14.md) on the ordinary and checkpoint-backed paths and SQLite. The checkpoint path used less sampled process RSS but more descriptors per database in this warm-cache fixture. This is not a production workload, total-memory quota, isolation or scale-to-zero demonstration; the broader measurement item remains open above.
 - [x] Release [validation-only checkpoint-view descriptors](CHECKPOINT_VIEW_DESCRIPTORS_2026_11_14.md) while keeping the writable witness and identity checks. A paired V3 run reduced descriptors from 804 to 604 across 100 open checkpoint stores; fault, recovery, descriptor-exhaustion and model checks passed. This is not a total project resource limit or a physical power-loss test.
@@ -166,6 +178,18 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   automatic checkpoints were refused under a budget. It also added the
   classified budget outcomes and the checkpoint-backed retired-history
   limit. This stays open as a standing obligation for every behavior change.
+  This is a standing obligation and stays open. The Steps 1–3 milestone
+  audit on 2026-11-26 compared the contract with the behavior changes
+  since `01b5b048`:
+  - pipelined `Store` transactions (`01895952`) and read-only transactions
+    off that path (`8b32ba47`) were already described;
+  - retained rotation jobs (`45e457c6`) were already described;
+  - the new `suffix_usage` is now described;
+  - the atomic-write paragraph still listed every transaction as an
+    exclusive writer, although only transactions under live-key limits
+    are. It is corrected, and a [regression](../src/store/pipelined_commit_tests.rs)
+    checks that a disjoint transaction queues behind a pending increment
+    while one that read its key conflicts after it publishes.
 - [x] Distinguish directly returned pre-commit transaction conflicts from other `WouldBlock` errors using `is_transaction_conflict`. Checks cover ordinary, checkpoint and document transactions, callback and admission errors, and injected `WouldBlock` synchronization failures whose writes can later recover. The marker does not classify every failure or roll back callback side effects.
 - [x] Record [read-set fuzzing and a local transaction comparison](TRANSACTION_CONFLICT_SAFETY_2026_11_14.md) after adding conflict markers. The finite model and small, noisy SQLite comparison do not establish exhaustive correctness or a general speed ranking.
 - [x] Add opt-in structured transaction outcomes for both writable stores and
@@ -679,7 +703,7 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   archive retirement. [Cutover tests](../src/retained_candidate/writable/managed/authority/cutover/tests.rs)
   cover exact admission, corruption under an admitted budget, and retries
   after a partial unlink and after both archive names are absent.
-- [ ] Complete the retained-history lifecycle for independently retained backups and measure recovery at deployment scale. Retained reopen verifies the entire admitted base and replays a bounded suffix. Rotation is synchronous. Limits do not bound all allocations or the total disk space across active and retired files. Any path that skips full verification needs a documented corruption model and equivalent validation. Reclamation must preserve captured reads and transactions, recover from interrupted publication, and reject stale generations according to the authority contract.
+- [x] Complete the retained-history lifecycle for independently retained backups and measure recovery at deployment scale. Retained reopen verifies the entire admitted base and replays a bounded suffix. Rotation is synchronous. Limits do not bound all allocations or the total disk space across active and retired files. Any path that skips full verification needs a documented corruption model and equivalent validation. Reclamation must preserve captured reads and transactions, recover from interrupted publication, and reject stale generations according to the authority contract.
   The [million-key larger-suffix comparison](../benchmarks/results/2026-11-24-million-key-wide-suffix/README.md)
   exercises 32,768 mutations per epoch and local authorized restore on macOS
   and Linux. A Linux reopen trace attributes most read bytes to the base.
@@ -708,6 +732,20 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   A one-byte-short budget or a corrupt selected base preserves the catalog
   and authority record. The exact budget recovers the entire document
   transaction, resumes retirement and permits another durable write.
+  The R1 checks found that a worker could not see suffix occupancy, so it
+  learned that the suffix was full only from a refused write.
+  `suffix_usage` now reports committed bytes, operations, replay work and
+  overlay keys against the persisted limits, on retained stores and
+  managed and authorized catalogs. A [regression](../src/retained_candidate/writable/managed/tests.rs)
+  fills the overlay until a new key is refused. It checks the counts
+  across reopen and their reset by a prepared rotation and by `compact`;
+  zeroing a field fails it. In the [R1 measurements](../benchmarks/results/2026-11-26-reference-deployment-r1/README.md),
+  30 occupancy-driven rotations ran on the reference deployment while
+  writes continued. Kills during preparation, at completion and at
+  reclamation all recovered every acknowledged batch, with cleanup
+  removing the stage or restart reclaiming the old slot. Recovery
+  at that scale took 103 to 167 ms. `reclaim_inactive` still excludes
+  writers, for 54 to 850 ms per rotation in these runs.
 - [x] Check the current readers against an `EMDALOG4` unknown-header fixture with a valid later record and `commit.state`, plus ordinary-store open without the sidecar, on macOS and Linux ARM64. They reject the fixture without changing the log; this does not implement the proposed format or prove a complete upgrade and downgrade protocol.
 - [x] Model selected future reclamation hazards: reused offset/length/CRC identities, split epoch and location publication, snapshot pins, and pin-counter overflow. The sequential model demonstrates counterexamples and checks candidate rules; it does not exercise the engine, concurrent memory ordering, crashes, ranges, or recovery.
 - [x] Test that checkpoint rollover retains existing log bytes and snapshot values, and that an observed value rewritten at another location conflicts with an in-flight read-set transaction. The V2 tests exercise manual and automatic rollover and reopening; they do not implement reclamation, bound recovery or establish power-loss behavior.
@@ -853,6 +891,16 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Add per-open direct-write admission on both writable backends, including lock waiters, atomic reconfiguration, failure/unwind release and compaction-handoff preservation. [Measurements and limitations](DIRECT_WRITE_ADMISSION_2026_11_05.md) document workload variability; transactions use separate limits and this is not a project quota.
 - [x] Add an opt-in per-open active-call limit for independent key-value `get`, `get_many` and `scan` on both writable stores, enabled before sharing, including waiters, atomic reconfiguration and handoff preservation. An [earlier always-on prototype](../benchmarks/results/2026-11-05-direct-read-fuzz.json) was exercised by three finite model runs with 45,094 generated inputs without a finding. The [opt-in version](DIRECT_READ_ADMISSION_2026_11_05.md) has separate stress, model and paired performance evidence, including observed regressions. Transactions, snapshots, document APIs, maintenance, other stores and total resources remain outside this counter.
 - [ ] Add configurable request/connection limits, fair overload handling and cancellation/timeouts without violating unknown-outcome semantics. The current embedded API does not include a production server.
+  Embedded scope at the Steps 1–3 milestone: both writable stores have
+  per-open active-transaction, direct-write and opt-in direct-read
+  admission limits, optional FIFO admission, cooperative cancellation and
+  deadlines, and a distinct unknown outcome. There is no server, so
+  request and connection limits have nothing local to attach to. Their
+  acceptance is [roadmap step 5](ROADMAP.md#priority-4-secure-service-and-project-isolation):
+  "Control per-project requests, connections, CPU, memory, storage, and
+  background work; use admission control when capacity is exhausted",
+  with the exit evidence "isolation and overload tests pass and
+  operational limits are measurable".
 - [x] Bound admitted transactions on each open writable store, including FIFO waiters and callbacks, with a configurable lower limit, overload rejection, status reporting and compaction-handoff preservation. [Model fuzzing](../benchmarks/results/2026-11-04-active-admission-fuzz.json) exercised 61,252 cases and [50 repeated checks](../benchmarks/results/2026-11-04-active-admission-stress.json) covered concurrency, cancellation, panic and online handoff; separate poisoned-lock tests include reopen and recovery on both backends. A [comparison](TRANSACTION_ADMISSION_COMPARISON_2026_11_04.md) records variable overhead and an unmerged atomic-counter experiment. Limits reset on reopen and do not cover direct writes, independent snapshots, other stores, caller threads, total memory or fairness.
 - [x] Run the full local stable, Rust 1.85 and release matrix on the merged admission and document-input changes. Four [merged-model campaigns](../benchmarks/results/2026-11-04-admission-input-merged-fuzz.json) exercised 44,576 cases without a finding. These finite serial campaigns do not replace wider fault, concurrency or deployment testing.
 - [x] Add an optional per-open log-file length cap with concurrency-safe admission, rejection before replay and unknown-outcome handling.
@@ -913,6 +961,13 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   retirement and snapshot release, plus refusals and interrupted
   maintenance. Project-wide, backup, filesystem-allocation and memory
   accounting remain open.
+  Embedded scope at the Steps 1–3 milestone: managed checkpoint stores have
+  a persistent disk budget, and retained catalogs a persisted
+  catalog-wide quota. [R1](../benchmarks/results/2026-11-26-reference-deployment-r1/README.md)
+  measured one catalog's footprint against its quota and its worker RSS.
+  A project-wide quota needs a project, so its acceptance is the same
+  [roadmap step 5](ROADMAP.md#priority-4-secure-service-and-project-isolation)
+  criterion, which also names memory, storage and background work.
 - [x] Measure process-isolated authority-backed reopen and rotation against a paired ordinary control at 131,072 keys on macOS APFS and Linux ext4. The [recovery measurement](../benchmarks/results/2026-11-19-authorized-recovery-resources/README.md) checks every key and records reopen latency, peak process RSS and sampled transient allocation.
 - [x] Demonstrate the priority's exit criteria: independent concurrent clients, transactional atomicity, acknowledged-write recovery under the documented fault model, and measured memory within configured limits. The [exit demonstration](../benchmarks/results/2026-11-26-durable-storage-exit-demonstration/README.md) runs four concurrent clients of serializable transfers, with automatic rollovers and a disk budget. It kills each of 12 rounds with `SIGKILL` and verifies an unchanged total and every acknowledged write after each reopen: 1,198 on macOS and 1,198 on hosted Linux, the latter under a 64 MiB address-space limit with a 3.72 MB peak. These are process kills; physical power loss and a networked service are out of scope.
 

@@ -10,9 +10,9 @@ backup modes have not been tested.
 
 | Step | Area | Progress | Basis and remaining evidence |
 | --- | --- | ---: | --- |
-| 1 | Correctness and foundations | 98% | 118 of 120 checklist items. Full-log backup, restore, and format upgrade have scan ceilings. Serializable transactions have been compared with SQLite and PostgreSQL on one host. Representative-deployment resource evidence and the standing contract-alignment item remain open. |
-| 2 | Durable storage and core operations | 98% | 180 of 183 checklist items. Retained recovery and startup retirement share a scan ceiling. Broader writable-memory and reclamation evidence remains open. |
-| 3 | Document model and queries | 99% | 115 of 116 checklist items. Retained snapshots share bounded aggregation and pagination. Richer operators and project isolation remain open; checkpoint-backed transactions do not yet share syncs. |
+| 1 | Correctness and foundations | 99% | 119 of 120 checklist items. Serializable transactions have been compared with SQLite and PostgreSQL, and resources measured on the R1 reference deployment. The open item is the standing contract-alignment obligation. |
+| 2 | Durable storage and core operations | 99% | 181 of 183 checklist items. Retained rotation is occupancy-driven and off the writer path, and was killed at each lifecycle point on R1. The two open items await step 5. |
+| 3 | Document model and queries | 99% | 115 of 116 checklist items. Retained snapshots share bounded aggregation and pagination. Project isolation, which awaits step 5, is the open item. Checkpoint-backed transactions do not yet share syncs. |
 | 4 | SQL | 0% | None of four SQL milestones has a working prototype. The embedded transaction engine is a prerequisite shared with earlier steps. |
 | 5 | Secure service and project isolation | 10% | One of five milestones has partial evidence from the loopback benchmark adapter. A secure API, project isolation and safe scale-to-zero remain to build. |
 | 6 | Performance and scalability | 60% | The comparative benchmark milestone has evidence. Profiling, durable group commit, hardware acceleration and scheduling each have partial evidence. Full workload and project-level scaling remain open. |
@@ -21,11 +21,27 @@ backup modes have not been tested.
 
 Steps 1–3 count checked bullets in the [foundation and storage](FOUNDATION_FOLLOW_UP.md)
 and [document](DOCUMENT_FOLLOW_UP.md) checklists, including both drills
-that were previously deferred. Their combined count is 413 of 419 (98.6%). Each item has equal
+that were previously deferred. Their combined count is 415 of 419 (99.0%). Each item has equal
 weight in that count. Steps 4–8 are estimates from roadmap milestones with
 one point for demonstrated delivery, half a point for a tested subset, and
 zero for design or prerequisites. The projects have different scope and the
 percentages are neither effort estimates nor release-readiness gates.
+
+### Steps 1–3 milestone accounting
+
+The denominator has not changed for this milestone. All four open items stay
+in it:
+
+| Item | Checklist | Why it is open | Downstream acceptance |
+| --- | --- | --- | --- |
+| Keep acknowledgement, unknown outcomes, corruption and compatibility aligned with the contract | [Foundation](FOUNDATION_FOLLOW_UP.md), priority 0 | A standing obligation for every behavior change. The 2026-11-26 audit is recorded under it. | None; it stays open while behavior changes. |
+| Request and connection limits, fair overload handling | [Foundation](FOUNDATION_FOLLOW_UP.md), priority 1 | The embedded admission, cancellation and deadline controls exist. Requests and connections need a server. | [Step 5](ROADMAP.md#priority-4-secure-service-and-project-isolation): per-project request and connection control, overload tests |
+| Project-wide memory and storage quotas | [Foundation](FOUNDATION_FOLLOW_UP.md), priority 1 | Per-store disk budgets and per-catalog quotas exist. A project-wide quota needs a project. | [Step 5](ROADMAP.md#priority-4-secure-service-and-project-isolation): per-project memory, storage and background-work control |
+| Authenticated service and project isolation for documents | [Document](DOCUMENT_FOLLOW_UP.md) | There is no service boundary to test locally. | [Step 5](ROADMAP.md#priority-4-secure-service-and-project-isolation): isolation at each layer, cross-project and unauthorized access tests |
+
+Every other Steps 1–3 item is checked, each with linked evidence and
+stated limits. The R1 measurements are reference results, not
+production measurements. The power-cut drill covers one configuration.
 
 The [benchmark catalog](BENCHMARKS.md), [isolation design](PROJECT_ISOLATION.md),
 [scale-to-zero design](SCALE_TO_ZERO.md) and [storage contract](STORAGE_TRANSACTION_CONTRACT.md)

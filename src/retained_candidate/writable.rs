@@ -55,6 +55,47 @@ pub struct RetainedStoreLimits {
     pub overlay: OverlayLimits,
 }
 
+/// Committed suffix occupancy of one writable retained generation. Each field
+/// is charged against the matching limit in [`RetainedStoreLimits`]; a write
+/// that would exceed any of them is rejected. A worker can begin a rotation
+/// before that happens. Rotation starts the successor with an empty suffix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RetainedSuffixUsage {
+    /// Physical suffix bytes after the generation header.
+    pub bytes: u64,
+    /// Ordered operations, counting each batch member.
+    pub operations: u64,
+    /// Cumulative replay work units.
+    pub work: u64,
+    /// Distinct touched keys in the overlay, including deletions.
+    pub overlay_entries: u64,
+    /// Bytes of those keys.
+    pub overlay_key_bytes: u64,
+}
+
+impl RetainedSuffixUsage {
+    /// The largest share of any suffix or overlay limit in use, from 0.0 to
+    /// 1.0. A zero limit counts as full.
+    pub fn max_fraction_used(&self, limits: &RetainedStoreLimits) -> f64 {
+        [
+            (self.bytes, limits.suffix.bytes),
+            (self.operations, limits.suffix.operations),
+            (self.work, limits.suffix.work),
+            (self.overlay_entries, limits.overlay.entries as u64),
+            (self.overlay_key_bytes, limits.overlay.key_bytes as u64),
+        ]
+        .into_iter()
+        .map(|(used, limit)| {
+            if limit == 0 {
+                1.0
+            } else {
+                (used as f64 / limit as f64).min(1.0)
+            }
+        })
+        .fold(0.0, f64::max)
+    }
+}
+
 impl RetainedStoreLimits {
     fn fields(self) -> [u64; 11] {
         [
@@ -475,6 +516,19 @@ impl RetainedStore {
     /// The unique identity generated when this writable generation was created.
     pub fn generation_id(&self) -> [u8; 16] {
         self.header.id()
+    }
+
+    /// Committed suffix occupancy. See [`RetainedSuffixUsage`].
+    pub fn suffix_usage(&self) -> io::Result<RetainedSuffixUsage> {
+        self.ensure_healthy()?;
+        let (entries, key_bytes, work) = self.overlay.occupancy();
+        Ok(RetainedSuffixUsage {
+            bytes: self.suffix_len as u64,
+            operations: self.overlay.operations(),
+            work,
+            overlay_entries: entries as u64,
+            overlay_key_bytes: key_bytes as u64,
+        })
     }
 
     fn sync_recovered_commit(&self) -> io::Result<()> {

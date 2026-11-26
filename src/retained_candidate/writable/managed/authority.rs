@@ -744,6 +744,13 @@ impl<A: RetainedAuthority> AuthorizedRetainedStore<A> {
             .backup_using(destination, max_scan_bytes, sync_existing)
     }
 
+    /// Committed suffix occupancy of the authorized generation, after
+    /// checking that the authority still names it.
+    pub fn suffix_usage(&mut self) -> io::Result<crate::retained_candidate::RetainedSuffixUsage> {
+        self.verify_current()?;
+        self.inner.suffix_usage()
+    }
+
     pub fn get(&mut self, key: &[u8], max_value_bytes: usize) -> io::Result<Option<Vec<u8>>> {
         self.verify_current()?;
         self.inner.get(key, max_value_bytes)
