@@ -263,6 +263,7 @@ jobs:
             ${{ runner.temp }}/handoff-online-eio.json.progress.json
             ${{ runner.temp }}/configuration-eio.json
             ${{ runner.temp }}/configuration-eio.json.progress.json
+            ${{ runner.temp }}/configuration-budgeted-eio-*.json
             ${{ runner.temp }}/reclamation-eio.json
             ${{ runner.temp }}/reclamation-eio.json.progress.json
             ${{ runner.temp }}/staging-cleanup-eio-*.json
