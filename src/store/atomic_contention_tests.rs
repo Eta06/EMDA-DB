@@ -1,9 +1,7 @@
 //! Compare-exchange and increment keep shared barrier access while their
 //! record is synchronized, so ordinary writers to other keys can queue behind
 //! them, while every exclusive writer still waits for the acknowledgement.
-use super::fault_tests::BlockingSyncIo;
 use super::*;
-use std::fs::OpenOptions;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -19,23 +17,17 @@ fn blocking_store(
 ) {
     let armed = Arc::new(AtomicBool::new(false));
     let (started_tx, started_rx) = mpsc::channel();
-    let (resume_tx, resume_rx) = mpsc::channel();
-    // A real witnessed log whose file I/O can block in one sync.
-    let store = Store::open_using(dir, |path, initialize| {
-        let (mut log, index) = Log::open(path, initialize)?;
-        let file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .open(path.join("records.log"))?;
-        log.replace_io_for_test(Box::new(BlockingSyncIo {
-            file,
-            armed: Arc::clone(&armed),
-            started: started_tx,
-            resume: Mutex::new(resume_rx),
-        }));
-        Ok((log, index))
-    })
-    .unwrap();
+    let (resume_tx, resume_rx) = mpsc::channel::<()>();
+    let store = Store::open(dir).unwrap();
+    // Hold the next group synchronization open, on either log format.
+    let hook_armed = Arc::clone(&armed);
+    let resume = Mutex::new(resume_rx);
+    store.commits.set_sync_hook(Some(Arc::new(move || {
+        if hook_armed.swap(false, Ordering::SeqCst) {
+            started_tx.send(()).unwrap();
+            let _ = resume.lock().unwrap().recv();
+        }
+    })));
     (Arc::new(store), armed, started_rx, resume_tx)
 }
 

@@ -54,6 +54,11 @@ pub(super) enum SnapshotCopyPoint {
 #[cfg(test)]
 type SnapshotCopyHook = Arc<dyn Fn(SnapshotCopyPoint) + Send + Sync>;
 
+// Runs in the publishing leader just before it synchronizes a group, on
+// either log format.
+#[cfg(test)]
+pub(super) type SyncHook = Arc<dyn Fn() + Send + Sync>;
+
 fn put_index(
     index: &mut BTreeMap<Vec<u8>, ValueLocation>,
     key: Vec<u8>,
@@ -146,6 +151,8 @@ pub(super) struct Coordinator {
     failed: AtomicBool,
     #[cfg(test)]
     snapshot_copy_hook: Mutex<Option<SnapshotCopyHook>>,
+    #[cfg(test)]
+    sync_hook: Mutex<Option<SyncHook>>,
 }
 
 impl Coordinator {
@@ -173,12 +180,19 @@ impl Coordinator {
             failed: AtomicBool::new(false),
             #[cfg(test)]
             snapshot_copy_hook: Mutex::new(None),
+            #[cfg(test)]
+            sync_hook: Mutex::new(None),
         }
     }
 
     #[cfg(test)]
     pub(super) fn for_test(max_bytes: usize, max_records: usize) -> Self {
         Self::with_limits(max_bytes, max_records)
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_sync_hook(&self, hook: Option<SyncHook>) {
+        *self.sync_hook.lock().unwrap() = hook;
     }
 
     #[cfg(test)]
@@ -569,6 +583,13 @@ impl Coordinator {
                 batch_updates.push(Some(prepare_batch(payload, location)?));
             } else {
                 batch_updates.push(None);
+            }
+        }
+        #[cfg(test)]
+        {
+            let hook = self.sync_hook.lock().unwrap().clone();
+            if let Some(hook) = hook {
+                hook();
             }
         }
         // Never publish an index update or complete a caller before sync.
