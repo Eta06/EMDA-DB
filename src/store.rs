@@ -1268,7 +1268,7 @@ pub(crate) mod collection_drop_fault_tests;
 pub(crate) mod compound_partial_index_fault_tests;
 
 #[cfg(test)]
-mod fault_tests;
+pub(crate) mod fault_tests;
 
 #[cfg(test)]
 mod detailed_document_fault_tests;

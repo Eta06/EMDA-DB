@@ -25,6 +25,7 @@ mod recovery;
 pub mod retained_base_v2;
 pub mod retained_candidate;
 mod snapshot_reaper;
+pub mod sql;
 mod staging;
 mod store;
 mod store_lock;
@@ -82,6 +83,7 @@ pub use recovered_view::{
     RecoveredCheckpointView, RecoveredViewLimits,
 };
 pub use snapshot_reaper::{SnapshotReaper, SnapshotReaperStatus};
+pub use sql::{SqlDatabase, SqlError, SqlLimits, SqlOutcome, SqlStatement, SqlValue};
 pub use staging::{
     StagingCleanup, StagingCleanupFailure, cleanup_abandoned_staging,
     cleanup_abandoned_staging_detailed,

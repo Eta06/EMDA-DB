@@ -1,0 +1,1290 @@
+//! Hand-written recursive-descent SQL parser and AST definitions.
+use super::lexer::{Token, TokenKind, tokenize};
+use super::value::{SqlError, SqlLimits, SqlType};
+use std::collections::HashSet;
+
+/// Parsed, reusable SQL statement for this embedded subset.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SqlStatement {
+    pub(crate) inner: Statement,
+    pub(crate) param_count: usize,
+}
+
+impl SqlStatement {
+    /// Returns the number of `?` positional parameters expected when executing.
+    pub fn param_count(&self) -> usize {
+        self.param_count
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Statement {
+    CreateTable(CreateTableStmt),
+    Insert(InsertStmt),
+    Select(SelectStmt),
+    Update(UpdateStmt),
+    Delete(DeleteStmt),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CreateTableStmt {
+    pub(crate) if_not_exists: bool,
+    pub(crate) name: String,
+    pub(crate) columns: Vec<ColumnSpec>,
+    pub(crate) primary_key_index: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ColumnSpec {
+    pub(crate) name: String,
+    pub(crate) col_type: SqlType,
+    pub(crate) not_null: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct InsertStmt {
+    pub(crate) table: String,
+    pub(crate) columns: Option<Vec<String>>,
+    pub(crate) rows: Vec<Vec<Expr>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum SelectColumns {
+    All,
+    List(Vec<String>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SelectStmt {
+    pub(crate) columns: SelectColumns,
+    pub(crate) table: String,
+    pub(crate) filter: Option<Expr>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Assignment {
+    pub(crate) column: String,
+    pub(crate) offset: usize,
+    pub(crate) value: Expr,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct UpdateStmt {
+    pub(crate) table: String,
+    pub(crate) assignments: Vec<Assignment>,
+    pub(crate) filter: Option<Expr>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DeleteStmt {
+    pub(crate) table: String,
+    pub(crate) filter: Option<Expr>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CompareOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum LiteralValue {
+    Null,
+    Integer(i64),
+    Real(f64),
+    Text(String),
+    Boolean(bool),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Expr {
+    Literal(LiteralValue),
+    Param(usize),
+    Column(String),
+    IsNull {
+        expr: Box<Expr>,
+        negated: bool,
+    },
+    Not(Box<Expr>),
+    Compare {
+        op: CompareOp,
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
+    And(Vec<Expr>),
+    Or(Vec<Expr>),
+}
+
+pub(crate) fn parse_statement(sql: &str, limits: &SqlLimits) -> Result<SqlStatement, SqlError> {
+    let tokens = tokenize(sql, limits)?;
+    let mut parser = Parser {
+        tokens,
+        pos: 0,
+        limits,
+        param_count: 0,
+    };
+    let inner = parser.parse_single_statement()?;
+    Ok(SqlStatement {
+        inner,
+        param_count: parser.param_count,
+    })
+}
+
+struct Parser<'a> {
+    tokens: Vec<Token>,
+    pos: usize,
+    limits: &'a SqlLimits,
+    param_count: usize,
+}
+
+impl Parser<'_> {
+    fn peek(&self) -> &Token {
+        self.tokens
+            .get(self.pos)
+            .unwrap_or_else(|| self.tokens.last().expect("eof token"))
+    }
+
+    fn peek_n(&self, offset: usize) -> Option<&Token> {
+        self.tokens.get(self.pos + offset)
+    }
+
+    fn advance(&mut self) -> &Token {
+        let tok = &self.tokens[self.pos];
+        if !matches!(tok.kind, TokenKind::Eof) {
+            self.pos += 1;
+        }
+        tok
+    }
+
+    fn at_eof(&self) -> bool {
+        matches!(self.peek().kind, TokenKind::Eof)
+    }
+
+    fn at_kw(&self, kw: &str) -> bool {
+        matches!(&self.peek().kind, TokenKind::Ident { text, quoted: false } if text == kw)
+    }
+
+    fn peek_n_kw(&self, offset: usize, kw: &str) -> bool {
+        matches!(
+            self.peek_n(offset).map(|t| &t.kind),
+            Some(TokenKind::Ident { text, quoted: false }) if text == kw
+        )
+    }
+
+    fn eat_kw(&mut self, kw: &str) -> bool {
+        if self.at_kw(kw) {
+            self.advance();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn expect_kw(&mut self, kw: &str) -> Result<usize, SqlError> {
+        let offset = self.peek().offset;
+        if self.eat_kw(kw) {
+            Ok(offset)
+        } else {
+            Err(SqlError::Syntax {
+                offset,
+                message: format!("expected keyword {}", kw.to_ascii_uppercase()),
+            })
+        }
+    }
+
+    fn expect_kind(&mut self, expected: &TokenKind, label: &str) -> Result<usize, SqlError> {
+        let offset = self.peek().offset;
+        if &self.peek().kind == expected {
+            self.advance();
+            Ok(offset)
+        } else {
+            Err(SqlError::Syntax {
+                offset,
+                message: format!("expected {label}"),
+            })
+        }
+    }
+
+    fn expect_ident(&mut self, label: &str) -> Result<(String, usize), SqlError> {
+        let tok = self.peek().clone();
+        match tok.kind {
+            TokenKind::Ident { text, quoted } => {
+                if !quoted && is_reserved_keyword(&text) {
+                    return Err(SqlError::Syntax {
+                        offset: tok.offset,
+                        message: format!(
+                            "reserved keyword '{}' cannot be used as {label} without double quotes",
+                            text.to_ascii_uppercase()
+                        ),
+                    });
+                }
+                self.advance();
+                Ok((text, tok.offset))
+            }
+            _ => Err(SqlError::Syntax {
+                offset: tok.offset,
+                message: format!("expected {label}"),
+            }),
+        }
+    }
+
+    fn parse_single_statement(&mut self) -> Result<Statement, SqlError> {
+        if self.at_eof() {
+            return Err(SqlError::Syntax {
+                offset: self.peek().offset,
+                message: "empty SQL statement".into(),
+            });
+        }
+        let stmt = match &self.peek().kind {
+            TokenKind::Ident {
+                text,
+                quoted: false,
+            } => match text.as_str() {
+                "create" => Statement::CreateTable(self.parse_create_table()?),
+                "insert" => Statement::Insert(self.parse_insert()?),
+                "select" => Statement::Select(self.parse_select()?),
+                "update" => Statement::Update(self.parse_update()?),
+                "delete" => Statement::Delete(self.parse_delete()?),
+                "begin" | "start" => {
+                    return Err(SqlError::Unsupported {
+                        feature: "explicit transactions (BEGIN/START)".into(),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                "commit" | "end" => {
+                    return Err(SqlError::Unsupported {
+                        feature: "explicit transactions (COMMIT)".into(),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                "rollback" => {
+                    return Err(SqlError::Unsupported {
+                        feature: "explicit transactions (ROLLBACK)".into(),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                "drop" => {
+                    return Err(SqlError::Unsupported {
+                        feature: "DROP".into(),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                "alter" => {
+                    return Err(SqlError::Unsupported {
+                        feature: "ALTER".into(),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                "with" => {
+                    return Err(SqlError::Unsupported {
+                        feature: "WITH (CTE)".into(),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                "explain" | "pragma" | "replace" | "truncate" | "vacuum" => {
+                    let upper = text.to_ascii_uppercase();
+                    return Err(SqlError::Unsupported {
+                        feature: upper,
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                _ => {
+                    return Err(SqlError::Syntax {
+                        offset: self.peek().offset,
+                        message: format!("unexpected statement keyword '{text}'"),
+                    });
+                }
+            },
+            _ => {
+                return Err(SqlError::Syntax {
+                    offset: self.peek().offset,
+                    message: "expected SQL statement".into(),
+                });
+            }
+        };
+
+        // Optional single trailing semicolon.
+        if matches!(self.peek().kind, TokenKind::Semicolon) {
+            self.advance();
+        }
+        if !self.at_eof() {
+            return Err(SqlError::Syntax {
+                offset: self.peek().offset,
+                message: "multiple statements or trailing tokens are not supported".into(),
+            });
+        }
+        Ok(stmt)
+    }
+
+    fn check_trailing_unsupported(&self) -> Result<(), SqlError> {
+        let offset = self.peek().offset;
+        if let TokenKind::Ident {
+            text,
+            quoted: false,
+        } = &self.peek().kind
+        {
+            let feature = match text.as_str() {
+                "join" | "inner" | "left" | "right" | "full" | "cross" | "natural" => Some("JOIN"),
+                "group" => Some("GROUP BY"),
+                "having" => Some("HAVING"),
+                "order" => Some("ORDER BY"),
+                "limit" | "offset" => Some("LIMIT / OFFSET"),
+                "union" | "intersect" | "except" => Some("set operations (UNION/INTERSECT/EXCEPT)"),
+                "returning" => Some("RETURNING"),
+                "on" => Some("ON CONFLICT"),
+                "for" => Some("FOR locking clause"),
+                "from" => Some("UPDATE ... FROM"),
+                _ => None,
+            };
+            if let Some(feature) = feature {
+                return Err(SqlError::Unsupported {
+                    feature: feature.into(),
+                    offset: Some(offset),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_create_table(&mut self) -> Result<CreateTableStmt, SqlError> {
+        self.expect_kw("create")?;
+        if self.at_kw("unique") && self.peek_n_kw(1, "index") {
+            return Err(SqlError::Unsupported {
+                feature: "CREATE INDEX".into(),
+                offset: Some(self.peek().offset),
+            });
+        }
+        if self.at_kw("index") {
+            return Err(SqlError::Unsupported {
+                feature: "CREATE INDEX".into(),
+                offset: Some(self.peek().offset),
+            });
+        }
+        if !self.at_kw("table") {
+            if let TokenKind::Ident {
+                text,
+                quoted: false,
+            } = &self.peek().kind
+            {
+                return Err(SqlError::Unsupported {
+                    feature: format!("CREATE {}", text.to_ascii_uppercase()),
+                    offset: Some(self.peek().offset),
+                });
+            }
+            return Err(SqlError::Syntax {
+                offset: self.peek().offset,
+                message: "expected TABLE after CREATE".into(),
+            });
+        }
+        self.advance();
+
+        let if_not_exists = if self.eat_kw("if") {
+            self.expect_kw("not")?;
+            self.expect_kw("exists")?;
+            true
+        } else {
+            false
+        };
+
+        let (name, _) = self.expect_ident("table name")?;
+        self.expect_kind(&TokenKind::LParen, "'('")?;
+
+        let mut columns = Vec::new();
+        let mut seen_cols = HashSet::new();
+        let mut pk_col_index: Option<usize> = None;
+        let mut table_pk_name: Option<(String, usize)> = None;
+
+        if matches!(self.peek().kind, TokenKind::RParen) {
+            return Err(SqlError::Syntax {
+                offset: self.peek().offset,
+                message: "CREATE TABLE must declare at least one column".into(),
+            });
+        }
+
+        loop {
+            if self.at_kw("primary") {
+                self.advance();
+                self.expect_kw("key")?;
+                self.expect_kind(&TokenKind::LParen, "'('")?;
+                let (pk_name, pk_offset) = self.expect_ident("primary key column")?;
+                if matches!(self.peek().kind, TokenKind::Comma) {
+                    return Err(SqlError::Unsupported {
+                        feature: "composite PRIMARY KEY".into(),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                self.expect_kind(&TokenKind::RParen, "')'")?;
+                if table_pk_name.is_some() || pk_col_index.is_some() {
+                    return Err(SqlError::Constraint(
+                        "table cannot declare multiple PRIMARY KEY constraints".into(),
+                    ));
+                }
+                table_pk_name = Some((pk_name, pk_offset));
+            } else if self.at_kw("constraint")
+                || self.at_kw("unique")
+                || self.at_kw("check")
+                || self.at_kw("foreign")
+            {
+                let feature = match &self.peek().kind {
+                    TokenKind::Ident { text, .. } => {
+                        format!("{} constraint", text.to_ascii_uppercase())
+                    }
+                    _ => "table constraint".into(),
+                };
+                return Err(SqlError::Unsupported {
+                    feature,
+                    offset: Some(self.peek().offset),
+                });
+            } else {
+                if columns.len() >= self.limits.max_columns {
+                    return Err(SqlError::Bounds(format!(
+                        "column count exceeds max_columns ({})",
+                        self.limits.max_columns
+                    )));
+                }
+                let (col_name, col_offset) = self.expect_ident("column name")?;
+                if !seen_cols.insert(col_name.clone()) {
+                    return Err(SqlError::Syntax {
+                        offset: col_offset,
+                        message: format!("duplicate column name '{col_name}'"),
+                    });
+                }
+                let col_type = self.parse_column_type()?;
+                let mut not_null = false;
+                let mut is_pk = false;
+                loop {
+                    if self.eat_kw("not") {
+                        self.expect_kw("null")?;
+                        not_null = true;
+                    } else if self.eat_kw("primary") {
+                        self.expect_kw("key")?;
+                        if is_pk || pk_col_index.is_some() || table_pk_name.is_some() {
+                            return Err(SqlError::Constraint(
+                                "table cannot declare multiple PRIMARY KEY constraints".into(),
+                            ));
+                        }
+                        is_pk = true;
+                        not_null = true;
+                    } else if self.at_kw("default")
+                        || self.at_kw("check")
+                        || self.at_kw("unique")
+                        || self.at_kw("references")
+                        || self.at_kw("autoincrement")
+                        || self.at_kw("generated")
+                        || self.at_kw("collate")
+                    {
+                        let feature = match &self.peek().kind {
+                            TokenKind::Ident { text, .. } => {
+                                format!("{} column constraint", text.to_ascii_uppercase())
+                            }
+                            _ => "column constraint".into(),
+                        };
+                        return Err(SqlError::Unsupported {
+                            feature,
+                            offset: Some(self.peek().offset),
+                        });
+                    } else {
+                        break;
+                    }
+                }
+                if is_pk {
+                    pk_col_index = Some(columns.len());
+                }
+                columns.push(ColumnSpec {
+                    name: col_name,
+                    col_type,
+                    not_null,
+                });
+            }
+
+            if matches!(self.peek().kind, TokenKind::Comma) {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+
+        self.expect_kind(&TokenKind::RParen, "')'")?;
+        if self.at_kw("without") || self.at_kw("strict") || self.at_kw("as") {
+            return Err(SqlError::Unsupported {
+                feature: "table options / CREATE TABLE ... AS".into(),
+                offset: Some(self.peek().offset),
+            });
+        }
+
+        if let Some((pk_name, pk_offset)) = table_pk_name {
+            let idx = columns
+                .iter()
+                .position(|c| c.name == pk_name)
+                .ok_or_else(|| SqlError::Syntax {
+                    offset: pk_offset,
+                    message: format!("PRIMARY KEY column '{pk_name}' is not declared in table"),
+                })?;
+            columns[idx].not_null = true;
+            pk_col_index = Some(idx);
+        }
+
+        let primary_key_index = pk_col_index.ok_or_else(|| {
+            SqlError::Constraint("CREATE TABLE requires exactly one PRIMARY KEY column".into())
+        })?;
+        let pk_type = columns[primary_key_index].col_type;
+        if !matches!(pk_type, SqlType::Integer | SqlType::Text { .. }) {
+            return Err(SqlError::Type(format!(
+                "PRIMARY KEY column '{}' must be INTEGER or TEXT, got {}",
+                columns[primary_key_index].name,
+                pk_type.display_name()
+            )));
+        }
+
+        Ok(CreateTableStmt {
+            if_not_exists,
+            name,
+            columns,
+            primary_key_index,
+        })
+    }
+
+    fn parse_column_type(&mut self) -> Result<SqlType, SqlError> {
+        let tok = self.peek().clone();
+        let TokenKind::Ident {
+            text,
+            quoted: false,
+        } = tok.kind
+        else {
+            return Err(SqlError::Syntax {
+                offset: tok.offset,
+                message: "expected column data type".into(),
+            });
+        };
+        self.advance();
+        match text.as_str() {
+            "integer" | "int" | "bigint" => Ok(SqlType::Integer),
+            "real" | "double" | "float" => Ok(SqlType::Real),
+            "boolean" | "bool" => Ok(SqlType::Boolean),
+            "text" => Ok(SqlType::Text { max_chars: None }),
+            "varchar" => {
+                if matches!(self.peek().kind, TokenKind::LParen) {
+                    self.advance();
+                    let len_tok = self.peek().clone();
+                    let n = match len_tok.kind {
+                        TokenKind::Integer(raw) => {
+                            self.advance();
+                            raw.parse::<usize>().map_err(|_| {
+                                SqlError::Bounds("VARCHAR length out of range".into())
+                            })?
+                        }
+                        _ => {
+                            return Err(SqlError::Syntax {
+                                offset: len_tok.offset,
+                                message: "expected positive integer length in VARCHAR(n)".into(),
+                            });
+                        }
+                    };
+                    if n == 0 {
+                        return Err(SqlError::Syntax {
+                            offset: len_tok.offset,
+                            message: "VARCHAR(n) length must be at least 1".into(),
+                        });
+                    }
+                    if n > self.limits.max_text_bytes {
+                        return Err(SqlError::Bounds(format!(
+                            "VARCHAR({n}) exceeds max_text_bytes ({})",
+                            self.limits.max_text_bytes
+                        )));
+                    }
+                    self.expect_kind(&TokenKind::RParen, "')'")?;
+                    Ok(SqlType::Text { max_chars: Some(n) })
+                } else {
+                    Ok(SqlType::Text { max_chars: None })
+                }
+            }
+            _ => Err(SqlError::Syntax {
+                offset: tok.offset,
+                message: format!("unknown or unsupported column type '{text}'"),
+            }),
+        }
+    }
+
+    fn parse_insert(&mut self) -> Result<InsertStmt, SqlError> {
+        self.expect_kw("insert")?;
+        self.expect_kw("into")?;
+        let (table, _) = self.expect_ident("table name")?;
+
+        let columns = if matches!(self.peek().kind, TokenKind::LParen) {
+            self.advance();
+            if matches!(self.peek().kind, TokenKind::RParen) {
+                return Err(SqlError::Syntax {
+                    offset: self.peek().offset,
+                    message: "INSERT column list cannot be empty".into(),
+                });
+            }
+            let mut cols = Vec::new();
+            let mut seen = HashSet::new();
+            loop {
+                if cols.len() >= self.limits.max_columns {
+                    return Err(SqlError::Bounds(format!(
+                        "INSERT column list exceeds max_columns ({})",
+                        self.limits.max_columns
+                    )));
+                }
+                let (col, col_offset) = self.expect_ident("column name")?;
+                if !seen.insert(col.clone()) {
+                    return Err(SqlError::Syntax {
+                        offset: col_offset,
+                        message: format!("duplicate column '{col}' in INSERT column list"),
+                    });
+                }
+                cols.push(col);
+                if matches!(self.peek().kind, TokenKind::Comma) {
+                    self.advance();
+                    continue;
+                }
+                break;
+            }
+            self.expect_kind(&TokenKind::RParen, "')'")?;
+            Some(cols)
+        } else {
+            None
+        };
+
+        if self.at_kw("select") || self.at_kw("with") {
+            return Err(SqlError::Unsupported {
+                feature: "INSERT ... SELECT".into(),
+                offset: Some(self.peek().offset),
+            });
+        }
+        if self.at_kw("default") {
+            return Err(SqlError::Unsupported {
+                feature: "DEFAULT VALUES".into(),
+                offset: Some(self.peek().offset),
+            });
+        }
+        self.expect_kw("values")?;
+
+        let mut rows = Vec::new();
+        loop {
+            if rows.len() >= self.limits.max_insert_rows {
+                return Err(SqlError::Bounds(format!(
+                    "INSERT row count exceeds max_insert_rows ({})",
+                    self.limits.max_insert_rows
+                )));
+            }
+            self.expect_kind(&TokenKind::LParen, "'('")?;
+            if matches!(self.peek().kind, TokenKind::RParen) {
+                return Err(SqlError::Syntax {
+                    offset: self.peek().offset,
+                    message: "VALUES tuple cannot be empty".into(),
+                });
+            }
+            let mut tuple = Vec::new();
+            loop {
+                if tuple.len() >= self.limits.max_columns {
+                    return Err(SqlError::Bounds(format!(
+                        "VALUES tuple exceeds max_columns ({})",
+                        self.limits.max_columns
+                    )));
+                }
+                tuple.push(self.parse_expr(1)?);
+                if matches!(self.peek().kind, TokenKind::Comma) {
+                    self.advance();
+                    continue;
+                }
+                break;
+            }
+            self.expect_kind(&TokenKind::RParen, "')'")?;
+            if let Some(cols) = &columns {
+                if tuple.len() != cols.len() {
+                    return Err(SqlError::Syntax {
+                        offset: self.peek().offset,
+                        message: format!(
+                            "INSERT has {} target columns but {} values",
+                            cols.len(),
+                            tuple.len()
+                        ),
+                    });
+                }
+            }
+            rows.push(tuple);
+            if matches!(self.peek().kind, TokenKind::Comma) {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+
+        self.check_trailing_unsupported()?;
+        Ok(InsertStmt {
+            table,
+            columns,
+            rows,
+        })
+    }
+
+    fn parse_select(&mut self) -> Result<SelectStmt, SqlError> {
+        self.expect_kw("select")?;
+        if self.at_kw("distinct") {
+            return Err(SqlError::Unsupported {
+                feature: "DISTINCT".into(),
+                offset: Some(self.peek().offset),
+            });
+        }
+
+        let columns = if matches!(self.peek().kind, TokenKind::Star) {
+            self.advance();
+            if matches!(self.peek().kind, TokenKind::Comma) {
+                return Err(SqlError::Syntax {
+                    offset: self.peek().offset,
+                    message: "cannot mix '*' with explicit columns in SELECT".into(),
+                });
+            }
+            SelectColumns::All
+        } else {
+            let mut cols = Vec::new();
+            loop {
+                if cols.len() >= self.limits.max_columns {
+                    return Err(SqlError::Bounds(format!(
+                        "SELECT column list exceeds max_columns ({})",
+                        self.limits.max_columns
+                    )));
+                }
+                if matches!(self.peek().kind, TokenKind::LParen) {
+                    return Err(SqlError::Unsupported {
+                        feature: "subqueries / parenthesized expressions in SELECT list".into(),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                let tok = self.peek().clone();
+                if let TokenKind::Ident { text, quoted } = &tok.kind {
+                    if matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::LParen)) {
+                        return Err(SqlError::Unsupported {
+                            feature: format!("aggregate or function call '{}'", text),
+                            offset: Some(tok.offset),
+                        });
+                    }
+                    if matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::Dot)) {
+                        return Err(SqlError::Unsupported {
+                            feature: "qualified column names (table.column)".into(),
+                            offset: Some(tok.offset),
+                        });
+                    }
+                    if !quoted && is_reserved_keyword(text) {
+                        return Err(SqlError::Syntax {
+                            offset: tok.offset,
+                            message: format!(
+                                "expected column name in SELECT list, found keyword '{}'",
+                                text.to_ascii_uppercase()
+                            ),
+                        });
+                    }
+                    let col = text.clone();
+                    self.advance();
+                    if self.at_kw("as") {
+                        return Err(SqlError::Unsupported {
+                            feature: "column aliases (AS)".into(),
+                            offset: Some(self.peek().offset),
+                        });
+                    }
+                    cols.push(col);
+                } else {
+                    return Err(SqlError::Syntax {
+                        offset: tok.offset,
+                        message: "expected '*' or column name in SELECT list".into(),
+                    });
+                }
+                if matches!(self.peek().kind, TokenKind::Comma) {
+                    self.advance();
+                    continue;
+                }
+                break;
+            }
+            SelectColumns::List(cols)
+        };
+
+        self.expect_kw("from")?;
+        if matches!(self.peek().kind, TokenKind::LParen) {
+            return Err(SqlError::Unsupported {
+                feature: "subqueries in FROM".into(),
+                offset: Some(self.peek().offset),
+            });
+        }
+        let (table, _) = self.expect_ident("table name")?;
+        if matches!(self.peek().kind, TokenKind::Comma) {
+            return Err(SqlError::Unsupported {
+                feature: "JOIN (comma-separated tables)".into(),
+                offset: Some(self.peek().offset),
+            });
+        }
+        if self.at_kw("as") {
+            return Err(SqlError::Unsupported {
+                feature: "table aliases (AS)".into(),
+                offset: Some(self.peek().offset),
+            });
+        }
+        self.check_trailing_unsupported()?;
+
+        let filter = if self.eat_kw("where") {
+            Some(self.parse_expr(1)?)
+        } else {
+            None
+        };
+        self.check_trailing_unsupported()?;
+
+        Ok(SelectStmt {
+            columns,
+            table,
+            filter,
+        })
+    }
+
+    fn parse_update(&mut self) -> Result<UpdateStmt, SqlError> {
+        self.expect_kw("update")?;
+        let (table, _) = self.expect_ident("table name")?;
+        self.expect_kw("set")?;
+
+        let mut assignments = Vec::new();
+        let mut seen = HashSet::new();
+        loop {
+            if assignments.len() >= self.limits.max_columns {
+                return Err(SqlError::Bounds(format!(
+                    "UPDATE assignment count exceeds max_columns ({})",
+                    self.limits.max_columns
+                )));
+            }
+            let (col, col_offset) = self.expect_ident("column name")?;
+            if !seen.insert(col.clone()) {
+                return Err(SqlError::Syntax {
+                    offset: col_offset,
+                    message: format!("duplicate column '{col}' in UPDATE SET"),
+                });
+            }
+            self.expect_kind(&TokenKind::Eq, "'='")?;
+            let value = self.parse_expr(1)?;
+            assignments.push(Assignment {
+                column: col,
+                offset: col_offset,
+                value,
+            });
+            if matches!(self.peek().kind, TokenKind::Comma) {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+
+        self.check_trailing_unsupported()?;
+        let filter = if self.eat_kw("where") {
+            Some(self.parse_expr(1)?)
+        } else {
+            None
+        };
+        self.check_trailing_unsupported()?;
+
+        Ok(UpdateStmt {
+            table,
+            assignments,
+            filter,
+        })
+    }
+
+    fn parse_delete(&mut self) -> Result<DeleteStmt, SqlError> {
+        self.expect_kw("delete")?;
+        self.expect_kw("from")?;
+        let (table, _) = self.expect_ident("table name")?;
+        self.check_trailing_unsupported()?;
+
+        let filter = if self.eat_kw("where") {
+            Some(self.parse_expr(1)?)
+        } else {
+            None
+        };
+        self.check_trailing_unsupported()?;
+
+        Ok(DeleteStmt { table, filter })
+    }
+
+    fn check_depth(&self, depth: usize) -> Result<(), SqlError> {
+        if depth > self.limits.max_expr_depth {
+            return Err(SqlError::Bounds(format!(
+                "expression nesting depth exceeds max_expr_depth ({})",
+                self.limits.max_expr_depth
+            )));
+        }
+        Ok(())
+    }
+
+    fn parse_expr(&mut self, depth: usize) -> Result<Expr, SqlError> {
+        self.check_depth(depth)?;
+        self.parse_or(depth)
+    }
+
+    fn parse_or(&mut self, depth: usize) -> Result<Expr, SqlError> {
+        let first = self.parse_and(depth)?;
+        if !self.at_kw("or") {
+            return Ok(first);
+        }
+        let mut items = vec![first];
+        while self.eat_kw("or") {
+            self.check_depth(depth + 1)?;
+            items.push(self.parse_and(depth + 1)?);
+        }
+        Ok(Expr::Or(items))
+    }
+
+    fn parse_and(&mut self, depth: usize) -> Result<Expr, SqlError> {
+        let first = self.parse_not(depth)?;
+        if !self.at_kw("and") {
+            return Ok(first);
+        }
+        let mut items = vec![first];
+        while self.eat_kw("and") {
+            self.check_depth(depth + 1)?;
+            items.push(self.parse_not(depth + 1)?);
+        }
+        Ok(Expr::And(items))
+    }
+
+    fn parse_not(&mut self, depth: usize) -> Result<Expr, SqlError> {
+        if self.eat_kw("not") {
+            self.check_depth(depth + 1)?;
+            if self.at_kw("exists") {
+                return Err(SqlError::Unsupported {
+                    feature: "EXISTS subquery".into(),
+                    offset: Some(self.peek().offset),
+                });
+            }
+            let inner = self.parse_not(depth + 1)?;
+            Ok(Expr::Not(Box::new(inner)))
+        } else {
+            self.parse_comparison(depth)
+        }
+    }
+
+    fn parse_comparison(&mut self, depth: usize) -> Result<Expr, SqlError> {
+        let left = self.parse_primary(depth)?;
+        if self.eat_kw("is") {
+            let negated = self.eat_kw("not");
+            if !self.eat_kw("null") {
+                return Err(SqlError::Syntax {
+                    offset: self.peek().offset,
+                    message: "expected NULL after IS [NOT]".into(),
+                });
+            }
+            return Ok(Expr::IsNull {
+                expr: Box::new(left),
+                negated,
+            });
+        }
+        if let TokenKind::Ident {
+            text,
+            quoted: false,
+        } = &self.peek().kind
+        {
+            if matches!(text.as_str(), "in" | "between" | "like" | "ilike") {
+                return Err(SqlError::Unsupported {
+                    feature: text.to_ascii_uppercase(),
+                    offset: Some(self.peek().offset),
+                });
+            }
+            if text == "not"
+                && matches!(
+                    self.peek_n(1).map(|t| &t.kind),
+                    Some(TokenKind::Ident { text: next, quoted: false })
+                        if matches!(next.as_str(), "in" | "between" | "like" | "ilike")
+                )
+            {
+                let next_kw = match &self.peek_n(1).expect("peeked").kind {
+                    TokenKind::Ident { text, .. } => text.to_ascii_uppercase(),
+                    _ => unreachable!(),
+                };
+                return Err(SqlError::Unsupported {
+                    feature: format!("NOT {next_kw}"),
+                    offset: Some(self.peek().offset),
+                });
+            }
+        }
+        let op = match self.peek().kind {
+            TokenKind::Eq => CompareOp::Eq,
+            TokenKind::Ne => CompareOp::Ne,
+            TokenKind::Lt => CompareOp::Lt,
+            TokenKind::Le => CompareOp::Le,
+            TokenKind::Gt => CompareOp::Gt,
+            TokenKind::Ge => CompareOp::Ge,
+            TokenKind::Plus
+            | TokenKind::Minus
+            | TokenKind::Star
+            | TokenKind::Slash
+            | TokenKind::Percent
+            | TokenKind::Concat => {
+                return Err(SqlError::Unsupported {
+                    feature: "arithmetic / concatenation operators".into(),
+                    offset: Some(self.peek().offset),
+                });
+            }
+            _ => return Ok(left),
+        };
+        self.advance();
+        self.check_depth(depth + 1)?;
+        let right = self.parse_primary(depth + 1)?;
+        if matches!(
+            self.peek().kind,
+            TokenKind::Eq
+                | TokenKind::Ne
+                | TokenKind::Lt
+                | TokenKind::Le
+                | TokenKind::Gt
+                | TokenKind::Ge
+        ) {
+            return Err(SqlError::Syntax {
+                offset: self.peek().offset,
+                message: "chained comparison operators require parentheses".into(),
+            });
+        }
+        Ok(Expr::Compare {
+            op,
+            left: Box::new(left),
+            right: Box::new(right),
+        })
+    }
+
+    fn parse_primary(&mut self, depth: usize) -> Result<Expr, SqlError> {
+        self.check_depth(depth)?;
+        let tok = self.peek().clone();
+        match tok.kind {
+            TokenKind::LParen => {
+                self.advance();
+                if self.at_kw("select") || self.at_kw("with") {
+                    return Err(SqlError::Unsupported {
+                        feature: "subqueries".into(),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                self.check_depth(depth + 1)?;
+                let inner = self.parse_expr(depth + 1)?;
+                if matches!(self.peek().kind, TokenKind::Comma) {
+                    return Err(SqlError::Unsupported {
+                        feature: "tuple / row expressions".into(),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                self.expect_kind(&TokenKind::RParen, "')'")?;
+                Ok(inner)
+            }
+            TokenKind::Minus => {
+                self.advance();
+                let num = self.peek().clone();
+                match num.kind {
+                    TokenKind::Integer(raw) => {
+                        self.advance();
+                        let val = parse_signed_integer(&raw, true, num.offset)?;
+                        Ok(Expr::Literal(LiteralValue::Integer(val)))
+                    }
+                    TokenKind::Real(raw) => {
+                        self.advance();
+                        let val = parse_real(&raw, true, num.offset)?;
+                        Ok(Expr::Literal(LiteralValue::Real(val)))
+                    }
+                    _ => Err(SqlError::Unsupported {
+                        feature: "unary minus on non-literal expression".into(),
+                        offset: Some(tok.offset),
+                    }),
+                }
+            }
+            TokenKind::Integer(raw) => {
+                self.advance();
+                let val = parse_signed_integer(&raw, false, tok.offset)?;
+                Ok(Expr::Literal(LiteralValue::Integer(val)))
+            }
+            TokenKind::Real(raw) => {
+                self.advance();
+                let val = parse_real(&raw, false, tok.offset)?;
+                Ok(Expr::Literal(LiteralValue::Real(val)))
+            }
+            TokenKind::String(text) => {
+                self.advance();
+                Ok(Expr::Literal(LiteralValue::Text(text)))
+            }
+            TokenKind::Question => {
+                self.advance();
+                if self.param_count >= self.limits.max_params {
+                    return Err(SqlError::Bounds(format!(
+                        "parameter count exceeds max_params ({})",
+                        self.limits.max_params
+                    )));
+                }
+                let idx = self.param_count;
+                self.param_count += 1;
+                Ok(Expr::Param(idx))
+            }
+            TokenKind::Ident { text, quoted } => {
+                if !quoted {
+                    match text.as_str() {
+                        "null" => {
+                            self.advance();
+                            return Ok(Expr::Literal(LiteralValue::Null));
+                        }
+                        "true" => {
+                            self.advance();
+                            return Ok(Expr::Literal(LiteralValue::Boolean(true)));
+                        }
+                        "false" => {
+                            self.advance();
+                            return Ok(Expr::Literal(LiteralValue::Boolean(false)));
+                        }
+                        "exists" => {
+                            return Err(SqlError::Unsupported {
+                                feature: "EXISTS subquery".into(),
+                                offset: Some(tok.offset),
+                            });
+                        }
+                        "case" | "cast" => {
+                            return Err(SqlError::Unsupported {
+                                feature: text.to_ascii_uppercase(),
+                                offset: Some(tok.offset),
+                            });
+                        }
+                        _ if is_reserved_keyword(&text) => {
+                            return Err(SqlError::Syntax {
+                                offset: tok.offset,
+                                message: format!(
+                                    "unexpected keyword '{}'",
+                                    text.to_ascii_uppercase()
+                                ),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                if matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::LParen)) {
+                    return Err(SqlError::Unsupported {
+                        feature: format!("function or aggregate call '{text}(...)'"),
+                        offset: Some(tok.offset),
+                    });
+                }
+                if matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::Dot)) {
+                    return Err(SqlError::Unsupported {
+                        feature: "qualified column names (table.column)".into(),
+                        offset: Some(tok.offset),
+                    });
+                }
+                self.advance();
+                Ok(Expr::Column(text))
+            }
+            _ => Err(SqlError::Syntax {
+                offset: tok.offset,
+                message: "expected expression".into(),
+            }),
+        }
+    }
+}
+
+fn parse_signed_integer(raw: &str, negated: bool, offset: usize) -> Result<i64, SqlError> {
+    if negated {
+        let with_sign = format!("-{raw}");
+        with_sign.parse::<i64>().map_err(|_| SqlError::Syntax {
+            offset,
+            message: format!("integer literal '-{raw}' out of signed 64-bit range"),
+        })
+    } else {
+        raw.parse::<i64>().map_err(|_| SqlError::Syntax {
+            offset,
+            message: format!("integer literal '{raw}' out of signed 64-bit range"),
+        })
+    }
+}
+
+fn parse_real(raw: &str, negated: bool, offset: usize) -> Result<f64, SqlError> {
+    let parsed = if negated {
+        format!("-{raw}").parse::<f64>()
+    } else {
+        raw.parse::<f64>()
+    };
+    match parsed {
+        Ok(val) if val.is_finite() => Ok(val),
+        _ => Err(SqlError::Syntax {
+            offset,
+            message: format!("real literal '{raw}' is not a finite 64-bit float"),
+        }),
+    }
+}
+
+fn is_reserved_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "select"
+            | "from"
+            | "where"
+            | "insert"
+            | "into"
+            | "values"
+            | "update"
+            | "set"
+            | "delete"
+            | "create"
+            | "table"
+            | "if"
+            | "exists"
+            | "primary"
+            | "key"
+            | "not"
+            | "null"
+            | "true"
+            | "false"
+            | "and"
+            | "or"
+            | "is"
+            | "join"
+            | "inner"
+            | "left"
+            | "right"
+            | "full"
+            | "cross"
+            | "natural"
+            | "on"
+            | "group"
+            | "order"
+            | "by"
+            | "having"
+            | "limit"
+            | "offset"
+            | "begin"
+            | "start"
+            | "commit"
+            | "end"
+            | "rollback"
+            | "drop"
+            | "alter"
+            | "index"
+            | "returning"
+            | "conflict"
+            | "default"
+            | "check"
+            | "foreign"
+            | "references"
+            | "unique"
+            | "union"
+            | "intersect"
+            | "except"
+            | "with"
+            | "as"
+            | "distinct"
+            | "in"
+            | "between"
+            | "like"
+            | "ilike"
+            | "case"
+            | "when"
+            | "then"
+            | "else"
+            | "autoincrement"
+            | "generated"
+            | "constraint"
+            | "collate"
+            | "without"
+            | "strict"
+            | "for"
+    )
+}

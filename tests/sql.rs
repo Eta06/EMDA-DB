@@ -1,0 +1,1321 @@
+use database_engine::retained_base_v2::Limits;
+use database_engine::retained_candidate::{
+    AuthorizedRetainedStore, FileRetainedAuthority, IndexLimits, ManagedRetainedStore,
+    OverlayLimits, RetainedAuthority, RetainedStoreLimits, SuffixLimits,
+};
+use database_engine::{
+    CheckpointStore, CollectionSchema, DocumentDatabase, RetainedExportLimits, SqlDatabase,
+    SqlError, SqlLimits, SqlOutcome, SqlValue, Store, is_transaction_conflict,
+};
+use serde_json::json;
+use std::collections::BTreeMap;
+use std::io;
+use std::sync::{Arc, Barrier};
+
+fn open_checkpoint(dir: &std::path::Path) -> (CheckpointStore, std::path::PathBuf, [u8; 32]) {
+    let store_path = dir.join("checkpoint_log");
+    let ckpt_path = dir.join("checkpoint_file");
+    let initial = Store::open(&store_path).unwrap();
+    let digest = initial.checkpoint_to(&ckpt_path).unwrap();
+    drop(initial);
+    let ckpt = CheckpointStore::open(&store_path, &ckpt_path, &digest).unwrap();
+    (ckpt, ckpt_path, digest)
+}
+
+fn for_both_backends(mut f: impl FnMut(&DocumentDatabase<'_>)) {
+    let dir = tempfile::tempdir().unwrap();
+    let ordinary = Store::open(dir.path().join("ordinary")).unwrap();
+    f(&DocumentDatabase::new(&ordinary));
+    drop(ordinary);
+
+    let (ckpt, _, _) = open_checkpoint(dir.path());
+    f(&DocumentDatabase::with_checkpoint_store(&ckpt));
+}
+
+fn for_both_sql(mut f: impl FnMut(SqlDatabase<'_>)) {
+    let dir = tempfile::tempdir().unwrap();
+    let ordinary = Store::open(dir.path().join("ordinary")).unwrap();
+    f(SqlDatabase::new(DocumentDatabase::new(&ordinary)));
+    drop(ordinary);
+
+    let (ckpt, _, _) = open_checkpoint(dir.path());
+    f(SqlDatabase::new(DocumentDatabase::with_checkpoint_store(
+        &ckpt,
+    )));
+}
+
+#[test]
+fn scan_documents_pages_in_id_order_across_all_backends() {
+    fn check_scan(db: &DocumentDatabase<'_>) {
+        db.create_collection("items", CollectionSchema::default())
+            .unwrap();
+        let empty = db
+            .transaction(|tx| tx.scan_documents("items", None, 2))
+            .unwrap();
+        assert!(empty.is_empty());
+
+        for id in ["d", "a", "c", "b", "e"] {
+            db.insert("items", id, &json!({ "id": id })).unwrap();
+        }
+
+        let collected = db
+            .transaction(|tx| {
+                tx.insert("items", "aa", &json!({ "id": "aa" }))?;
+                tx.delete("items", "c")?;
+                assert_eq!(
+                    tx.scan_documents("items", None, 0).unwrap_err().kind(),
+                    io::ErrorKind::InvalidInput
+                );
+                assert_eq!(
+                    tx.scan_documents("items", None, 1025).unwrap_err().kind(),
+                    io::ErrorKind::InvalidInput
+                );
+                assert_eq!(
+                    tx.scan_documents("missing", None, 2).unwrap_err().kind(),
+                    io::ErrorKind::NotFound
+                );
+
+                let mut out = Vec::new();
+                let mut after: Option<String> = None;
+                loop {
+                    let page = tx.scan_documents("items", after.as_deref(), 2)?;
+                    if page.is_empty() {
+                        break;
+                    }
+                    after = page.last().map(|d| d.id.clone());
+                    out.extend(page.into_iter().map(|d| d.id));
+                }
+                Ok(out)
+            })
+            .unwrap();
+        assert_eq!(collected, vec!["a", "aa", "b", "d", "e"]);
+    }
+
+    for_both_backends(check_scan);
+
+    let retained_limits = RetainedStoreLimits {
+        base: Limits {
+            file_bytes: 1_000_000,
+            entries: 5_000,
+            key_bytes: 250_000,
+            work_bytes: 1_000_001,
+        },
+        index: IndexLimits {
+            blocks: 32,
+            anchor_bytes: 4096,
+        },
+        suffix: SuffixLimits {
+            bytes: 1_000_000,
+            operations: 5_000,
+            work: 10_000_000,
+        },
+        overlay: OverlayLimits {
+            entries: 5_000,
+            key_bytes: 250_000,
+        },
+    };
+    let export_limits = RetainedExportLimits {
+        max_log_bytes: 1_000_000,
+        max_live_keys: 5_000,
+        max_live_key_bytes: 250_000,
+        max_output_bytes: 1_000_000,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let src_m = dir.path().join("src_m");
+    let cat_m = dir.path().join("cat_m");
+    let store_m = Store::open(&src_m).unwrap();
+    ManagedRetainedStore::copy_from_store(store_m, &src_m, &cat_m, export_limits, retained_limits)
+        .unwrap();
+    let mut managed = ManagedRetainedStore::open(&cat_m, retained_limits).unwrap();
+    check_scan(&DocumentDatabase::with_managed_retained_store(&mut managed));
+
+    type AuthCatalog = AuthorizedRetainedStore<FileRetainedAuthority>;
+    let src_a = dir.path().join("src_a");
+    let cat_a = dir.path().join("cat_a");
+    let auth_path = dir.path().join("auth");
+    let store_a = Store::open(&src_a).unwrap();
+    let initial =
+        AuthCatalog::prepare_from_store(store_a, &src_a, &cat_a, export_limits, retained_limits)
+            .unwrap();
+    let mut provider = FileRetainedAuthority::create(&auth_path).unwrap();
+    assert!(provider.compare_and_swap(None, initial).unwrap());
+    let mut authorized = AuthCatalog::open(
+        &cat_a,
+        retained_limits,
+        FileRetainedAuthority::open(&auth_path).unwrap(),
+    )
+    .unwrap();
+    check_scan(&DocumentDatabase::with_authorized_retained_store(
+        &mut authorized,
+    ));
+}
+
+#[test]
+fn crud_statements_types_aliases_coercions_and_prepare_reuse() {
+    for_both_sql(|db| {
+        assert_eq!(
+            db.execute(
+                "-- create test table\nCREATE TABLE Users (\
+                    id BIGINT PRIMARY KEY,\
+                    name VARCHAR(4) NOT NULL,\
+                    note TEXT,\
+                    score DOUBLE,\
+                    alt_score FLOAT,\
+                    active BOOL,\
+                    \"CaseCol\" INT\
+                );",
+                &[]
+            )
+            .unwrap(),
+            SqlOutcome::TableCreated
+        );
+
+        // IF NOT EXISTS succeeds; duplicate without IF NOT EXISTS returns TableExists.
+        assert_eq!(
+            db.execute("CREATE TABLE IF NOT EXISTS users (id INT PRIMARY KEY)", &[])
+                .unwrap(),
+            SqlOutcome::TableCreated
+        );
+        assert!(matches!(
+            db.execute("CREATE TABLE users (id INT PRIMARY KEY)", &[])
+                .unwrap_err(),
+            SqlError::TableExists(_)
+        ));
+
+        // Insert with positional params, integer->real exact coercion, escaped quotes, omitted nullable cols.
+        assert_eq!(
+            db.execute(
+                "INSERT INTO users (id, name, score, active, \"CaseCol\") VALUES \
+                 (10, 'it''s', 5, TRUE, -7),\
+                 (-5, 'éééé', ?, FALSE, NULL)",
+                &[SqlValue::Integer(1_i64 << 53)],
+            )
+            .unwrap(),
+            SqlOutcome::Inserted { rows: 2 }
+        );
+
+        // Insert with all columns and negative/positive extremes.
+        assert_eq!(
+            db.execute(
+                "INSERT INTO users VALUES (-9223372036854775808, 'min', NULL, -1.5, 0.25, true, 9223372036854775807);",
+                &[]
+            )
+            .unwrap(),
+            SqlOutcome::Inserted { rows: 1 }
+        );
+
+        // SELECT * returns rows in ascending PK order (-9223372036854775808, -5, 10).
+        let res = db.execute("select * from USERS", &[]).unwrap();
+        assert_eq!(
+            res,
+            SqlOutcome::Rows {
+                columns: vec![
+                    "id".into(),
+                    "name".into(),
+                    "note".into(),
+                    "score".into(),
+                    "alt_score".into(),
+                    "active".into(),
+                    "CaseCol".into(),
+                ],
+                rows: vec![
+                    vec![
+                        SqlValue::Integer(i64::MIN),
+                        SqlValue::Text("min".into()),
+                        SqlValue::Null,
+                        SqlValue::Real(-1.5),
+                        SqlValue::Real(0.25),
+                        SqlValue::Boolean(true),
+                        SqlValue::Integer(i64::MAX),
+                    ],
+                    vec![
+                        SqlValue::Integer(-5),
+                        SqlValue::Text("éééé".into()),
+                        SqlValue::Null,
+                        SqlValue::Real((1_i64 << 53) as f64),
+                        SqlValue::Null,
+                        SqlValue::Boolean(false),
+                        SqlValue::Null,
+                    ],
+                    vec![
+                        SqlValue::Integer(10),
+                        SqlValue::Text("it's".into()),
+                        SqlValue::Null,
+                        SqlValue::Real(5.0),
+                        SqlValue::Null,
+                        SqlValue::Boolean(true),
+                        SqlValue::Integer(-7),
+                    ],
+                ],
+            }
+        );
+
+        // Repeated columns and prepared statement reuse.
+        let prep = db
+            .prepare("SELECT name, name, \"CaseCol\" FROM users WHERE id = ?")
+            .unwrap();
+        assert_eq!(prep.param_count(), 1);
+        assert_eq!(
+            db.execute_prepared(&prep, &[SqlValue::Integer(10)])
+                .unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["name".into(), "name".into(), "CaseCol".into()],
+                rows: vec![vec![
+                    SqlValue::Text("it's".into()),
+                    SqlValue::Text("it's".into()),
+                    SqlValue::Integer(-7),
+                ]],
+            }
+        );
+        assert_eq!(
+            db.execute_prepared(&prep, &[SqlValue::Integer(-5)])
+                .unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["name".into(), "name".into(), "CaseCol".into()],
+                rows: vec![vec![
+                    SqlValue::Text("éééé".into()),
+                    SqlValue::Text("éééé".into()),
+                    SqlValue::Null,
+                ]],
+            }
+        );
+
+        // Parameter count mismatch.
+        assert!(matches!(
+            db.execute_prepared(&prep, &[]).unwrap_err(),
+            SqlError::ParameterCount {
+                expected: 1,
+                actual: 0
+            }
+        ));
+
+        // UPDATE reads old row values for all SET assignments and rejects updating PK.
+        assert_eq!(
+            db.execute(
+                "UPDATE users SET score = alt_score, alt_score = score, note = 'ok' WHERE id = -9223372036854775808",
+                &[]
+            )
+            .unwrap(),
+            SqlOutcome::Updated { rows: 1 }
+        );
+        assert_eq!(
+            db.execute(
+                "SELECT score, alt_score, note FROM users WHERE id = -9223372036854775808",
+                &[]
+            )
+            .unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["score".into(), "alt_score".into(), "note".into()],
+                rows: vec![vec![
+                    SqlValue::Real(0.25),
+                    SqlValue::Real(-1.5),
+                    SqlValue::Text("ok".into()),
+                ]],
+            }
+        );
+        assert!(matches!(
+            db.execute("UPDATE users SET id = 99 WHERE id = 10", &[])
+                .unwrap_err(),
+            SqlError::Unsupported { .. }
+        ));
+
+        // DELETE
+        assert_eq!(
+            db.execute("DELETE FROM users WHERE active = FALSE", &[])
+                .unwrap(),
+            SqlOutcome::Deleted { rows: 1 }
+        );
+        assert_eq!(
+            db.execute("SELECT id FROM users", &[]).unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["id".into()],
+                rows: vec![
+                    vec![SqlValue::Integer(i64::MIN)],
+                    vec![SqlValue::Integer(10)],
+                ],
+            }
+        );
+        assert_eq!(
+            db.execute("DELETE FROM users", &[]).unwrap(),
+            SqlOutcome::Deleted { rows: 2 }
+        );
+    });
+}
+
+#[test]
+fn three_valued_logic_type_checks_and_coercions() {
+    for_both_sql(|db| {
+        db.execute(
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, n INTEGER, r REAL, s TEXT, b BOOLEAN)",
+            &[],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO items VALUES \
+             (1, 10, 10.0, 'alpha', TRUE),\
+             (2, NULL, 2.5, NULL, FALSE),\
+             (3, 9007199254740993, 9007199254740992.0, 'beta', NULL)",
+            &[],
+        )
+        .unwrap();
+
+        // Comparisons with NULL are UNKNOWN; NOT(UNKNOWN) is UNKNOWN; WHERE keeps only TRUE.
+        for q in [
+            "SELECT id FROM items WHERE n = NULL",
+            "SELECT id FROM items WHERE n <> NULL",
+            "SELECT id FROM items WHERE NOT (n = NULL)",
+            "SELECT id FROM items WHERE NULL",
+            "SELECT id FROM items WHERE NOT NULL",
+            "SELECT id FROM items WHERE b AND NULL",
+            "SELECT id FROM items WHERE FALSE OR NULL",
+        ] {
+            assert_eq!(
+                db.execute(q, &[]).unwrap(),
+                SqlOutcome::Rows {
+                    columns: vec!["id".into()],
+                    rows: vec![],
+                },
+                "query {q} should return no rows"
+            );
+        }
+
+        // TRUE OR NULL => TRUE; FALSE AND NULL => FALSE
+        assert_eq!(
+            db.execute("SELECT id FROM items WHERE (id = 1) OR NULL", &[])
+                .unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["id".into()],
+                rows: vec![vec![SqlValue::Integer(1)]],
+            }
+        );
+        assert_eq!(
+            db.execute("SELECT id FROM items WHERE NOT ((id <> 1) AND NULL)", &[])
+                .unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["id".into()],
+                rows: vec![vec![SqlValue::Integer(1)]],
+            }
+        );
+
+        // IS NULL and IS NOT NULL
+        assert_eq!(
+            db.execute("SELECT id FROM items WHERE n IS NULL", &[])
+                .unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["id".into()],
+                rows: vec![vec![SqlValue::Integer(2)]],
+            }
+        );
+        assert_eq!(
+            db.execute("SELECT id FROM items WHERE s IS NOT NULL", &[])
+                .unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["id".into()],
+                rows: vec![vec![SqlValue::Integer(1)], vec![SqlValue::Integer(3)],],
+            }
+        );
+
+        // Exact numeric comparison between INTEGER and REAL without rounding.
+        assert_eq!(
+            db.execute("SELECT id FROM items WHERE n = r", &[]).unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["id".into()],
+                rows: vec![vec![SqlValue::Integer(1)]],
+            }
+        );
+        assert_eq!(
+            db.execute("SELECT id FROM items WHERE n > r", &[]).unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["id".into()],
+                rows: vec![vec![SqlValue::Integer(3)]],
+            }
+        );
+
+        // Reject NaN/Inf, non-representable int->real, int-col->real-col, and mismatched types.
+        for bad_real in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(matches!(
+                db.execute(
+                    "INSERT INTO items (id, r) VALUES (99, ?)",
+                    &[SqlValue::Real(bad_real)]
+                )
+                .unwrap_err(),
+                SqlError::Type(_)
+            ));
+        }
+        assert!(matches!(
+            db.execute(
+                "INSERT INTO items (id, r) VALUES (99, 9007199254740993)",
+                &[]
+            )
+            .unwrap_err(),
+            SqlError::Type(_)
+        ));
+        assert!(matches!(
+            db.execute(
+                "INSERT INTO items (id, r) VALUES (99, ?)",
+                &[SqlValue::Integer(i64::MAX)]
+            )
+            .unwrap_err(),
+            SqlError::Type(_)
+        ));
+        assert!(matches!(
+            db.execute("INSERT INTO items (id, n) VALUES (99, 1.0)", &[])
+                .unwrap_err(),
+            SqlError::Type(_)
+        ));
+        assert!(matches!(
+            db.execute("UPDATE items SET r = n WHERE id = 1", &[])
+                .unwrap_err(),
+            SqlError::Type(_)
+        ));
+        assert!(matches!(
+            db.execute("SELECT id FROM items WHERE n = '10'", &[])
+                .unwrap_err(),
+            SqlError::Type(_)
+        ));
+        assert!(matches!(
+            db.execute("SELECT id FROM items WHERE b = 1", &[])
+                .unwrap_err(),
+            SqlError::Type(_)
+        ));
+        assert!(matches!(
+            db.execute("SELECT id FROM items WHERE n", &[]).unwrap_err(),
+            SqlError::Type(_)
+        ));
+        assert!(matches!(
+            db.execute("SELECT id FROM missing", &[]).unwrap_err(),
+            SqlError::NoSuchTable(_)
+        ));
+        assert!(matches!(
+            db.execute("SELECT nope FROM items", &[]).unwrap_err(),
+            SqlError::NoSuchColumn { .. }
+        ));
+    });
+}
+
+#[test]
+fn constraint_failures_are_atomic_and_leave_table_unchanged() {
+    for_both_sql(|db| {
+        db.execute(
+            "CREATE TABLE accounts (id INTEGER PRIMARY KEY, code VARCHAR(3) NOT NULL, note TEXT)",
+            &[],
+        )
+        .unwrap();
+        db.execute("INSERT INTO accounts VALUES (1, 'ok', 'initial')", &[])
+            .unwrap();
+
+        // Multi-row INSERT failing on row 2 (duplicate PK with existing row) inserts nothing.
+        assert!(matches!(
+            db.execute(
+                "INSERT INTO accounts VALUES (2, 'two', 'a'), (1, 'dup', 'b')",
+                &[]
+            )
+            .unwrap_err(),
+            SqlError::Constraint(_)
+        ));
+        // Multi-row INSERT failing on intra-statement duplicate PK inserts nothing.
+        assert!(matches!(
+            db.execute(
+                "INSERT INTO accounts VALUES (3, 'aaa', 'a'), (3, 'bbb', 'b')",
+                &[]
+            )
+            .unwrap_err(),
+            SqlError::Constraint(_)
+        ));
+        // Multi-row INSERT failing on NOT NULL on row 2 inserts nothing.
+        assert!(matches!(
+            db.execute(
+                "INSERT INTO accounts VALUES (4, 'four_err', 'a'), (5, NULL, 'b')",
+                &[]
+            )
+            .unwrap_err(),
+            SqlError::Constraint(_)
+        ));
+        // VARCHAR(3) failure on row 2 inserts nothing.
+        assert!(matches!(
+            db.execute(
+                "INSERT INTO accounts VALUES (6, 'ok', 'a'), (7, '1234', 'b')",
+                &[]
+            )
+            .unwrap_err(),
+            SqlError::Constraint(_)
+        ));
+        // Omitted NOT NULL or PK column fails.
+        assert!(matches!(
+            db.execute("INSERT INTO accounts (id) VALUES (8)", &[])
+                .unwrap_err(),
+            SqlError::Constraint(_)
+        ));
+        assert!(matches!(
+            db.execute("INSERT INTO accounts (code) VALUES ('abc')", &[])
+                .unwrap_err(),
+            SqlError::Constraint(_)
+        ));
+
+        // Failed UPDATE leaves all rows unchanged.
+        db.execute("INSERT INTO accounts VALUES (2, 'two', 'second')", &[])
+            .unwrap();
+        assert!(matches!(
+            db.execute("UPDATE accounts SET code = NULL WHERE id >= 1", &[])
+                .unwrap_err(),
+            SqlError::Constraint(_)
+        ));
+
+        // Verify exact table state.
+        assert_eq!(
+            db.execute("SELECT id, code, note FROM accounts", &[])
+                .unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["id".into(), "code".into(), "note".into()],
+                rows: vec![
+                    vec![
+                        SqlValue::Integer(1),
+                        SqlValue::Text("ok".into()),
+                        SqlValue::Text("initial".into()),
+                    ],
+                    vec![
+                        SqlValue::Integer(2),
+                        SqlValue::Text("two".into()),
+                        SqlValue::Text("second".into()),
+                    ],
+                ],
+            }
+        );
+
+        // Failed CREATE TABLE leaves neither catalog nor collection.
+        assert!(matches!(
+            db.execute("CREATE TABLE ghost (id REAL PRIMARY KEY)", &[])
+                .unwrap_err(),
+            SqlError::Type(_)
+        ));
+        assert!(matches!(
+            db.execute("SELECT * FROM ghost", &[]).unwrap_err(),
+            SqlError::NoSuchTable(_)
+        ));
+        assert_eq!(
+            db.document_database()
+                .get("ghost", "anything")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+    });
+}
+
+#[test]
+fn text_primary_key_ordering_and_durability_across_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let ord_path = dir.path().join("ord");
+    {
+        let store = Store::open(&ord_path).unwrap();
+        let db = SqlDatabase::new(DocumentDatabase::new(&store));
+        db.execute(
+            "CREATE TABLE kv (k TEXT, v INTEGER NOT NULL, PRIMARY KEY (k))",
+            &[],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO kv VALUES ('z', 1), ('', 2), ('a', 3), ('é', 4), ('Z', 5)",
+            &[],
+        )
+        .unwrap();
+        db.execute("UPDATE kv SET v = 20 WHERE k = ''", &[])
+            .unwrap();
+        db.execute("DELETE FROM kv WHERE k = 'Z'", &[]).unwrap();
+    }
+    {
+        let store = Store::open(&ord_path).unwrap();
+        let db = SqlDatabase::new(DocumentDatabase::new(&store));
+        assert_eq!(
+            db.execute("SELECT k, v FROM kv", &[]).unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["k".into(), "v".into()],
+                rows: vec![
+                    vec![SqlValue::Text("".into()), SqlValue::Integer(20)],
+                    vec![SqlValue::Text("a".into()), SqlValue::Integer(3)],
+                    vec![SqlValue::Text("z".into()), SqlValue::Integer(1)],
+                    vec![SqlValue::Text("é".into()), SqlValue::Integer(4)],
+                ],
+            }
+        );
+        // Duplicate PK still rejected after reopen.
+        assert!(matches!(
+            db.execute("INSERT INTO kv VALUES ('a', 99)", &[])
+                .unwrap_err(),
+            SqlError::Constraint(_)
+        ));
+    }
+
+    // Same durable reopen check on CheckpointStore.
+    let ckpt_log = dir.path().join("ckpt_log");
+    let ckpt_file = dir.path().join("ckpt_file");
+    let init = Store::open(&ckpt_log).unwrap();
+    let digest = init.checkpoint_to(&ckpt_file).unwrap();
+    drop(init);
+    {
+        let store = CheckpointStore::open(&ckpt_log, &ckpt_file, &digest).unwrap();
+        let db = SqlDatabase::new(DocumentDatabase::with_checkpoint_store(&store));
+        db.execute("CREATE TABLE kv (k TEXT PRIMARY KEY, v INTEGER)", &[])
+            .unwrap();
+        db.execute("INSERT INTO kv VALUES ('b', 1), ('a', 2)", &[])
+            .unwrap();
+    }
+    {
+        let store = CheckpointStore::open(&ckpt_log, &ckpt_file, &digest).unwrap();
+        let db = SqlDatabase::new(DocumentDatabase::with_checkpoint_store(&store));
+        assert_eq!(
+            db.execute("SELECT k, v FROM kv", &[]).unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["k".into(), "v".into()],
+                rows: vec![
+                    vec![SqlValue::Text("a".into()), SqlValue::Integer(2)],
+                    vec![SqlValue::Text("b".into()), SqlValue::Integer(1)],
+                ],
+            }
+        );
+    }
+}
+
+#[test]
+fn concurrent_sql_statements_surface_conflicts_and_stay_consistent() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(dir.path()).unwrap());
+    let db = SqlDatabase::new(DocumentDatabase::new(&store));
+    db.execute(
+        "CREATE TABLE counters (id INTEGER PRIMARY KEY, owner INTEGER NOT NULL)",
+        &[],
+    )
+    .unwrap();
+
+    let barrier = Arc::new(Barrier::new(6));
+    let mut handles = Vec::new();
+    let conflicts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    for tid in 0..6_i64 {
+        let store = Arc::clone(&store);
+        let barrier = Arc::clone(&barrier);
+        let conflicts = Arc::clone(&conflicts);
+        handles.push(std::thread::spawn(move || {
+            let db = SqlDatabase::new(DocumentDatabase::new(&store));
+            barrier.wait();
+            for step in 0..10_i64 {
+                let id = tid * 100 + step;
+                loop {
+                    match db.execute(
+                        "INSERT INTO counters VALUES (?, ?)",
+                        &[SqlValue::Integer(id), SqlValue::Integer(tid)],
+                    ) {
+                        Ok(SqlOutcome::Inserted { rows: 1 }) => break,
+                        Err(SqlError::Conflict(ref io_err)) => {
+                            assert!(is_transaction_conflict(io_err));
+                            conflicts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            continue;
+                        }
+                        other => panic!("unexpected concurrent result: {other:?}"),
+                    }
+                }
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    assert!(conflicts.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    let rows = match db.execute("SELECT id, owner FROM counters", &[]).unwrap() {
+        SqlOutcome::Rows { rows, .. } => rows,
+        other => panic!("expected rows, got {other:?}"),
+    };
+    assert_eq!(rows.len(), 60);
+}
+
+#[test]
+fn store_snapshot_16384_key_limit_vs_checkpoint_store_unbounded_base() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_path = dir.path().join("store");
+    let ckpt_file = dir.path().join("ckpt");
+
+    // 1 table = 1 catalog key + 1 collection metadata key = 2 keys overhead.
+    // 16,382 rows + 2 overhead = 16,384 keys (exact Store MAX_SNAPSHOT_KEYS boundary).
+    let store = Store::open(&store_path).unwrap();
+    let db = SqlDatabase::new(DocumentDatabase::new(&store));
+    db.execute("CREATE TABLE big (id INTEGER PRIMARY KEY)", &[])
+        .unwrap();
+
+    let mut inserted = 0_i64;
+    while inserted < 16_382 {
+        let batch = (16_382 - inserted).min(512);
+        let mut sql = String::from("INSERT INTO big VALUES ");
+        for i in 0..batch {
+            if i > 0 {
+                sql.push(',');
+            }
+            sql.push_str(&format!("({})", inserted + i));
+        }
+        db.execute(&sql, &[]).unwrap();
+        inserted += batch;
+    }
+
+    // At exactly 16,384 keys, a full-table scan SELECT succeeds on ordinary Store.
+    let res = db.execute("SELECT id FROM big WHERE id < 10", &[]).unwrap();
+    let SqlOutcome::Rows { rows, .. } = res else {
+        panic!("expected rows");
+    };
+    assert_eq!(rows.len(), 10);
+
+    // Insert 1 more row (during this transaction snapshot has 16,384 <= 16,384 keys, so commit brings Store to 16,385 keys).
+    db.execute("INSERT INTO big VALUES (16382)", &[]).unwrap();
+    // Now ordinary Store has 16,385 live keys -> next transaction exceeds MAX_SNAPSHOT_KEYS and fails with Bounds.
+    assert!(matches!(
+        db.execute("SELECT id FROM big WHERE id < 10", &[])
+            .unwrap_err(),
+        SqlError::Bounds(_)
+    ));
+
+    // Checkpoint the 16,385-key store and reopen with CheckpointStore:
+    let digest = store.checkpoint_to(&ckpt_file).unwrap();
+    drop(store);
+    let ckpt = CheckpointStore::open(&store_path, &ckpt_file, &digest).unwrap();
+    let ckpt_db = SqlDatabase::new(DocumentDatabase::with_checkpoint_store(&ckpt));
+
+    // CheckpointStore has no 16,384-key full-store snapshot limit; insert past 16,384 and scan all rows.
+    ckpt_db
+        .execute("INSERT INTO big VALUES (16383), (16384)", &[])
+        .unwrap();
+    let mut visited = 0usize;
+    let mut after_id: Option<String> = None;
+    let all_rows_count = ckpt_db
+        .document_database()
+        .transaction(|tx| {
+            loop {
+                let page = tx.scan_documents("big", after_id.as_deref(), 1_024)?;
+                if page.is_empty() {
+                    break;
+                }
+                visited += page.len();
+                after_id = page.last().map(|d| d.id.clone());
+            }
+            Ok(visited)
+        })
+        .unwrap();
+    assert_eq!(all_rows_count, 16_385);
+
+    // Also verify SqlDatabase::execute SELECT with max_select_rows=10000 and WHERE filter scanning > 16,384 rows works on CheckpointStore.
+    let filtered = ckpt_db
+        .execute("SELECT id FROM big WHERE id >= 16380", &[])
+        .unwrap();
+    assert_eq!(
+        filtered,
+        SqlOutcome::Rows {
+            columns: vec!["id".into()],
+            rows: (16_380..=16_384)
+                .map(|n| vec![SqlValue::Integer(n)])
+                .collect(),
+        }
+    );
+}
+
+#[test]
+fn unsupported_sql_features_return_unsupported_naming_feature() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let db = SqlDatabase::new(DocumentDatabase::new(&store));
+
+    let cases = [
+        "SELECT * FROM a JOIN b ON a.id = b.id",
+        "SELECT * FROM a, b",
+        "SELECT id FROM a GROUP BY id",
+        "SELECT id FROM a ORDER BY id",
+        "SELECT id FROM a LIMIT 5",
+        "SELECT COUNT(*) FROM a",
+        "SELECT * FROM (SELECT * FROM a)",
+        "SELECT * FROM a WHERE id IN (SELECT id FROM b)",
+        "SELECT * FROM a WHERE EXISTS (SELECT id FROM b)",
+        "CREATE INDEX idx ON a (id)",
+        "CREATE UNIQUE INDEX idx ON a (id)",
+        "DROP TABLE a",
+        "ALTER TABLE a ADD COLUMN b INT",
+        "BEGIN",
+        "COMMIT",
+        "ROLLBACK",
+        "INSERT INTO a VALUES (1) RETURNING id",
+        "INSERT INTO a VALUES (1) ON CONFLICT DO NOTHING",
+        "CREATE TABLE a (id INT PRIMARY KEY, x INT DEFAULT 0)",
+        "CREATE TABLE a (id INT PRIMARY KEY, x INT CHECK (x > 0))",
+        "CREATE TABLE a (id INT PRIMARY KEY, p INT REFERENCES b)",
+        "CREATE TABLE a (id INT PRIMARY KEY, FOREIGN KEY (id) REFERENCES b)",
+        "CREATE TABLE a (id INT PRIMARY KEY, email TEXT UNIQUE)",
+        "CREATE TABLE a (a INT, b INT, PRIMARY KEY (a, b))",
+        "SELECT DISTINCT id FROM a",
+        "SELECT id FROM a UNION SELECT id FROM b",
+        "SELECT * FROM a WHERE id IN (1, 2)",
+        "SELECT * FROM a WHERE id BETWEEN 1 AND 5",
+        "SELECT * FROM a WHERE name LIKE 'a%'",
+        "SELECT * FROM a WHERE id + 1 = 2",
+        "UPDATE a SET b = 1 RETURNING b",
+        "DELETE FROM a RETURNING id",
+    ];
+
+    for sql in cases {
+        let err = db.prepare(sql).unwrap_err();
+        assert!(
+            matches!(err, SqlError::Unsupported { .. }),
+            "expected Unsupported for {sql:?}, got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn all_bounds_enforced_at_limit_and_limit_plus_one() {
+    // 1. SqlLimits::validate rejects values above hard maxima and zero (except max_params).
+    let mut bad = SqlLimits::default();
+    bad.max_sql_bytes += 1;
+    assert!(matches!(bad.validate(), Err(SqlError::Bounds(_))));
+
+    let mut bad = SqlLimits::default();
+    bad.max_tokens += 1;
+    assert!(matches!(bad.validate(), Err(SqlError::Bounds(_))));
+
+    let mut bad = SqlLimits::default();
+    bad.max_expr_depth += 1;
+    assert!(matches!(bad.validate(), Err(SqlError::Bounds(_))));
+
+    let mut bad = SqlLimits::default();
+    bad.max_columns += 1;
+    assert!(matches!(bad.validate(), Err(SqlError::Bounds(_))));
+
+    let mut bad = SqlLimits::default();
+    bad.max_insert_rows += 1;
+    assert!(matches!(bad.validate(), Err(SqlError::Bounds(_))));
+
+    let mut bad = SqlLimits::default();
+    bad.max_mutation_rows += 1;
+    assert!(matches!(bad.validate(), Err(SqlError::Bounds(_))));
+
+    let mut bad = SqlLimits::default();
+    bad.max_select_rows += 1;
+    assert!(matches!(bad.validate(), Err(SqlError::Bounds(_))));
+
+    let bad = SqlLimits {
+        max_visited_rows: database_engine::sql::MAX_SQL_VISITED_ROWS + 1,
+        ..Default::default()
+    };
+    assert!(matches!(bad.validate(), Err(SqlError::Bounds(_))));
+
+    let mut bad = SqlLimits::default();
+    bad.max_params += 1;
+    assert!(matches!(bad.validate(), Err(SqlError::Bounds(_))));
+
+    let mut bad = SqlLimits::default();
+    bad.max_text_bytes += 1;
+    assert!(matches!(bad.validate(), Err(SqlError::Bounds(_))));
+
+    let bad = SqlLimits {
+        max_sql_bytes: 0,
+        ..Default::default()
+    };
+    assert!(matches!(bad.validate(), Err(SqlError::Bounds(_))));
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let mut db = SqlDatabase::new(DocumentDatabase::new(&store));
+
+    // 2. Statement bytes at 64 KiB and 64 KiB + 1.
+    let prefix = "SELECT * FROM t -- ";
+    let exact_64k = format!("{prefix}{}", "a".repeat(65_536 - prefix.len()));
+    assert_eq!(exact_64k.len(), 65_536);
+    assert!(db.prepare(&exact_64k).is_ok());
+    let over_64k = format!("{exact_64k}a");
+    assert!(matches!(db.prepare(&over_64k), Err(SqlError::Bounds(_))));
+
+    // 3. Tokens at 4,096 and 4,097 (CREATE TABLE ... with 1,024 rows? No, WHERE TRUE OR TRUE ...).
+    // "SELECT * FROM t WHERE TRUE" is 6 tokens; each " OR TRUE" is 2 tokens. 6 + 2 * 2045 = 4096.
+    let mut exact_toks = String::from("SELECT * FROM t WHERE TRUE");
+    for _ in 0..2045 {
+        exact_toks.push_str(" OR TRUE");
+    }
+    assert!(db.prepare(&exact_toks).is_ok());
+    let over_toks = format!("{exact_toks} OR TRUE"); // 4098 > 4096
+    assert!(matches!(db.prepare(&over_toks), Err(SqlError::Bounds(_))));
+    // Also test exact +1 with trailing ';' -> 4097 tokens
+    let exact_plus_one_tok = format!("{exact_toks};");
+    assert!(matches!(
+        db.prepare(&exact_plus_one_tok),
+        Err(SqlError::Bounds(_))
+    ));
+
+    // 4. Expression nesting depth at 64 and 65.
+    // Root expr starts at depth 1; 63 nested parens puts literal TRUE at depth 64; 64 parens puts it at 65.
+    let exact_depth = format!(
+        "SELECT * FROM t WHERE {}TRUE{}",
+        "(".repeat(63),
+        ")".repeat(63)
+    );
+    assert!(db.prepare(&exact_depth).is_ok());
+    let over_depth = format!(
+        "SELECT * FROM t WHERE {}TRUE{}",
+        "(".repeat(64),
+        ")".repeat(64)
+    );
+    assert!(matches!(db.prepare(&over_depth), Err(SqlError::Bounds(_))));
+
+    // 5. Columns at 64 and 65.
+    let cols_64: Vec<String> = (0..64).map(|i| format!("c{i} INT")).collect();
+    let create_64 = format!(
+        "CREATE TABLE w64 (c0 INT PRIMARY KEY, {})",
+        cols_64[1..].join(", ")
+    );
+    db.execute(&create_64, &[]).unwrap();
+    let cols_65: Vec<String> = (0..65).map(|i| format!("c{i} INT")).collect();
+    let create_65 = format!(
+        "CREATE TABLE w65 (c0 INT PRIMARY KEY, {})",
+        cols_65[1..].join(", ")
+    );
+    assert!(matches!(db.prepare(&create_65), Err(SqlError::Bounds(_))));
+
+    // 6. Identifier length at 128 and 129 bytes.
+    let id128 = "a".repeat(128);
+    let id129 = "a".repeat(129);
+    db.execute(&format!("CREATE TABLE {id128} (id INT PRIMARY KEY)"), &[])
+        .unwrap();
+    assert!(matches!(
+        db.prepare(&format!("CREATE TABLE {id129} (id INT PRIMARY KEY)")),
+        Err(SqlError::Bounds(_))
+    ));
+
+    // 7. TEXT PK at 254 bytes vs 255 bytes.
+    db.execute("CREATE TABLE tp (k TEXT PRIMARY KEY)", &[])
+        .unwrap();
+    let pk254 = "k".repeat(254);
+    let pk255 = "k".repeat(255);
+    db.execute("INSERT INTO tp VALUES (?)", &[SqlValue::Text(pk254)])
+        .unwrap();
+    assert!(matches!(
+        db.execute("INSERT INTO tp VALUES (?)", &[SqlValue::Text(pk255)])
+            .unwrap_err(),
+        SqlError::Bounds(_)
+    ));
+
+    // 8. Params at 1,024 and 1,025 (staying under 4,096 tokens: 5 + 2047 = 2,052 tokens).
+    let exact_params = format!(
+        "SELECT * FROM t WHERE {}",
+        std::iter::repeat_n("?", 1_024)
+            .collect::<Vec<_>>()
+            .join(" OR ")
+    );
+    assert!(db.prepare(&exact_params).is_ok());
+    let over_params = format!(
+        "SELECT * FROM t WHERE {}",
+        std::iter::repeat_n("?", 1_025)
+            .collect::<Vec<_>>()
+            .join(" OR ")
+    );
+    assert!(matches!(db.prepare(&over_params), Err(SqlError::Bounds(_))));
+
+    // 9. TEXT value at 256 KiB and 256 KiB + 1.
+    db.execute("CREATE TABLE texts (id INT PRIMARY KEY, s TEXT)", &[])
+        .unwrap();
+    let ok_text = "x".repeat(256 * 1024);
+    let over_text = "x".repeat(256 * 1024 + 1);
+    db.execute(
+        "INSERT INTO texts VALUES (1, ?)",
+        &[SqlValue::Text(ok_text)],
+    )
+    .unwrap();
+    assert!(matches!(
+        db.execute(
+            "INSERT INTO texts VALUES (2, ?)",
+            &[SqlValue::Text(over_text)],
+        )
+        .unwrap_err(),
+        SqlError::Bounds(_)
+    ));
+
+    // 10. INSERT rows (custom max_insert_rows=500 at 500 vs 501, and max_mutation_rows=1,024 at 1,024 vs 1,025).
+    db.execute("CREATE TABLE nums (id INT PRIMARY KEY, v INT)", &[])
+        .unwrap();
+    let custom_ins = SqlLimits {
+        max_insert_rows: 500,
+        ..Default::default()
+    };
+    db.set_limits(custom_ins).unwrap();
+    let mut ins_500 = String::from("INSERT INTO nums VALUES ");
+    for i in 0..500 {
+        if i > 0 {
+            ins_500.push(',');
+        }
+        ins_500.push_str(&format!("({i}, {i})"));
+    }
+    assert_eq!(
+        db.execute(&ins_500, &[]).unwrap(),
+        SqlOutcome::Inserted { rows: 500 }
+    );
+    let ins_501 = format!("{ins_500}, (500, 500)");
+    assert!(matches!(db.prepare(&ins_501), Err(SqlError::Bounds(_))));
+
+    db.set_limits(SqlLimits::default()).unwrap();
+    let mut ins_524 = String::from("INSERT INTO nums VALUES ");
+    for i in 500..1_024 {
+        if i > 500 {
+            ins_524.push(',');
+        }
+        ins_524.push_str(&format!("({i}, {i})"));
+    }
+    assert_eq!(
+        db.execute(&ins_524, &[]).unwrap(),
+        SqlOutcome::Inserted { rows: 524 }
+    );
+
+    // Update 1,024 rows succeeds.
+    assert_eq!(
+        db.execute("UPDATE nums SET v = 1", &[]).unwrap(),
+        SqlOutcome::Updated { rows: 1_024 }
+    );
+    // Insert 1 more row -> 1,025 rows total. Updating or deleting all 1,025 exceeds max_mutation_rows (1,024) and changes nothing!
+    db.execute("INSERT INTO nums VALUES (1024, 2)", &[])
+        .unwrap();
+    assert!(matches!(
+        db.execute("UPDATE nums SET v = 99", &[]).unwrap_err(),
+        SqlError::Bounds(_)
+    ));
+    assert!(matches!(
+        db.execute("DELETE FROM nums", &[]).unwrap_err(),
+        SqlError::Bounds(_)
+    ));
+    // Verify nothing changed on failed UPDATE/DELETE.
+    assert_eq!(
+        db.execute("SELECT v FROM nums WHERE id = 0", &[]).unwrap(),
+        SqlOutcome::Rows {
+            columns: vec!["v".into()],
+            rows: vec![vec![SqlValue::Integer(1)]],
+        }
+    );
+    // Delete 1 row, then deleting the remaining 1,024 rows succeeds (exact limit).
+    assert_eq!(
+        db.execute("DELETE FROM nums WHERE id = 1024", &[]).unwrap(),
+        SqlOutcome::Deleted { rows: 1 }
+    );
+    assert_eq!(
+        db.execute("DELETE FROM nums", &[]).unwrap(),
+        SqlOutcome::Deleted { rows: 1_024 }
+    );
+    // Re-seed 10 rows for max_select_rows=5 / max_visited_rows=10 test.
+    db.execute(
+        "INSERT INTO nums VALUES (0,0),(1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9)",
+        &[],
+    )
+    .unwrap();
+
+    // Custom max_select_rows and max_visited_rows at limit and limit+1.
+    let custom = SqlLimits {
+        max_select_rows: 5,
+        max_visited_rows: 10,
+        ..Default::default()
+    };
+    db.set_limits(custom).unwrap();
+    assert_eq!(
+        db.execute("SELECT id FROM nums WHERE id < 5", &[]).unwrap(),
+        SqlOutcome::Rows {
+            columns: vec!["id".into()],
+            rows: (0..5).map(|i| vec![SqlValue::Integer(i)]).collect(),
+        }
+    );
+    assert!(matches!(
+        db.execute("SELECT id FROM nums WHERE id < 6", &[])
+            .unwrap_err(),
+        SqlError::Bounds(_) // 6 returned rows > max_select_rows (5)
+    ));
+    db.execute("INSERT INTO nums VALUES (10, 1)", &[]).unwrap();
+    assert!(matches!(
+        db.execute("SELECT id FROM nums WHERE id = 0", &[])
+            .unwrap_err(),
+        SqlError::Bounds(_) // 11 visited rows > max_visited_rows (10)
+    ));
+}
+
+#[test]
+fn hard_10000_select_limit_and_16mb_batch_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let db = SqlDatabase::new(DocumentDatabase::new(&store));
+    db.execute("CREATE TABLE s10k (id INT PRIMARY KEY)", &[])
+        .unwrap();
+    for start in (0..10_000).step_by(1_000) {
+        let mut sql = String::from("INSERT INTO s10k VALUES ");
+        for i in 0..1_000 {
+            if i > 0 {
+                sql.push(',');
+            }
+            sql.push_str(&format!("({})", start + i));
+        }
+        db.execute(&sql, &[]).unwrap();
+    }
+    let SqlOutcome::Rows { rows, .. } = db.execute("SELECT id FROM s10k", &[]).unwrap() else {
+        panic!("expected rows");
+    };
+    assert_eq!(rows.len(), 10_000);
+    db.execute("INSERT INTO s10k VALUES (10000)", &[]).unwrap();
+    assert!(matches!(
+        db.execute("SELECT id FROM s10k", &[]).unwrap_err(),
+        SqlError::Bounds(_)
+    ));
+
+    // 16 MiB atomic batch byte limit surfaced as Bounds without partial write.
+    let dir2 = tempfile::tempdir().unwrap();
+    let store2 = Store::open(dir2.path()).unwrap();
+    let db2 = SqlDatabase::new(DocumentDatabase::new(&store2));
+    db2.execute(
+        "CREATE TABLE big_rows (id INT PRIMARY KEY, payload TEXT)",
+        &[],
+    )
+    .unwrap();
+    let chunk = "a".repeat(250 * 1024);
+    let mut sql = String::from("INSERT INTO big_rows VALUES ");
+    let mut params = Vec::new();
+    for i in 0..70 {
+        if i > 0 {
+            sql.push(',');
+        }
+        sql.push_str(&format!("({i}, ?)"));
+        params.push(SqlValue::Text(chunk.clone()));
+    }
+    // 70 * ~250 KiB = ~17.5 MiB > 16 MiB MAX_ATOMIC_BATCH_BYTES
+    assert!(matches!(
+        db2.execute(&sql, &params).unwrap_err(),
+        SqlError::Bounds(_)
+    ));
+    assert_eq!(
+        db2.execute("SELECT id FROM big_rows", &[]).unwrap(),
+        SqlOutcome::Rows {
+            columns: vec!["id".into()],
+            rows: vec![],
+        }
+    );
+}
+
+#[test]
+fn randomized_model_test_matches_btreemap_on_both_backends() {
+    for_both_sql(|db| {
+        db.execute(
+            "CREATE TABLE m (id INTEGER PRIMARY KEY, val INTEGER, tag TEXT NOT NULL)",
+            &[],
+        )
+        .unwrap();
+        let mut model: BTreeMap<i64, (Option<i64>, String)> = BTreeMap::new();
+        let mut rng = 0xDEAD_BEEF_CAFE_BABE_u64;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+
+        for step in 0..200 {
+            let op = next() % 4;
+            match op {
+                0 => {
+                    // INSERT 1..=3 rows
+                    let n = ((next() % 3) + 1) as usize;
+                    let mut sql = String::from("INSERT INTO m VALUES ");
+                    let mut params = Vec::new();
+                    let mut batch = Vec::new();
+                    for i in 0..n {
+                        if i > 0 {
+                            sql.push(',');
+                        }
+                        sql.push_str("(?, ?, ?)");
+                        let id = (next() % 40) as i64 - 20;
+                        let val = if next().is_multiple_of(3) {
+                            None
+                        } else {
+                            Some((next() % 100) as i64 - 50)
+                        };
+                        let tag = format!("t{}", next() % 5);
+                        params.push(SqlValue::Integer(id));
+                        params.push(val.map_or(SqlValue::Null, SqlValue::Integer));
+                        params.push(SqlValue::Text(tag.clone()));
+                        batch.push((id, val, tag));
+                    }
+                    let dup_in_batch = {
+                        let mut seen = std::collections::HashSet::new();
+                        batch.iter().any(|(id, _, _)| !seen.insert(*id))
+                    };
+                    let dup_existing = batch.iter().any(|(id, _, _)| model.contains_key(id));
+                    let res = db.execute(&sql, &params);
+                    if dup_in_batch || dup_existing {
+                        assert!(
+                            matches!(res, Err(SqlError::Constraint(_))),
+                            "step {step}: {res:?}"
+                        );
+                    } else {
+                        assert_eq!(res.unwrap(), SqlOutcome::Inserted { rows: n });
+                        for (id, val, tag) in batch {
+                            model.insert(id, (val, tag));
+                        }
+                    }
+                }
+                1 => {
+                    // UPDATE with threshold
+                    let threshold = (next() % 40) as i64 - 20;
+                    let new_val = if next().is_multiple_of(2) {
+                        None
+                    } else {
+                        Some((next() % 100) as i64)
+                    };
+                    let res = db
+                        .execute(
+                            "UPDATE m SET val = ? WHERE id >= ?",
+                            &[
+                                new_val.map_or(SqlValue::Null, SqlValue::Integer),
+                                SqlValue::Integer(threshold),
+                            ],
+                        )
+                        .unwrap();
+                    let mut changed = 0;
+                    for (&id, entry) in model.iter_mut() {
+                        if id >= threshold {
+                            entry.0 = new_val;
+                            changed += 1;
+                        }
+                    }
+                    assert_eq!(res, SqlOutcome::Updated { rows: changed });
+                }
+                2 => {
+                    // DELETE with WHERE val IS NULL OR id < threshold
+                    let threshold = (next() % 40) as i64 - 20;
+                    let res = db
+                        .execute(
+                            "DELETE FROM m WHERE val IS NULL OR id < ?",
+                            &[SqlValue::Integer(threshold)],
+                        )
+                        .unwrap();
+                    let before = model.len();
+                    model.retain(|&id, (val, _)| !(val.is_none() || id < threshold));
+                    let deleted = before - model.len();
+                    assert_eq!(res, SqlOutcome::Deleted { rows: deleted });
+                }
+                _ => {
+                    // Full SELECT comparison in ascending PK order
+                    let res = db.execute("SELECT id, val, tag FROM m", &[]).unwrap();
+                    let expected: Vec<Vec<SqlValue>> = model
+                        .iter()
+                        .map(|(&id, (val, tag))| {
+                            vec![
+                                SqlValue::Integer(id),
+                                val.map_or(SqlValue::Null, SqlValue::Integer),
+                                SqlValue::Text(tag.clone()),
+                            ]
+                        })
+                        .collect();
+                    assert_eq!(
+                        res,
+                        SqlOutcome::Rows {
+                            columns: vec!["id".into(), "val".into(), "tag".into()],
+                            rows: expected,
+                        }
+                    );
+                }
+            }
+        }
+    });
+}

@@ -29,7 +29,7 @@ fn shared_store_lock_retains_ownership_until_the_last_owner_closes() {
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum Fault {
+pub(crate) enum Fault {
     PartialAppend(usize),
     PanicAfterAppend(usize),
     SyncBefore,
@@ -343,7 +343,7 @@ pub(super) fn open_fault_store(
     })
 }
 
-pub(super) fn open_versioned_fault_store(
+pub(crate) fn open_versioned_fault_store(
     path: &Path,
     fault: Arc<Mutex<Option<Fault>>>,
 ) -> io::Result<Store> {
