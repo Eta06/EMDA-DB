@@ -132,7 +132,7 @@ jobs:
   retained-memory-ceiling:
     name: Writable recovery / Linux memory ceiling
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Install Rust toolchain
@@ -261,4 +261,47 @@ jobs:
           path: |
             ${{ runner.temp }}/benchmark-attempts/online-checkpoint-handoff-prepare/
             ${{ runner.temp }}/benchmark-attempts/online-checkpoint-handoff-memory-ceiling/
+          if-no-files-found: ignore
+      - name: Demonstrate concurrent clients, atomicity and acknowledged-write recovery across process kills under a 64 MiB address-space limit
+        run: |
+          source scripts/benchmarks/record_case.sh
+          cargo +stable build --release --locked --example exit_demonstration
+          binary=target/release/examples/exit_demonstration
+          directory="$RUNNER_TEMP/exit-demonstration"
+          mkdir -p "$directory"
+          limit=$((64 * 1024 * 1024))
+          # Every client process inherits the limit from the demonstration.
+          record_benchmark exit-demonstration-memory-ceiling prlimit --as="$limit:$limit" -- \
+            sh -c 'echo "rlimit_as_kib=$(ulimit -v)"; exec /usr/bin/time -v "$0" demo "$1" 12 4' "$binary" "$directory"
+          python3 - "$RUNNER_TEMP/benchmark-attempts/exit-demonstration-memory-ceiling" <<'PY'
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          attempt = json.loads(next(root.rglob("attempt.json")).read_text())
+          log = next(root.rglob("command.log")).read_text()
+          if attempt["returncode"] != 0:
+              raise SystemExit("the exit demonstration failed under the ceiling")
+          if "rlimit_as_kib=65536" not in log:
+              raise SystemExit("the 64 MiB address-space limit was not applied")
+          row = json.loads(next(line for line in log.splitlines() if line.startswith("{")))
+          if (row["rounds"], row["recoveries_verified"], row["clients"]) != (12, 12, 4):
+              raise SystemExit(f"incomplete recovery verification: {row}")
+          if row["acknowledged"] < 12 * 40 or row["automatic_slots"] < 1:
+              raise SystemExit(f"too little acknowledged or rolled-over work: {row}")
+          if not row["final_charged"] <= row["budget_limit"]:
+              raise SystemExit(f"the disk budget was exceeded: {row}")
+          peak = int(re.search(r"Maximum resident set size \(kbytes\): (\d+)", log).group(1)) * 1024
+          if peak > 64 * 1024**2:
+              raise SystemExit(f"peak RSS {peak} exceeded the address-space limit")
+          print(row, "peak_rss_bytes", peak)
+          PY
+      - name: Preserve the exit demonstration attempt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: exit-demonstration-memory-ceiling
+          path: ${{ runner.temp }}/benchmark-attempts/exit-demonstration-memory-ceiling/
           if-no-files-found: ignore
