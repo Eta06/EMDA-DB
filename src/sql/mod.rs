@@ -9,6 +9,7 @@ mod catalog;
 mod exec;
 mod lexer;
 mod parser;
+mod plan;
 mod value;
 
 #[cfg(test)]
@@ -26,9 +27,9 @@ use crate::document::DocumentDatabase;
 
 /// Embedded SQL entry point wrapping a [`DocumentDatabase`].
 ///
-/// Each statement runs inside a single conservative `DocumentDatabase`
-/// transaction (`transaction_detailed`), propagating pre-commit conflicts and
-/// unknown commit outcomes unchanged without automatic retries.
+/// Each statement runs inside a single `DocumentDatabase` transaction
+/// (`transaction_detailed` in `ReadSet` mode), propagating pre-commit conflicts
+/// and unknown commit outcomes unchanged without automatic retries.
 pub struct SqlDatabase<'a> {
     db: DocumentDatabase<'a>,
     limits: SqlLimits,
@@ -77,12 +78,22 @@ impl<'a> SqlDatabase<'a> {
         stmt: &SqlStatement,
         params: &[SqlValue],
     ) -> Result<SqlOutcome, SqlError> {
-        exec::execute_statement(&self.db, stmt, params, &self.limits)
+        exec::execute_statement(&self.db, stmt, params, &self.limits, false)
     }
 
     /// Parses and executes a single SQL statement in one atomic transaction.
     pub fn execute(&self, sql: &str, params: &[SqlValue]) -> Result<SqlOutcome, SqlError> {
         let stmt = self.prepare(sql)?;
         self.execute_prepared(&stmt, params)
+    }
+
+    #[doc(hidden)]
+    pub fn execute_force_full_scan_for_test(
+        &self,
+        sql: &str,
+        params: &[SqlValue],
+    ) -> Result<SqlOutcome, SqlError> {
+        let stmt = self.prepare(sql)?;
+        exec::execute_statement(&self.db, &stmt, params, &self.limits, true)
     }
 }

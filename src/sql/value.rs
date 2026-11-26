@@ -336,14 +336,31 @@ pub(crate) fn compare_i64_f64(a: i64, b: f64) -> Ordering {
     }
 }
 
+/// Encodes an `i64` primary key into its 18-byte `i:<16 hex>` representation without allocating.
+pub(crate) fn encode_i64_pk_bytes(n: i64, buf: &mut [u8; 18]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut unsigned = (n as u64) ^ (i64::MIN as u64);
+    buf[0] = b'i';
+    buf[1] = b':';
+    for i in (2..18).rev() {
+        buf[i] = HEX[(unsigned & 0xf) as usize];
+        unsigned >>= 4;
+    }
+}
+
+/// Encodes an `i64` primary key into an owned document ID string.
+pub(crate) fn encode_i64_pk(n: i64) -> String {
+    let mut buf = [0u8; 18];
+    encode_i64_pk_bytes(n, &mut buf);
+    // All bytes are ASCII ('i', ':', '0'..='9', 'a'..='f').
+    String::from_utf8(buf.to_vec()).expect("ASCII hex PK")
+}
+
 /// Encodes a SQL primary key into a document ID whose ascending byte order equals
 /// ascending SQL key order.
 pub(crate) fn encode_primary_key(value: &SqlValue, pk_type: SqlType) -> Result<String, SqlError> {
     match (pk_type, value) {
-        (SqlType::Integer, SqlValue::Integer(n)) => {
-            let unsigned = (*n as u64) ^ (i64::MIN as u64);
-            Ok(format!("i:{unsigned:016x}"))
-        }
+        (SqlType::Integer, SqlValue::Integer(n)) => Ok(encode_i64_pk(*n)),
         (SqlType::Text { .. }, SqlValue::Text(s)) => {
             if s.len() > MAX_SQL_TEXT_PK_BYTES {
                 return Err(SqlError::Bounds(format!(

@@ -1,4 +1,5 @@
 //! Durable SQL catalog stored atomically in the same transaction as the table collection.
+use super::exec::classify_io_error;
 use super::value::{MAX_SQL_COLUMNS, MAX_SQL_IDENTIFIER_BYTES, SqlError, SqlType};
 use crate::document::{CollectionSchema, DocumentTransaction, FieldRule};
 use serde::{Deserialize, Serialize};
@@ -124,7 +125,7 @@ pub(crate) fn load_table(
     table_name: &str,
 ) -> Result<TableDef, SqlError> {
     let key = catalog_key(table_name)?;
-    let raw = tx.get_raw(&key).map_err(map_tx_io)?;
+    let raw = tx.get_raw(&key).map_err(classify_io_error)?;
     let Some(bytes) = raw else {
         return Err(SqlError::NoSuchTable(table_name.to_owned()));
     };
@@ -145,7 +146,7 @@ pub(crate) fn create_table(
 ) -> Result<(), SqlError> {
     def.validate()?;
     let key = catalog_key(&def.name)?;
-    if tx.get_raw(&key).map_err(map_tx_io)?.is_some() {
+    if tx.get_raw(&key).map_err(classify_io_error)?.is_some() {
         if if_not_exists {
             return Ok(());
         }
@@ -156,20 +157,10 @@ pub(crate) fn create_table(
         if err.kind() == io::ErrorKind::AlreadyExists {
             SqlError::TableExists(def.name.clone())
         } else {
-            map_tx_io(err)
+            classify_io_error(err)
         }
     })?;
     let bytes = serde_json::to_vec(def).map_err(|err| SqlError::Io(io::Error::other(err)))?;
-    tx.put_raw(&key, &bytes).map_err(map_tx_io)?;
+    tx.put_raw(&key, &bytes).map_err(classify_io_error)?;
     Ok(())
-}
-
-fn map_tx_io(err: io::Error) -> SqlError {
-    if crate::is_transaction_conflict(&err) {
-        SqlError::Conflict(err)
-    } else if err.kind() == io::ErrorKind::InvalidInput {
-        SqlError::Bounds(err.to_string())
-    } else {
-        SqlError::Io(err)
-    }
 }
