@@ -782,6 +782,49 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         })
     }
 
+    /// Scans one bounded page of documents in ascending ID byte order.
+    ///
+    /// Pass `after_id: None` for the first page, then
+    /// `after_id: page.last().map(|entry| entry.id.as_str())` until an empty
+    /// vector is returned. `limit` must be between `1` and `1024`
+    /// (`MAX_SCAN_ENTRIES`), and each page is also capped at 32 MiB of key and
+    /// value bytes. Reads collection metadata first so missing or dropping
+    /// collections fail consistently even when empty.
+    pub fn scan_documents(
+        &self,
+        collection: &str,
+        after_id: Option<&str>,
+        limit: usize,
+    ) -> io::Result<Vec<super::DocumentEntry>> {
+        if limit == 0 || limit > crate::MAX_SCAN_ENTRIES {
+            return Err(key::invalid("scan limit must be between 1 and 1024"));
+        }
+        let metadata = self.metadata(collection)?;
+        let prefix = key::collection(b'D', collection)?;
+        let end = key::end(&prefix);
+        let after = match after_id {
+            Some(id) => key::document(collection, id)?,
+            None => prefix.clone(),
+        };
+        let page = self.scan_document_page(&after, &end, limit)?;
+        let mut documents = Vec::with_capacity(page.len());
+        for (entry_key, value) in page {
+            let id = std::str::from_utf8(
+                entry_key
+                    .strip_prefix(prefix.as_slice())
+                    .ok_or_else(|| invalid_data("invalid document key"))?,
+            )
+            .map_err(|_| invalid_data("invalid document ID"))?;
+            key::id(id).map_err(|_| invalid_data("invalid document ID"))?;
+            let document = Self::decode_document(&value, &metadata.schema)?;
+            documents.push(super::DocumentEntry {
+                id: id.to_owned(),
+                document,
+            });
+        }
+        Ok(documents)
+    }
+
     pub(super) fn document_rows(
         &self,
         collection: &str,
