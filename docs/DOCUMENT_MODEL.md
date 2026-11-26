@@ -426,6 +426,23 @@ limit as ID lookup. It reads the unique owner, validates the target tuple
 and its companion index entry, and observes missing owner keys in
 read-set transactions. Correct results depend on maintained indexes.
 
+`lookup_many` is the one-to-many form, through a named **non-unique**
+index. Each source row's complete typed tuple, with the same missing, null,
+type and partial-index rules, returns every covered foreign document, in
+ascending foreign ID order. A tuple too long to be stored matches nothing,
+and a non-scalar local value fails. `LookupManyLimits` is required. It sets
+the most related documents per source row (1 to 1,024), in total (1 to
+4,096), and in response bytes: each returned ID plus its stored document,
+counted per row, from 1 byte to 16 MiB. Each target is admitted before its
+value is read. Exceeding any limit fails the whole call, and so does a page
+that returns fewer entries than it read or an entry that disagrees with its
+document. No partial relationship is returned. A unique index is refused;
+use `lookup_unique_index`. Targets are read through the validated index
+visitor, so read-set transactions validate each scanned tuple range and a
+concurrent insert of a matching foreign document conflicts.
+`lookup_many_planned` selects sources with the planner. Both are on
+`DocumentDatabase`, `DocumentTransaction` and `DocumentSnapshot`.
+
 `lookup_planned` and `lookup_unique_index_planned` use the bounded query
 planner for source selection and report the chosen access path. They fall
 back to a complete source scan when no index qualifies. Source sorting,
