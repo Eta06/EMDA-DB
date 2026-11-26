@@ -22,7 +22,7 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 ## Deferred to later Codex sessions
 
 - [ ] Physical power-loss validation on explicitly identified disposable hardware. Define the filesystem, storage device and failure procedure; check acknowledged writes, metadata witness behavior, recovery and preserved evidence. A process kill is not a physical power failure. Do not perform destructive testing on a production server.
-- [ ] Off-host backup and restore drill on an independently identified target. Verify restored content and report transfer, filesystem, failure and isolation assumptions. A separate directory or filesystem on the same VM is not an off-host drill.
+- [x] Off-host backup and restore drill on an independently identified target. Verify restored content and report transfer, filesystem, failure and isolation assumptions. A separate directory or filesystem on the same VM is not an off-host drill. On `34b2bca8`, an [ordinary `Store` backup made on macOS APFS](../benchmarks/results/2026-11-26-offhost-store-backup-restore/README.md) went over SSH, alone and with matching SHA-256, to an independent x86_64 Linux KVM guest on ext4. A network-less container with the backup mounted read-only restored exactly 99 records and checked every value. A deleted key and a write acknowledged after the backup were absent. This covers one synthetic ordinary-store backup with a clean restore; checkpoint, managed, retained and online stores, document archives, other backup modes and restore after a host failure are not covered.
 
 ## Priority 0: remaining local foundation work
 
