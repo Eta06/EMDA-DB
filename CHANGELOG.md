@@ -4,6 +4,11 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add `DocumentTransaction::request_usage` and
+  `DocumentSnapshot::request_usage`, which report admitted read units and
+  bytes and staged write units and bytes in the units of the request
+  limits.
+
 - Add `CheckpointStore::set_checkpoint_block_cache_limit` and
   `checkpoint_memory_status`. The opt-in, byte-limited cache serves
   verified checkpoint blocks without rereading or rehashing them. The

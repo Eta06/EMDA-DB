@@ -62,6 +62,24 @@ struct ReadBudget {
     exhausted: bool,
 }
 
+/// Logical work a document transaction or snapshot request has admitted so
+/// far, counted in the same units as [`DocumentReadLimits`] and the write
+/// limits of `DocumentRequestLimits`, whether or not limits are set. Refused
+/// charges are not counted. Read-set validation at commit, encoding,
+/// allocations and elapsed time are not included.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DocumentRequestUsage {
+    /// Point requests, scan page requests and admitted scan entries.
+    pub read_units: usize,
+    /// Point keys, admitted point values, and admitted entry keys and values.
+    pub read_bytes: usize,
+    /// Puts and deletes submitted to staging, including index maintenance.
+    pub write_units: usize,
+    /// Staged key and value bytes; a delete counts its key.
+    pub write_bytes: usize,
+}
+
 struct WriteBudget {
     units: usize,
     bytes: usize,
@@ -84,9 +102,25 @@ pub struct DocumentTransaction<'a, 'store> {
     failed: bool,
     read_budget: Option<Mutex<ReadBudget>>,
     write_budget: Option<WriteBudget>,
+    read_units: std::sync::atomic::AtomicUsize,
+    read_bytes: std::sync::atomic::AtomicUsize,
+    write_units: usize,
+    write_bytes: usize,
 }
 
 impl<'a, 'store> DocumentTransaction<'a, 'store> {
+    /// The logical work this request has admitted so far. Call it at the
+    /// end of a callback to account for the whole request.
+    pub fn request_usage(&self) -> DocumentRequestUsage {
+        use std::sync::atomic::Ordering::Relaxed;
+        DocumentRequestUsage {
+            read_units: self.read_units.load(Relaxed),
+            read_bytes: self.read_bytes.load(Relaxed),
+            write_units: self.write_units,
+            write_bytes: self.write_bytes,
+        }
+    }
+
     pub(super) fn checkpoint_backed(&self) -> bool {
         matches!(&self.backend, BackendTransaction::Checkpoint(_))
     }
@@ -125,6 +159,10 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             failed: false,
             read_budget: None,
             write_budget: None,
+            read_units: std::sync::atomic::AtomicUsize::new(0),
+            read_bytes: std::sync::atomic::AtomicUsize::new(0),
+            write_units: 0,
+            write_bytes: 0,
         }
     }
 
@@ -144,18 +182,26 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
     }
 
     fn charge_write(&mut self, key_bytes: usize, value_bytes: usize) -> io::Result<()> {
+        let bytes = key_bytes.saturating_add(value_bytes);
         let Some(budget) = &mut self.write_budget else {
+            self.count_write(bytes);
             return Ok(());
         };
         if let Some(bytes) = key_bytes.checked_add(value_bytes) {
             if !budget.exhausted && budget.units != 0 && bytes <= budget.bytes {
                 budget.units -= 1;
                 budget.bytes -= bytes;
+                self.count_write(bytes);
                 return Ok(());
             }
         }
         budget.exhausted = true;
         Err(write_limit_exceeded())
+    }
+
+    fn count_write(&mut self, bytes: usize) {
+        self.write_units = self.write_units.saturating_add(1);
+        self.write_bytes = self.write_bytes.saturating_add(bytes);
     }
 
     fn charge_read(&self, units: usize, bytes: usize) -> io::Result<()> {
@@ -181,6 +227,9 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             budget.remaining.max_read_units -= units;
             budget.remaining.max_read_bytes -= bytes;
         }
+        use std::sync::atomic::Ordering::Relaxed;
+        self.read_units.fetch_add(units, Relaxed);
+        self.read_bytes.fetch_add(bytes, Relaxed);
         Ok(())
     }
 

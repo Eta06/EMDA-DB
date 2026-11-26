@@ -137,6 +137,12 @@ impl<'a> DocumentSnapshot<'a> {
         )
     }
 
+    /// Logical reads this snapshot has admitted, in the units of
+    /// [`super::DocumentReadLimits`].
+    pub fn request_usage(&self) -> super::DocumentRequestUsage {
+        self.view.request_usage()
+    }
+
     /// Resolves one-to-many relationships through a named non-unique index
     /// within the captured view. See [`DocumentTransaction::lookup_many`].
     pub fn lookup_many(

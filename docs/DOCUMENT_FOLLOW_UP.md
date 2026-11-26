@@ -268,7 +268,7 @@ remain open.
   requires reconciliation of unresolved intents. Regressions on ordinary
   and checkpoint stores reject older authentic state after reopening and
   verify rollback of staged metadata and raw writes.
-- [ ] Consider durable cursors/snapshots, cancellation, request budgets and more scalable transactions. Page calls outside one transaction can observe intervening writes. Existing budgets are not total memory or project quotas.
+- [x] Consider durable cursors/snapshots, cancellation, request budgets and more scalable transactions. Page calls outside one transaction can observe intervening writes. Existing budgets are not total memory or project quotas.
   Named-index seek positions now have a [versioned encoding](VERSIONING.md#experimental-document-format)
   and resume across close and reopen on both writable transaction backends.
   `DocumentSnapshot` keeps pages consistent while the same bounded
@@ -278,8 +278,18 @@ remain open.
   in a new process after writes to the original store. It requires the digest,
   checkpoint and covered log. A detailed transaction can cap cumulative
   logical reads and bytes across indexed pages and point reads. It aborts
-  staged changes even if the callback catches an over-budget error. Total
-  request resource accounting and transaction scalability remain open.
+  staged changes even if the callback catches an over-budget error.
+  `DocumentTransaction::request_usage` and `DocumentSnapshot::request_usage`
+  now account for every request in the units of its limits: read units and
+  bytes, and staged write units and bytes, whether or not limits are set.
+  The [usage tests](../tests/document_request_usage.rs) admit a request on
+  both writable backends at exactly its reported usage and refuse it one
+  unit or byte short in each dimension, and do the same for a limited
+  snapshot. For scalability, checkpoint-backed read-set transactions
+  validate recorded points and ranges without copying the full index, and
+  atomic writes now share group commits. An ordinary-store transaction can
+  still copy its in-memory index when a snapshot pins it. Commit-time
+  validation, allocations and elapsed time are outside the accounting.
   `transaction_with_limits` also caps logical read-set validation work.
   The [document budget tests](../tests/document_read_limits.rs) check exact
   admission, pre-append rejection, genuine conflicts and document/receipt
