@@ -36,6 +36,13 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
   later rollovers stay within the charge
   ([test](../src/checkpoint_store/tests/automatic/crash.rs)). These are
   process kills on a running OS, not power loss.
+  The hosted Linux syscall campaign now also injects `EIO`, `EAGAIN` and
+  `ENOSPC` at each observed sync and namespace call of a first automatic
+  checkpoint enable under a disk budget, on V2 and V3. After each case it
+  checks the classified outcome against the configuration published. It
+  also checks that an ordinary open refuses the budgeted directory, and
+  that a managed reopen has every acknowledged value, nothing pending or
+  reserved, and a charge equal to the files on disk.
 - [x] Exercise [4,712 selected `EAGAIN` syscall injections](WOULD_BLOCK_FILESYSTEM_FAILURES_2026_11_14.md) across both formats and recovery orders, including synchronization, locks, data and metadata reads/writes, opens, path reads and namespace operations. All retained coverage reports passed independent verification. These are synthetic returned errors, not partial syscalls or a complete persistence model; broader fault coverage remains open above.
 - [x] Inject `EAGAIN` into [320 concurrent transaction cases](WOULD_BLOCK_FILESYSTEM_FAILURES_2026_11_14.md#concurrent-transaction-failures), verify observed acknowledgements and atomic failed-request outcomes through both recovery paths, and require a reported `WouldBlock` failure in each case. A failed transaction recovered in every case; the reported kind alone is not a conflict marker. Physical power-loss behavior and exhaustive schedules remain untested.
 - [x] Repeat the [320 concurrent-failure cases for independent writes](WOULD_BLOCK_FILESYSTEM_FAILURES_2026_11_14.md#concurrent-independent-writes), including observed grouped appends. Both recovery paths checked 381 observed acknowledgements and 1,280 failed requests, of which 530 were present after reopening. These are sampled returned errors, not physical power-loss tests.

@@ -1,6 +1,7 @@
 //! Disposable fixtures for automatic-checkpoint configuration fault checks.
 use database_engine::{
-    CheckpointStore, Entry, PublicationFailure, Store, cleanup_abandoned_staging,
+    CheckpointStore, DiskBudgetPending, Entry, OnlineCheckpointStore, PublicationFailure, Store,
+    cleanup_abandoned_staging,
 };
 use serde_json::json;
 use std::error::Error;
@@ -23,7 +24,10 @@ fn setup(root: &Path, format: &str, operation: &str) -> ProbeResult<()> {
     if !root.is_dir() || fs::read_dir(root)?.next().is_some() {
         return Err("fixture root must be an existing empty directory".into());
     }
-    if !matches!(operation, "initial-enable" | "re-enable" | "disable") {
+    if !matches!(
+        operation,
+        "initial-enable" | "budgeted-enable" | "re-enable" | "disable"
+    ) {
         return Err("unknown operation".into());
     }
     let source = root.join("source");
@@ -53,6 +57,26 @@ fn setup(root: &Path, format: &str, operation: &str) -> ProbeResult<()> {
     store.rollover_managed(root.join("selected"))?;
     store.put(b"post-selection", b"acknowledged-managed")?;
     store.backup(root.join("reference-backup"))?;
+    if operation == "budgeted-enable" {
+        // A first enable under an installed disk budget.
+        let online = OnlineCheckpointStore::from_store(store)?;
+        online.set_disk_budget(Some(u64::MAX))?;
+        drop(online);
+        let log = fs::read(source.join("records.log"))?;
+        let prefix: &[u8] = if format == "v2" {
+            b"EMDALOG2"
+        } else {
+            b"EMDALOG3"
+        };
+        if !log.starts_with(prefix) {
+            return Err("fixture format differs from requested format".into());
+        }
+        println!(
+            "{}",
+            json!({"status":"ready", "format":format, "operation":operation})
+        );
+        return Ok(());
+    }
     if operation != "initial-enable" {
         store.enable_automatic_checkpoints()?;
     }
@@ -82,7 +106,9 @@ fn attempt(root: &Path, operation: &str) -> ProbeResult<()> {
         Ok(store) => {
             handle = "opened";
             let result = match operation {
-                "initial-enable" | "re-enable" => store.enable_automatic_checkpoints_detailed(),
+                "initial-enable" | "budgeted-enable" | "re-enable" => {
+                    store.enable_automatic_checkpoints_detailed()
+                }
                 "disable" => store.disable_automatic_checkpoints_detailed(),
                 _ => return Err("unknown operation".into()),
             };
@@ -127,12 +153,22 @@ fn verify(root: &Path, operation: &str, order: &str) -> ProbeResult<()> {
         "managed-first" => ["managed", "ordinary"],
         _ => return Err("unknown order".into()),
     };
+    let budgeted = operation == "budgeted-enable";
     let mut enabled = None;
     for path in paths {
         if path == "ordinary" {
-            let store = Store::open(root.join("source"))?;
-            if store.scan(None, None, 16)? != expected() {
-                return Err("ordinary recovery changed fixture".into());
+            match Store::open(root.join("source")) {
+                // An ordinary open refuses a budgeted directory unchanged.
+                Err(error) if budgeted && error.kind() == io::ErrorKind::Unsupported => {}
+                Err(error) => return Err(error.into()),
+                Ok(_) if budgeted => {
+                    return Err("ordinary open accepted a budgeted store".into());
+                }
+                Ok(store) => {
+                    if store.scan(None, None, 16)? != expected() {
+                        return Err("ordinary recovery changed fixture".into());
+                    }
+                }
             }
         } else {
             let store = CheckpointStore::open_managed(root.join("source"))?;
@@ -140,6 +176,9 @@ fn verify(root: &Path, operation: &str, order: &str) -> ProbeResult<()> {
                 return Err("managed recovery changed fixture".into());
             }
             enabled = Some(store.automatic_checkpoints_enabled()?);
+            if budgeted {
+                check_budget(root, &store)?;
+            }
         }
     }
     Store::restore(root.join("reference-backup"), root.join("restored"))?;
@@ -157,6 +196,33 @@ fn verify(root: &Path, operation: &str, order: &str) -> ProbeResult<()> {
         json!({"status":"verified", "operation":operation, "order":order,
         "enabled":enabled.ok_or("managed path was not checked")?, "backup_restored":true})
     );
+    Ok(())
+}
+
+// The reopened budget charges exactly the store tree, the external selected
+// checkpoint and one spare record, with nothing pending or reserved.
+fn check_budget(root: &Path, store: &CheckpointStore) -> ProbeResult<()> {
+    fn tree(path: &Path) -> ProbeResult<u64> {
+        let metadata = fs::symlink_metadata(path)?;
+        if metadata.is_file() {
+            return Ok(metadata.len());
+        }
+        let mut total = 0;
+        for entry in fs::read_dir(path)? {
+            total += tree(&entry?.path())?;
+        }
+        Ok(total)
+    }
+    let status = store
+        .disk_budget_status()?
+        .ok_or("budget record disappeared")?;
+    let measured = tree(&root.join("source"))? + tree(&root.join("selected"))? + 4096;
+    if status.pending != DiskBudgetPending::None
+        || status.automatic_reserved != 0
+        || status.charged != measured
+    {
+        return Err(format!("reopened budget charge {status:?} differs from {measured}").into());
+    }
     Ok(())
 }
 

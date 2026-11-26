@@ -13,7 +13,7 @@ from campaign_report import ReportWriter
 import sync_eio_campaign as common
 
 FORMATS = ('v2', 'v3')
-OPERATIONS = ('initial-enable', 're-enable', 'disable')
+OPERATIONS = ('initial-enable', 'budgeted-enable', 're-enable', 'disable')
 ORDERS = ('ordinary-first', 'managed-first')
 MARKER_DIRECTORY = 'source/.emda-auto-checkpoints-v1'
 MARKERS = {b'EMDA-AUTO-CHECKPOINT-ROOT-V1:ON\n': 'enabled',
@@ -51,7 +51,8 @@ def check_outcome(operation, outcome, verification, before, after):
     desired = 'disabled' if operation == 'disable' else 'enabled'
     if before not in ('absent', 'disabled', 'enabled') or after not in ('absent', 'disabled', 'enabled'):
         raise ValueError('unrecognized configuration state')
-    expected_before = {'initial-enable': 'absent', 're-enable': 'disabled', 'disable': 'enabled'}[operation]
+    expected_before = {'initial-enable': 'absent', 'budgeted-enable': 'absent',
+                       're-enable': 'disabled', 'disable': 'enabled'}[operation]
     if before != expected_before or verification['enabled'] != (after == 'enabled'):
         raise ValueError('configuration does not match managed recovery')
     classification = outcome.get('classification')

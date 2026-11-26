@@ -158,6 +158,12 @@ jobs:
           python3 scripts/verify_handoff_eio_results.py "$RUNNER_TEMP/handoff-online-eio.json"
           python3 scripts/configuration_eio_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/configuration_failure_probe --output "$RUNNER_TEMP/configuration-eio.json" --format v2 --operation re-enable --syscall-set namespace
           python3 scripts/verify_configuration_eio_results.py "$RUNNER_TEMP/configuration-eio.json"
+          for format in v2 v3; do
+            for group in sync namespace; do
+              python3 scripts/configuration_eio_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/configuration_failure_probe --output "$RUNNER_TEMP/configuration-budgeted-eio-$format-$group.json" --format "$format" --operation budgeted-enable --syscall-set "$group"
+              python3 scripts/verify_configuration_eio_results.py "$RUNNER_TEMP/configuration-budgeted-eio-$format-$group.json"
+            done
+          done
           python3 scripts/reclamation_eio_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/reclamation_failure_probe --output "$RUNNER_TEMP/reclamation-eio.json" --format v2 --syscall-set namespace
           python3 scripts/verify_reclamation_eio_results.py "$RUNNER_TEMP/reclamation-eio.json"
           python3 scripts/short_write_campaign.py --directory "$RUNNER_TEMP" --binary target/release/examples/sync_failure_probe --concurrent-binary target/release/examples/concurrent_eio_probe --output "$RUNNER_TEMP/short-write.json"
