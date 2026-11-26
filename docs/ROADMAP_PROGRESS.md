@@ -2,14 +2,15 @@
 
 The project aim covers all eight [roadmap steps](ROADMAP.md). The current
 validation sequence prioritizes the macOS and Linux baseline, durable
-storage and bounded recovery, and document correctness. Physical power-loss
-testing remains deferred until disposable physical hardware with power
-control is available. An off-host restore of an ordinary `Store` backup has
-been demonstrated; other backup modes have not.
+storage and bounded recovery, and document correctness. One physical power
+cut has been performed on one configuration, a Raspberry Pi 5 with NVMe on
+ext4, during acknowledged atomic writes. An off-host restore of an ordinary
+`Store` backup has been demonstrated. Other configurations, boundaries and
+backup modes have not been tested.
 
 | Step | Area | Progress | Basis and remaining evidence |
 | --- | --- | ---: | --- |
-| 1 | Correctness and foundations | 97% | 116 of 119 local checklist items. Full-log backup, restore, and format upgrade have scan ceilings. Broader fault and resource evidence remains open. |
+| 1 | Correctness and foundations | 98% | 117 of 120 checklist items. Full-log backup, restore, and format upgrade have scan ceilings. Broader fault and resource evidence remains open. |
 | 2 | Durable storage and core operations | 98% | 179 of 183 checklist items. Retained recovery and startup retirement share a scan ceiling. Broader writable-memory and reclamation evidence remains open. |
 | 3 | Document model and queries | 99% | 115 of 116 checklist items. Retained snapshots share bounded aggregation and pagination. Richer operators, transaction scalability, isolation and comparable server-engine measurements remain open. |
 | 4 | SQL | 0% | None of four SQL milestones has a working prototype. The embedded transaction engine is a prerequisite shared with earlier steps. |
@@ -19,8 +20,8 @@ been demonstrated; other backup modes have not.
 | 8 | Broader features and tooling | 10% | Query-plan explanations and recovery guidance partially cover one of five proposed differentiators. Recommendations, migration analysis and resource-aware tooling remain open. |
 
 Steps 1–3 count checked bullets in the [foundation and storage](FOUNDATION_FOLLOW_UP.md)
-and [document](DOCUMENT_FOLLOW_UP.md) checklists, excluding the deferred
-physical power-loss drill. Their combined count is 410 of 418 (98.1%). Each item has equal
+and [document](DOCUMENT_FOLLOW_UP.md) checklists, including both drills
+that were previously deferred. Their combined count is 411 of 419 (98.1%). Each item has equal
 weight in that count. Steps 4–8 are estimates from roadmap milestones with
 one point for demonstrated delivery, half a point for a tested subset, and
 zero for design or prerequisites. The projects have different scope and the
