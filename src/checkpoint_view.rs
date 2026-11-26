@@ -4,12 +4,14 @@ use crate::log::{Log, ValueLocation};
 use crate::record;
 use crate::{Entry, MAX_SCAN_BYTES, MAX_SCAN_ENTRIES};
 use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io;
 use std::ops::ControlFlow;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
-use std::sync::{Arc, Weak};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 
 /// Maximum number of index blocks retained in one checkpoint view.
 pub const MAX_CHECKPOINT_VIEW_BLOCKS: usize = 131_072;
@@ -158,6 +160,118 @@ struct CheckpointIndex {
     blocks: Vec<Block>,
     landmarks: Vec<u16>,
     read_budget: Option<checkpoint::CheckpointReadBudget>,
+    cache: BlockCache,
+}
+
+/// Usage of a checkpoint's verified-block cache.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CheckpointBlockCacheStatus {
+    /// Inclusive limit on cached block bytes; zero disables the cache.
+    pub limit_bytes: usize,
+    /// Bytes of verified blocks currently cached.
+    pub cached_bytes: usize,
+    /// Blocks currently cached.
+    pub cached_blocks: usize,
+    /// Lookups served from the cache.
+    pub hits: u64,
+    /// Lookups that read and verified a block from the file.
+    pub misses: u64,
+}
+
+#[derive(Default)]
+struct CacheState {
+    used: usize,
+    tick: u64,
+    blocks: HashMap<usize, (Arc<[u8]>, u64)>,
+    order: BTreeMap<u64, usize>,
+    hits: u64,
+    misses: u64,
+}
+
+// A least-recently-used cache of verified block bytes. The checkpoint file is
+// immutable once its directory is verified, so cached bytes stay correct.
+#[derive(Default)]
+struct BlockCache {
+    // Read without the mutex so a disabled cache costs one atomic load.
+    limit: AtomicUsize,
+    state: Mutex<CacheState>,
+}
+
+impl BlockCache {
+    fn lock(&self) -> io::Result<std::sync::MutexGuard<'_, CacheState>> {
+        self.state
+            .lock()
+            .map_err(|_| io::Error::other("checkpoint block cache poisoned"))
+    }
+
+    fn get(&self, position: usize) -> io::Result<Option<Arc<[u8]>>> {
+        if self.limit.load(Ordering::Acquire) == 0 {
+            return Ok(None);
+        }
+        let mut state = self.lock()?;
+        state.tick += 1;
+        let tick = state.tick;
+        let Some((bytes, used)) = state.blocks.get_mut(&position) else {
+            state.misses += 1;
+            return Ok(None);
+        };
+        let (bytes, previous) = (Arc::clone(bytes), std::mem::replace(used, tick));
+        state.order.remove(&previous);
+        state.order.insert(tick, position);
+        state.hits += 1;
+        Ok(Some(bytes))
+    }
+
+    fn insert(&self, position: usize, bytes: Arc<[u8]>) -> io::Result<()> {
+        let limit = self.limit.load(Ordering::Acquire);
+        if bytes.len() > limit {
+            return Ok(());
+        }
+        let mut state = self.lock()?;
+        if state.blocks.contains_key(&position) {
+            return Ok(());
+        }
+        while state.used + bytes.len() > limit {
+            let Some((_, evicted)) = state.order.pop_first() else {
+                break;
+            };
+            if let Some((old, _)) = state.blocks.remove(&evicted) {
+                state.used -= old.len();
+            }
+        }
+        state.tick += 1;
+        let tick = state.tick;
+        state.used += bytes.len();
+        state.order.insert(tick, position);
+        state.blocks.insert(position, (bytes, tick));
+        Ok(())
+    }
+
+    fn set_limit(&self, limit: usize) -> io::Result<()> {
+        let mut state = self.lock()?;
+        self.limit.store(limit, Ordering::Release);
+        while state.used > limit {
+            let Some((_, evicted)) = state.order.pop_first() else {
+                break;
+            };
+            if let Some((old, _)) = state.blocks.remove(&evicted) {
+                state.used -= old.len();
+            }
+        }
+        Ok(())
+    }
+
+    fn status(&self) -> io::Result<CheckpointBlockCacheStatus> {
+        let state = self.lock()?;
+        Ok(CheckpointBlockCacheStatus {
+            limit_bytes: self.limit.load(Ordering::Acquire),
+            cached_bytes: state.used,
+            cached_blocks: state.blocks.len(),
+            hits: state.hits,
+            misses: state.misses,
+        })
+    }
 }
 
 pub(crate) struct CheckpointPin(Weak<CheckpointIndex>);
@@ -540,6 +654,7 @@ impl CheckpointView {
                 blocks,
                 landmarks,
                 read_budget,
+                cache: BlockCache::default(),
             }),
             prefix: verified.prefix,
             log_digest: verified.log_digest,
@@ -701,6 +816,22 @@ impl CheckpointView {
         self.has_tail
     }
 
+    /// Bytes held by the retained block directory and landmark array.
+    pub(crate) fn directory_bytes(&self) -> usize {
+        self.index.blocks.capacity() * std::mem::size_of::<Block>()
+            + self.index.landmarks.capacity() * std::mem::size_of::<u16>()
+    }
+
+    /// Sets the verified-block cache limit for this checkpoint, shared by
+    /// every view of it. Lowering it evicts least recently used blocks.
+    pub(crate) fn set_block_cache_limit(&self, limit: usize) -> io::Result<()> {
+        self.index.cache.set_limit(limit)
+    }
+
+    pub(crate) fn block_cache_status(&self) -> io::Result<CheckpointBlockCacheStatus> {
+        self.index.cache.status()
+    }
+
     fn read_block(&self, block: &Block, bytes: &mut Vec<u8>) -> io::Result<()> {
         if let Some(budget) = &self.index.read_budget {
             budget.charge(block.length as u64)?;
@@ -743,6 +874,7 @@ impl CheckpointView {
             view: self,
             position: None,
             bytes: Vec::new(),
+            shared: None,
         }
     }
 
@@ -838,17 +970,33 @@ pub(crate) struct CheckpointLookup<'a> {
     view: &'a CheckpointView,
     position: Option<usize>,
     bytes: Vec<u8>,
+    // A cached block, used instead of `bytes` when set.
+    shared: Option<Arc<[u8]>>,
 }
 
 impl CheckpointLookup<'_> {
     fn block(&mut self, position: usize) -> io::Result<&[u8]> {
         if self.position != Some(position) {
             self.position = None;
-            self.view
-                .read_block(&self.view.index.blocks[position], &mut self.bytes)?;
+            self.shared = None;
+            let block = &self.view.index.blocks[position];
+            let cache = &self.view.index.cache;
+            if let Some(bytes) = cache.get(position)? {
+                // A hit reads nothing from the file, but logical read
+                // admission is unchanged.
+                if let Some(budget) = &self.view.index.read_budget {
+                    budget.charge(block.length as u64)?;
+                }
+                self.shared = Some(bytes);
+            } else {
+                self.view.read_block(block, &mut self.bytes)?;
+                if cache.limit.load(Ordering::Acquire) != 0 {
+                    cache.insert(position, Arc::from(self.bytes.as_slice()))?;
+                }
+            }
             self.position = Some(position);
         }
-        Ok(&self.bytes)
+        Ok(self.shared.as_deref().unwrap_or(&self.bytes))
     }
 
     fn preceding_block(&mut self, key: &[u8]) -> io::Result<Option<usize>> {

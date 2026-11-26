@@ -39,17 +39,17 @@ pub use backup::{FormatUpgradeLimits, FullLogBackupLimits, FullLogRestoreLimits}
 pub use cancellation::{CancellationToken, ControlledTransactionError};
 pub use checkpoint_store::{
     BoundedFullRebuildLimits, BoundedRebuildReadLimits, BoundedSuffixAdmission,
-    BoundedSuffixRebuildLimits, CheckpointCompactionLimits, CheckpointRecoveryLimits,
-    CheckpointSnapshot, CheckpointSnapshotBudgetStatus, CheckpointStore, CheckpointStoreLimits,
-    CheckpointTransaction, CheckpointTransactionMode, CheckpointWorker, CheckpointWorkerStatus,
-    DiskBudgetPending, DiskBudgetStatus, MAX_CHECKPOINT_ACTIVE_SNAPSHOTS,
+    BoundedSuffixRebuildLimits, CheckpointCompactionLimits, CheckpointMemoryStatus,
+    CheckpointRecoveryLimits, CheckpointSnapshot, CheckpointSnapshotBudgetStatus, CheckpointStore,
+    CheckpointStoreLimits, CheckpointTransaction, CheckpointTransactionMode, CheckpointWorker,
+    CheckpointWorkerStatus, DiskBudgetPending, DiskBudgetStatus, MAX_CHECKPOINT_ACTIVE_SNAPSHOTS,
     MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS, MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES,
     MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS, OnlineCheckpointCompactionOptions,
     OnlineCheckpointSnapshot, OnlineCheckpointStore,
 };
 pub use checkpoint_view::{
-    CheckpointView, CheckpointViewLimits, MAX_CHECKPOINT_VIEW_BLOCK_BYTES,
-    MAX_CHECKPOINT_VIEW_BLOCKS, MAX_CHECKPOINT_VIEW_FILE_BYTES,
+    CheckpointBlockCacheStatus, CheckpointView, CheckpointViewLimits,
+    MAX_CHECKPOINT_VIEW_BLOCK_BYTES, MAX_CHECKPOINT_VIEW_BLOCKS, MAX_CHECKPOINT_VIEW_FILE_BYTES,
 };
 pub use direct_read::{DirectReadStatus, MAX_ACTIVE_DIRECT_READS};
 pub use direct_write::{DirectWriteStatus, MAX_ACTIVE_DIRECT_WRITES};

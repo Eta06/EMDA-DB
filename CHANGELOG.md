@@ -4,6 +4,12 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add `CheckpointStore::set_checkpoint_block_cache_limit` and
+  `checkpoint_memory_status`. The opt-in, byte-limited cache serves
+  verified checkpoint blocks without rereading or rehashing them. The
+  status reports the block directory, overlay and cache memory. The cache
+  is off by default.
+
 - Add `CheckpointStore::open_managed_deferring_prefix_verification`,
   `verify_covered_prefix` and `covered_prefix_verified`. The opt-in open
   reads the checkpoint and suffix without hashing the covered log history,

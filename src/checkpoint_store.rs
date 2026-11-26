@@ -19,7 +19,7 @@ use std::fs::OpenOptions;
 use std::io;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 pub(crate) mod automatic;
@@ -134,6 +134,20 @@ impl Default for CheckpointStoreLimits {
 
 type OpenLimits = CheckpointStoreLimits;
 
+/// Memory kept by a checkpoint-backed store for its disk-backed index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CheckpointMemoryStatus {
+    /// Retained block directory and landmark array of the checkpoint.
+    pub directory_bytes: usize,
+    /// Distinct suffix keys in the overlay, including tombstones.
+    pub overlay_keys: usize,
+    /// Combined bytes of those keys.
+    pub overlay_key_bytes: usize,
+    /// The verified-block cache.
+    pub block_cache: crate::checkpoint_view::CheckpointBlockCacheStatus,
+}
+
 // Recovery options for one open. Existing callers pass a limits tuple.
 #[derive(Clone, Copy)]
 struct RecoveryOptions {
@@ -212,6 +226,7 @@ pub struct CheckpointStore {
     max_log_bytes: Option<u64>,
     checkpoint_view_limits: CheckpointViewLimits,
     disk_budget: RwLock<Option<Arc<disk_budget::DiskBudget>>>,
+    block_cache_limit: AtomicUsize,
     // The covered prefix and digest of a checkpoint opened without hashing
     // its prefix, until `verify_covered_prefix` succeeds.
     unverified_prefix: Mutex<Option<(u64, [u8; 32])>>,
@@ -902,6 +917,7 @@ impl CheckpointStore {
             max_log_bytes,
             checkpoint_view_limits: checkpoint_view,
             disk_budget: RwLock::new(disk_budget),
+            block_cache_limit: AtomicUsize::new(0),
             unverified_prefix: Mutex::new(unverified_prefix),
             generation_token: disk_budget::generation_token(),
         })
@@ -1356,7 +1372,7 @@ impl CheckpointStore {
         let next_view = self.rollover_view(&state, destination, &digest)?;
         drop(state);
         let mut state = self.state.write().map_err(|_| uncertain())?;
-        state.view = next_view;
+        self.install_view(&mut state, next_view)?;
         state.overlay_key_bytes = 0;
         Ok(digest)
     }
@@ -1563,10 +1579,53 @@ impl CheckpointStore {
             ));
         }
         let mut state = self.state.write().map_err(|_| uncertain())?;
-        state.view = view;
+        self.install_view(&mut state, view)?;
         state.overlay_key_bytes = 0;
         state.selection = Some(next);
         Ok(state)
+    }
+
+    // Publishes a view of a new checkpoint. The block cache limit moves to
+    // it; views of the old checkpoint that snapshots still hold read it
+    // without a cache, so at most one checkpoint holds cached blocks.
+    fn install_view(&self, state: &mut State, view: RecoveredCheckpointView) -> io::Result<()> {
+        view.base
+            .set_block_cache_limit(self.block_cache_limit.load(Ordering::Acquire))?;
+        let previous = std::mem::replace(&mut state.view, view);
+        previous.base.set_block_cache_limit(0)
+    }
+
+    /// Sets an inclusive limit on verified checkpoint blocks cached in memory,
+    /// shared by every read and snapshot of the current checkpoint. Zero, the
+    /// default, disables the cache. A cached block is served without reading
+    /// or rehashing it; logical read admission still charges it. Lowering
+    /// the limit evicts least recently used blocks. The setting follows
+    /// rollovers on this handle and resets on reopen.
+    pub fn set_checkpoint_block_cache_limit(&self, limit_bytes: usize) -> io::Result<()> {
+        let state = self.read()?;
+        if limit_bytes as u64 > self.checkpoint_view_limits.max_file_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "checkpoint block cache limit exceeds the checkpoint file limit",
+            ));
+        }
+        self.block_cache_limit.store(limit_bytes, Ordering::Release);
+        state.view.base.set_block_cache_limit(limit_bytes)
+    }
+
+    /// Reports the memory this store keeps for its disk-backed index: the
+    /// verified checkpoint's block directory and landmarks, the suffix
+    /// overlay, and the block cache. Overlay bytes are logical key bytes;
+    /// map nodes, allocator overhead, values in flight, transactions and
+    /// snapshots of earlier checkpoints are not included.
+    pub fn checkpoint_memory_status(&self) -> io::Result<CheckpointMemoryStatus> {
+        let state = self.read()?;
+        Ok(CheckpointMemoryStatus {
+            directory_bytes: state.view.base.directory_bytes(),
+            overlay_keys: state.view.overlay.len(),
+            overlay_key_bytes: state.overlay_key_bytes,
+            block_cache: state.view.base.block_cache_status()?,
+        })
     }
 
     fn rollover_view(

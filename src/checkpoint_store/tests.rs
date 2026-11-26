@@ -254,6 +254,7 @@ impl WitnessIo for FaultWitness {
 }
 
 mod automatic;
+mod block_cache;
 mod commit_faults;
 mod compaction;
 mod deferred_prefix;

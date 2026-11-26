@@ -364,7 +364,17 @@ The [failure and recovery matrix](FOUNDATION_FAILURE_MATRIX.md) maps current evi
 - [x] Clean recognized automatic-checkpoint stages before adopting a pending
   tail. Holding either staging parent busy rejects recovery with the witness
   and selection intact. Retrying after unlock adopts the verified tail.
-- [ ] Complete the live disk-backed index and bounded memory/cache management. Suffixes exceeding the selected caps need a newer checkpoint or ordinary recovery, and checkpoint openings hash the complete covered log prefix unless `open_managed_deferring_prefix_verification` defers it. Overlay limits are not total process-memory limits.
+- [x] Complete the live disk-backed index and bounded memory/cache management. Suffixes exceeding the selected caps need a newer checkpoint or ordinary recovery, and checkpoint openings hash the complete covered log prefix unless `open_managed_deferring_prefix_verification` defers it. Overlay limits are not total process-memory limits.
+  The writable index's resident parts each have a limit and are reported.
+  The block directory and landmarks are bounded by the checkpoint file and
+  block limits, and the overlay by key-count and key-byte limits. An
+  opt-in, least-recently-used [cache of verified blocks](../benchmarks/results/2026-11-26-checkpoint-block-cache/README.md)
+  has an inclusive byte limit, follows rollover and online handoff, and
+  leaves older checkpoints uncached. `checkpoint_memory_status` reports all
+  three. In a 200,000-key synthetic run, an 8 MiB cache raised hot-set
+  reads from about 95,000 to 1.65 million per second. A 1 MiB cache stayed
+  within its limit. The figures are logical bytes, not a total
+  process-memory bound.
   Read-only recovery and writable checkpoint opens now apply suffix overlay
   and operation limits before the covered-log hash. Rejected opens can avoid
   reading earlier history. The [paired Linux traces](../benchmarks/results/2026-11-24-checkpoint-suffix-preflight/README.md)

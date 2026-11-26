@@ -1255,6 +1255,11 @@ impl OnlineCheckpointStore {
         candidate.set_active_direct_write_limit(current.direct_write_status().limit)?;
         candidate.set_automatic_checkpoint_slot_protection(protect_pinned_slots)?;
         candidate.set_automatic_checkpoint_log_scan_limit(automatic_scan_limit)?;
+        candidate.set_checkpoint_block_cache_limit(
+            current
+                .block_cache_limit
+                .load(std::sync::atomic::Ordering::Acquire),
+        )?;
         // Owned views may still reserve capacity on the retired generation.
         // Keep one aggregate snapshot budget and read admission counter.
         candidate.snapshot_budget = Arc::clone(&current.snapshot_budget);
@@ -1364,6 +1369,10 @@ impl OnlineCheckpointStore {
         state.store = Arc::clone(&candidate);
         state.failed = false;
         drop(state);
+        // Snapshots still reading the retired generation do so uncached.
+        if let Ok(retired) = current.read() {
+            let _ = retired.view.base.set_block_cache_limit(0);
+        }
         {
             let mut retired = self
                 .retired
