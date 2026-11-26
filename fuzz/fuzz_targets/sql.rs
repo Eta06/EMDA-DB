@@ -110,6 +110,7 @@ fn fuzz_raw_sql(backend: &Backend, data: &[u8]) {
             max_insert_rows: 16,
             max_mutation_rows: 16,
             max_select_rows: 64,
+            max_sort_rows: 64,
             max_visited_rows: 128,
             max_params: 16,
             max_text_bytes: 256,
@@ -1190,6 +1191,59 @@ fn exec_select_op(
         None
     };
 
+    let mut order_spec: Vec<(Col, bool, bool)> = Vec::new();
+    if cur.next_or(0) & 1 != 0 {
+        sql.push_str(" ORDER BY ");
+        let count = 1 + (cur.next_or(0) % 3) as usize;
+        for i in 0..count {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            let c = Col::from_byte(cur.next_or(0));
+            let desc = cur.next_or(0) & 1 != 0;
+            let nulls_opt = match cur.next_or(0) % 3 {
+                0 => None,
+                1 => Some(true),
+                _ => Some(false),
+            };
+            sql.push_str(c.sql_ident(cur.next_or(0)));
+            if desc {
+                sql.push_str(" DESC");
+            } else if cur.next_or(0) & 1 != 0 {
+                sql.push_str(" ASC");
+            }
+            if let Some(nf) = nulls_opt {
+                sql.push_str(if nf { " NULLS FIRST" } else { " NULLS LAST" });
+            }
+            order_spec.push((c, desc, nulls_opt.unwrap_or(!desc)));
+        }
+    }
+
+    let (limit, offset) = if cur.next_or(0) & 1 != 0 {
+        let lim = (cur.next_or(0) % 8) as usize;
+        if cur.next_or(0) & 1 != 0 {
+            sql.push_str(" LIMIT ?");
+            params.push(SqlValue::Integer(lim as i64));
+        } else {
+            sql.push_str(&format!(" LIMIT {lim}"));
+        }
+        let off = if cur.next_or(0) & 1 != 0 {
+            let o = (cur.next_or(0) % 6) as usize;
+            if cur.next_or(0) & 1 != 0 {
+                sql.push_str(" OFFSET ?");
+                params.push(SqlValue::Integer(o as i64));
+            } else {
+                sql.push_str(&format!(" OFFSET {o}"));
+            }
+            o
+        } else {
+            0
+        };
+        (Some(lim), off)
+    } else {
+        (None, 0)
+    };
+
     let mut bind_err = None;
     for p in &params {
         if let SqlValue::Real(f) = p
@@ -1216,13 +1270,51 @@ fn exec_select_op(
         .iter()
         .map(|c| c.canonical_name().to_string())
         .collect();
-    let expected_rows: Vec<Vec<SqlValue>> = model
+    let mut matched_rows: Vec<&Row> = model
         .values()
         .filter(|row| {
             where_node
                 .as_ref()
                 .is_none_or(|w| w.eval(row) == Some(true))
         })
+        .collect();
+    if !order_spec.is_empty() {
+        matched_rows.sort_by(|a, b| {
+            for &(col, desc, nulls_first) in &order_spec {
+                let lv = a.get(col);
+                let rv = b.get(col);
+                let ord = match (&lv, &rv) {
+                    (SqlValue::Null, SqlValue::Null) => Ordering::Equal,
+                    (SqlValue::Null, _) => {
+                        if nulls_first {
+                            Ordering::Less
+                        } else {
+                            Ordering::Greater
+                        }
+                    }
+                    (_, SqlValue::Null) => {
+                        if nulls_first {
+                            Ordering::Greater
+                        } else {
+                            Ordering::Less
+                        }
+                    }
+                    _ => {
+                        let o = compare_non_null(&lv, &rv).expect("same column type");
+                        if desc { o.reverse() } else { o }
+                    }
+                };
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+            a.id.cmp(&b.id)
+        });
+    }
+    let expected_rows: Vec<Vec<SqlValue>> = matched_rows
+        .into_iter()
+        .skip(offset)
+        .take(limit.unwrap_or(usize::MAX))
         .map(|row| row.project(&cols))
         .collect();
     let outcome = actual.unwrap_or_else(|e| panic!("SELECT `{sql}` failed: {e}"));

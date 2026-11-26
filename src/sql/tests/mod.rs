@@ -110,6 +110,14 @@ fn malformed_inputs_return_syntax_or_bounds_without_panicking() {
         "SELECT * FROM t WHERE a = 1 = 2",
         "SELECT * FROM t WHERE a IS 1",
         "SELECT *, a FROM t",
+        "SELECT * FROM t ORDER BY",
+        "SELECT * FROM t ORDER BY a,",
+        "SELECT * FROM t ORDER BY a NULLS",
+        "SELECT * FROM t ORDER BY a NULLS ASC",
+        "SELECT * FROM t LIMIT",
+        "SELECT * FROM t LIMIT 5 OFFSET",
+        "SELECT * FROM t LIMIT 5 ORDER BY a",
+        "SELECT * FROM t LIMIT a",
     ];
 
     for sql in bad_inputs {
@@ -117,6 +125,30 @@ fn malformed_inputs_return_syntax_or_bounds_without_panicking() {
         assert!(
             matches!(err, SqlError::Syntax { .. } | SqlError::Bounds(_)),
             "expected Syntax or Bounds for {sql:?}, got {err:?}"
+        );
+    }
+
+    for sql in [
+        "SELECT * FROM t LIMIT -1",
+        "SELECT * FROM t LIMIT 1 OFFSET -1",
+    ] {
+        assert!(
+            matches!(db.prepare(sql).unwrap_err(), SqlError::Bounds(_)),
+            "expected Bounds for {sql:?}"
+        );
+    }
+    for sql in [
+        "SELECT * FROM t LIMIT 1.5",
+        "SELECT * FROM t LIMIT -1.5",
+        "SELECT * FROM t LIMIT '5'",
+        "SELECT * FROM t LIMIT NULL",
+        "SELECT * FROM t LIMIT TRUE",
+        "SELECT * FROM t LIMIT 5 OFFSET 1.5",
+        "SELECT * FROM t LIMIT 5 OFFSET NULL",
+    ] {
+        assert!(
+            matches!(db.prepare(sql).unwrap_err(), SqlError::Type(_)),
+            "expected Type for {sql:?}"
         );
     }
 }
@@ -180,7 +212,13 @@ fn deterministic_randomized_parser_fuzzer_never_panics() {
         "JOIN",
         "ORDER",
         "BY",
+        "ASC",
+        "DESC",
+        "NULLS",
+        "FIRST",
+        "LAST",
         "LIMIT",
+        "OFFSET",
         " ",
         "\n",
         "!",

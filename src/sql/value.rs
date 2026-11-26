@@ -17,8 +17,12 @@ pub const MAX_SQL_COLUMNS: usize = 64;
 pub const MAX_SQL_INSERT_ROWS: usize = 1_024;
 /// Maximum rows modified by one `UPDATE` or `DELETE` statement.
 pub const MAX_SQL_MUTATION_ROWS: usize = 1_024;
-/// Maximum rows returned by one `SELECT` statement.
+/// Default maximum rows returned by one `SELECT` statement.
 pub const MAX_SQL_SELECT_ROWS: usize = 10_000;
+/// Default maximum rows buffered for an `ORDER BY` sort or top-K heap.
+pub const DEFAULT_SQL_SORT_ROWS: usize = 32_768;
+/// Hard ceiling for `max_sort_rows`.
+pub const MAX_SQL_SORT_ROWS: usize = 131_072;
 /// Default maximum rows visited per statement.
 pub const DEFAULT_SQL_VISITED_ROWS: usize = 32_768;
 /// Hard ceiling for `max_visited_rows`.
@@ -49,6 +53,8 @@ pub struct SqlLimits {
     pub max_mutation_rows: usize,
     /// Maximum rows returned by `SELECT` (`1..=10_000`).
     pub max_select_rows: usize,
+    /// Maximum rows buffered by `ORDER BY` sort / top-K (`1..=131_072`).
+    pub max_sort_rows: usize,
     /// Maximum rows visited during a single statement (`1..=131_072`).
     pub max_visited_rows: usize,
     /// Maximum `?` positional parameters (`0..=1_024`).
@@ -67,6 +73,7 @@ impl Default for SqlLimits {
             max_insert_rows: MAX_SQL_INSERT_ROWS,
             max_mutation_rows: MAX_SQL_MUTATION_ROWS,
             max_select_rows: MAX_SQL_SELECT_ROWS,
+            max_sort_rows: DEFAULT_SQL_SORT_ROWS,
             max_visited_rows: DEFAULT_SQL_VISITED_ROWS,
             max_params: MAX_SQL_PARAMS,
             max_text_bytes: MAX_SQL_TEXT_BYTES,
@@ -100,6 +107,7 @@ impl SqlLimits {
                 1,
                 MAX_SQL_SELECT_ROWS,
             ),
+            ("max_sort_rows", self.max_sort_rows, 1, MAX_SQL_SORT_ROWS),
             (
                 "max_visited_rows",
                 self.max_visited_rows,

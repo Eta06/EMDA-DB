@@ -1,8 +1,8 @@
 //! Statement binding, expression evaluation, and transactional execution over `DocumentDatabase`.
 use super::catalog::{self, ColumnDef, TableDef};
 use super::parser::{
-    Assignment, CompareOp, CreateTableStmt, DeleteStmt, Expr, InsertStmt, LiteralValue,
-    SelectColumns, SelectStmt, SqlStatement, Statement, UpdateStmt,
+    Assignment, CompareOp, CreateTableStmt, DeleteStmt, Expr, InsertStmt, LimitValue,
+    LiteralValue, NullsOrder, SelectColumns, SelectStmt, SqlStatement, Statement, UpdateStmt,
 };
 use super::plan::{self, AccessPlan, UpperBound};
 use super::value::{
@@ -13,8 +13,10 @@ use crate::document::{DocumentDatabase, DocumentTransaction, DocumentTransaction
 use crate::{MAX_SCAN_ENTRIES, TransactionFailure};
 use serde_json::{Map, Number, Value};
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{BinaryHeap, HashSet, VecDeque};
 use std::io;
+use std::ops::ControlFlow;
+use std::rc::Rc;
 
 const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 
@@ -291,6 +293,152 @@ fn exec_insert(
     Ok(SqlOutcome::Inserted { rows: inserted })
 }
 
+#[derive(Clone, Copy, Debug)]
+struct BoundOrderBy {
+    col_idx: usize,
+    desc: bool,
+    nulls_first: bool,
+}
+
+struct SortRow {
+    keys: Vec<SqlValue>,
+    scan_seq: usize,
+    obj: Map<String, Value>,
+}
+
+struct HeapSortRow {
+    row: SortRow,
+    specs: Rc<[BoundOrderBy]>,
+}
+
+impl PartialEq for HeapSortRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for HeapSortRow {}
+
+impl PartialOrd for HeapSortRow {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for HeapSortRow {
+    fn cmp(&self, other: &Self) -> Ordering {
+        compare_sort_rows(&self.row, &other.row, &self.specs)
+    }
+}
+
+fn compare_order_cell(a: &SqlValue, b: &SqlValue, desc: bool, nulls_first: bool) -> Ordering {
+    match (a, b) {
+        (SqlValue::Null, SqlValue::Null) => Ordering::Equal,
+        (SqlValue::Null, _) => {
+            if nulls_first {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        }
+        (_, SqlValue::Null) => {
+            if nulls_first {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        }
+        _ => {
+            let ord = compare_non_null(SqlValueRef::from_value(a), SqlValueRef::from_value(b))
+                .expect("ORDER BY values have matching column types");
+            if desc { ord.reverse() } else { ord }
+        }
+    }
+}
+
+fn compare_sort_rows(a: &SortRow, b: &SortRow, specs: &[BoundOrderBy]) -> Ordering {
+    for (idx, spec) in specs.iter().enumerate() {
+        let ord = compare_order_cell(&a.keys[idx], &b.keys[idx], spec.desc, spec.nulls_first);
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    a.scan_seq.cmp(&b.scan_seq)
+}
+
+fn compare_sort_keys_to_row(
+    keys: &[SqlValue],
+    scan_seq: usize,
+    other: &SortRow,
+    specs: &[BoundOrderBy],
+) -> Ordering {
+    for (idx, spec) in specs.iter().enumerate() {
+        let ord = compare_order_cell(&keys[idx], &other.keys[idx], spec.desc, spec.nulls_first);
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    scan_seq.cmp(&other.scan_seq)
+}
+
+fn decode_order_keys(
+    obj: &Map<String, Value>,
+    table: &TableDef,
+    specs: &[BoundOrderBy],
+) -> Result<Vec<SqlValue>, SqlError> {
+    let mut keys = Vec::with_capacity(specs.len());
+    for spec in specs {
+        keys.push(decode_col_ref(obj, &table.columns[spec.col_idx])?.into_owned());
+    }
+    Ok(keys)
+}
+
+fn project_row(
+    mut obj: Map<String, Value>,
+    table: &TableDef,
+    proj_indices: &[usize],
+) -> Result<Vec<SqlValue>, SqlError> {
+    let mut projected = Vec::with_capacity(proj_indices.len());
+    for (pos, &idx) in proj_indices.iter().enumerate() {
+        let col = &table.columns[idx];
+        let val = if proj_indices[pos + 1..].contains(&idx) {
+            decode_col_ref(&obj, col)?.into_owned()
+        } else {
+            take_col_value(&mut obj, col)?
+        };
+        projected.push(val);
+    }
+    Ok(projected)
+}
+
+fn resolve_limit_value(
+    val: Option<LimitValue>,
+    params: &[SqlValue],
+    clause: &str,
+) -> Result<Option<usize>, SqlError> {
+    let Some(val) = val else {
+        return Ok(None);
+    };
+    match val {
+        LimitValue::Literal(n) => Ok(Some(n)),
+        LimitValue::Param(idx) => match &params[idx] {
+            SqlValue::Integer(n) => {
+                if *n < 0 {
+                    Err(SqlError::Bounds(format!(
+                        "{clause} must be non-negative, got {n}"
+                    )))
+                } else {
+                    Ok(Some(*n as usize))
+                }
+            }
+            other => Err(SqlError::Type(format!(
+                "{clause} requires an INTEGER value, got {}",
+                other.kind_name()
+            ))),
+        },
+    }
+}
+
 fn exec_select(
     tx: &DocumentTransaction<'_, '_>,
     stmt: &SelectStmt,
@@ -330,35 +478,279 @@ fn exec_select(
     };
 
     let bound_filter = bind_where(stmt.filter.as_ref(), &table, params)?;
-    let mut rows = Vec::new();
-    visit_matching_rows(
-        tx,
-        &table,
-        bound_filter.as_ref(),
-        params,
-        limits,
-        force_full_scan,
-        |_doc_id, mut obj| {
-            if rows.len() >= limits.max_select_rows {
+
+    if stmt.order_by.len() > limits.max_columns {
+        return Err(SqlError::Bounds(format!(
+            "ORDER BY item count exceeds max_columns ({})",
+            limits.max_columns
+        )));
+    }
+    let mut bound_order = Vec::with_capacity(stmt.order_by.len());
+    for item in &stmt.order_by {
+        let col_idx = table
+            .column_index(&item.column)
+            .ok_or_else(|| SqlError::NoSuchColumn {
+                table: table.name.clone(),
+                column: item.column.clone(),
+            })?;
+        let nulls_first = match item.nulls {
+            Some(NullsOrder::First) => true,
+            Some(NullsOrder::Last) => false,
+            None => !item.desc,
+        };
+        bound_order.push(BoundOrderBy {
+            col_idx,
+            desc: item.desc,
+            nulls_first,
+        });
+    }
+
+    let limit = resolve_limit_value(stmt.limit, params, "LIMIT")?;
+    let offset = resolve_limit_value(stmt.offset, params, "OFFSET")?.unwrap_or(0);
+
+    if limit == Some(0) {
+        return Ok(SqlOutcome::Rows {
+            columns: col_names,
+            rows: Vec::new(),
+        });
+    }
+
+    let pk_first = bound_order
+        .first()
+        .is_some_and(|first| first.col_idx == table.primary_key_index);
+
+    let rows = if bound_order.is_empty() || (pk_first && !bound_order[0].desc) {
+        // Streaming path in ascending primary-key order: stops after OFFSET + LIMIT matches.
+        let mut skipped = 0usize;
+        let mut rows = Vec::new();
+        let stream_cap = if bound_filter.is_none() {
+            limit.map(|l| offset.saturating_add(l))
+        } else {
+            None
+        };
+        visit_matching_rows(
+            tx,
+            &table,
+            bound_filter.as_ref(),
+            params,
+            limits,
+            force_full_scan,
+            stream_cap,
+            |_doc_id, obj| {
+                if skipped < offset {
+                    skipped += 1;
+                    return Ok(ControlFlow::Continue(()));
+                }
+                if rows.len() >= limits.max_select_rows {
+                    return Err(SqlError::Bounds(format!(
+                        "SELECT result exceeds max_select_rows ({})",
+                        limits.max_select_rows
+                    )));
+                }
+                rows.push(project_row(obj, &table, &proj_indices)?);
+                if Some(rows.len()) == limit {
+                    Ok(ControlFlow::Break(()))
+                } else {
+                    Ok(ControlFlow::Continue(()))
+                }
+            },
+        )?;
+        rows
+    } else if pk_first && bound_order[0].desc {
+        // Descending primary-key order over ascending scan.
+        if let Some(lim) = limit {
+            let keep_cap = (offset as u128).saturating_add(lim as u128);
+            let mut ring: VecDeque<Map<String, Value>> = VecDeque::new();
+            visit_matching_rows(
+                tx,
+                &table,
+                bound_filter.as_ref(),
+                params,
+                limits,
+                force_full_scan,
+                None,
+                |_doc_id, obj| {
+                    if (ring.len() as u128) == keep_cap {
+                        ring.pop_front();
+                        ring.push_back(obj);
+                    } else {
+                        if ring.len() >= limits.max_sort_rows {
+                            return Err(SqlError::Bounds(format!(
+                                "sort row count exceeds max_sort_rows ({})",
+                                limits.max_sort_rows
+                            )));
+                        }
+                        if offset == 0 && ring.len() >= limits.max_select_rows {
+                            return Err(SqlError::Bounds(format!(
+                                "SELECT result exceeds max_select_rows ({})",
+                                limits.max_select_rows
+                            )));
+                        }
+                        ring.push_back(obj);
+                    }
+                    Ok(ControlFlow::Continue(()))
+                },
+            )?;
+            if ring.len() <= offset {
+                Vec::new()
+            } else {
+                let result_len = ring.len() - offset;
+                if result_len > limits.max_select_rows {
+                    return Err(SqlError::Bounds(format!(
+                        "SELECT result exceeds max_select_rows ({})",
+                        limits.max_select_rows
+                    )));
+                }
+                for _ in 0..offset {
+                    ring.pop_back();
+                }
+                let mut rows = Vec::with_capacity(result_len);
+                while let Some(obj) = ring.pop_back() {
+                    rows.push(project_row(obj, &table, &proj_indices)?);
+                }
+                rows
+            }
+        } else {
+            let mut rows = Vec::new();
+            visit_matching_rows(
+                tx,
+                &table,
+                bound_filter.as_ref(),
+                params,
+                limits,
+                force_full_scan,
+                None,
+                |_doc_id, obj| {
+                    if rows.len() >= limits.max_select_rows {
+                        return Err(SqlError::Bounds(format!(
+                            "SELECT result exceeds max_select_rows ({})",
+                            limits.max_select_rows
+                        )));
+                    }
+                    if rows.len() >= limits.max_sort_rows {
+                        return Err(SqlError::Bounds(format!(
+                            "sort row count exceeds max_sort_rows ({})",
+                            limits.max_sort_rows
+                        )));
+                    }
+                    rows.push(project_row(obj, &table, &proj_indices)?);
+                    Ok(ControlFlow::Continue(()))
+                },
+            )?;
+            rows.reverse();
+            rows
+        }
+    } else if let Some(lim) = limit {
+        // Bounded top-K max-heap of at most OFFSET + LIMIT rows.
+        let keep_cap = (offset as u128).saturating_add(lim as u128);
+        let specs: Rc<[BoundOrderBy]> = Rc::from(bound_order);
+        let mut heap: BinaryHeap<HeapSortRow> = BinaryHeap::new();
+        let mut scan_seq = 0usize;
+        visit_matching_rows(
+            tx,
+            &table,
+            bound_filter.as_ref(),
+            params,
+            limits,
+            force_full_scan,
+            None,
+            |_doc_id, obj| {
+                let keys = decode_order_keys(&obj, &table, &specs)?;
+                let seq = scan_seq;
+                scan_seq += 1;
+                if (heap.len() as u128) < keep_cap {
+                    if heap.len() >= limits.max_sort_rows {
+                        return Err(SqlError::Bounds(format!(
+                            "sort row count exceeds max_sort_rows ({})",
+                            limits.max_sort_rows
+                        )));
+                    }
+                    if offset == 0 && heap.len() >= limits.max_select_rows {
+                        return Err(SqlError::Bounds(format!(
+                            "SELECT result exceeds max_select_rows ({})",
+                            limits.max_select_rows
+                        )));
+                    }
+                    heap.push(HeapSortRow {
+                        row: SortRow {
+                            keys,
+                            scan_seq: seq,
+                            obj,
+                        },
+                        specs: Rc::clone(&specs),
+                    });
+                } else if let Some(mut top) = heap.peek_mut()
+                    && compare_sort_keys_to_row(&keys, seq, &top.row, &specs) == Ordering::Less
+                {
+                    top.row = SortRow {
+                        keys,
+                        scan_seq: seq,
+                        obj,
+                    };
+                }
+                Ok(ControlFlow::Continue(()))
+            },
+        )?;
+        if heap.len() <= offset {
+            Vec::new()
+        } else {
+            let result_len = heap.len() - offset;
+            if result_len > limits.max_select_rows {
                 return Err(SqlError::Bounds(format!(
                     "SELECT result exceeds max_select_rows ({})",
                     limits.max_select_rows
                 )));
             }
-            let mut projected = Vec::with_capacity(proj_indices.len());
-            for (pos, &idx) in proj_indices.iter().enumerate() {
-                let col = &table.columns[idx];
-                let val = if proj_indices[pos + 1..].contains(&idx) {
-                    decode_col_ref(&obj, col)?.into_owned()
-                } else {
-                    take_col_value(&mut obj, col)?
-                };
-                projected.push(val);
+            let sorted = heap.into_sorted_vec();
+            let mut rows = Vec::with_capacity(result_len);
+            for entry in sorted.into_iter().skip(offset) {
+                rows.push(project_row(entry.row.obj, &table, &proj_indices)?);
             }
-            rows.push(projected);
-            Ok(())
-        },
-    )?;
+            rows
+        }
+    } else {
+        // Full bounded sort without LIMIT.
+        let mut collected = Vec::new();
+        let mut scan_seq = 0usize;
+        visit_matching_rows(
+            tx,
+            &table,
+            bound_filter.as_ref(),
+            params,
+            limits,
+            force_full_scan,
+            None,
+            |_doc_id, obj| {
+                if collected.len() >= limits.max_select_rows {
+                    return Err(SqlError::Bounds(format!(
+                        "SELECT result exceeds max_select_rows ({})",
+                        limits.max_select_rows
+                    )));
+                }
+                if collected.len() >= limits.max_sort_rows {
+                    return Err(SqlError::Bounds(format!(
+                        "sort row count exceeds max_sort_rows ({})",
+                        limits.max_sort_rows
+                    )));
+                }
+                let keys = decode_order_keys(&obj, &table, &bound_order)?;
+                let seq = scan_seq;
+                scan_seq += 1;
+                collected.push(SortRow {
+                    keys,
+                    scan_seq: seq,
+                    obj,
+                });
+                Ok(ControlFlow::Continue(()))
+            },
+        )?;
+        collected.sort_unstable_by(|a, b| compare_sort_rows(a, b, &bound_order));
+        let mut rows = Vec::with_capacity(collected.len());
+        for entry in collected {
+            rows.push(project_row(entry.obj, &table, &proj_indices)?);
+        }
+        rows
+    };
 
     Ok(SqlOutcome::Rows {
         columns: col_names,
@@ -408,6 +800,7 @@ fn exec_update(
         params,
         limits,
         force_full_scan,
+        None,
         |doc_id, mut obj| {
             if matched.len() >= limits.max_mutation_rows {
                 return Err(SqlError::Bounds(format!(
@@ -436,7 +829,7 @@ fn exec_update(
             let doc = Value::Object(obj);
             check_encoded_doc_size(&doc)?;
             matched.push((doc_id, doc));
-            Ok(())
+            Ok(ControlFlow::Continue(()))
         },
     )?;
 
@@ -465,6 +858,7 @@ fn exec_delete(
         params,
         limits,
         force_full_scan,
+        None,
         |doc_id, _obj| {
             if to_delete.len() >= limits.max_mutation_rows {
                 return Err(SqlError::Bounds(format!(
@@ -473,7 +867,7 @@ fn exec_delete(
                 )));
             }
             to_delete.push(doc_id);
-            Ok(())
+            Ok(ControlFlow::Continue(()))
         },
     )?;
 
@@ -484,6 +878,7 @@ fn exec_delete(
     Ok(SqlOutcome::Deleted { rows: deleted })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn visit_matching_rows(
     tx: &DocumentTransaction<'_, '_>,
     table: &TableDef,
@@ -491,7 +886,8 @@ fn visit_matching_rows(
     params: &[SqlValue],
     limits: &SqlLimits,
     force_full_scan: bool,
-    mut on_match: impl FnMut(String, Map<String, Value>) -> Result<(), SqlError>,
+    stream_cap: Option<usize>,
+    mut on_match: impl FnMut(String, Map<String, Value>) -> Result<ControlFlow<()>, SqlError>,
 ) -> Result<(), SqlError> {
     let plan = if force_full_scan {
         AccessPlan::FullScan
@@ -514,7 +910,7 @@ fn visit_matching_rows(
             let obj = doc_into_object(doc)?;
             verify_doc_pk_id(table, &doc_id, &obj)?;
             if eval_where_doc(filter, table, &obj, params)? {
-                on_match(doc_id, obj)?;
+                let _ = on_match(doc_id, obj)?;
             }
             Ok(())
         }
@@ -531,6 +927,7 @@ fn visit_matching_rows(
             after_id,
             &upper,
             max_exact_rows,
+            stream_cap,
             on_match,
         ),
         AccessPlan::FullScan => scan_range_rows(
@@ -542,6 +939,7 @@ fn visit_matching_rows(
             None,
             &UpperBound::Unbounded,
             None,
+            stream_cap,
             on_match,
         ),
     }
@@ -557,7 +955,8 @@ fn scan_range_rows(
     mut after_id: Option<String>,
     upper: &UpperBound,
     max_exact_rows: Option<usize>,
-    mut on_match: impl FnMut(String, Map<String, Value>) -> Result<(), SqlError>,
+    mut stream_cap: Option<usize>,
+    mut on_match: impl FnMut(String, Map<String, Value>) -> Result<ControlFlow<()>, SqlError>,
 ) -> Result<(), SqlError> {
     let mut visited = 0usize;
 
@@ -566,6 +965,12 @@ fn scan_range_rows(
         let mut page_limit = remaining_visit.saturating_add(1).clamp(1, MAX_SCAN_ENTRIES);
         if let Some(exact) = max_exact_rows {
             page_limit = page_limit.min(exact.max(1));
+        }
+        if let Some(cap) = stream_cap {
+            if cap == 0 {
+                return Ok(());
+            }
+            page_limit = page_limit.min(cap);
         }
         let page = tx
             .scan_documents(&table.name, after_id.as_deref(), page_limit)
@@ -590,7 +995,12 @@ fn scan_range_rows(
             let obj = doc_into_object(entry.document)?;
             verify_doc_pk_id(table, &entry.id, &obj)?;
             if eval_where_doc(filter, table, &obj, params)? {
-                on_match(entry.id, obj)?;
+                if let Some(cap) = &mut stream_cap {
+                    *cap = cap.saturating_sub(1);
+                }
+                if on_match(entry.id, obj)?.is_break() {
+                    return Ok(());
+                }
             }
             if at_inclusive_end {
                 return Ok(());

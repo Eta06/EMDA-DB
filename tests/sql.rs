@@ -822,11 +822,13 @@ fn unsupported_sql_features_return_unsupported_naming_feature() {
     let db = SqlDatabase::new(DocumentDatabase::new(&store));
 
     let cases = [
-        "SELECT * FROM a JOIN b ON a.id = b.id",
+        "SELECT id FROM a JOIN b ON a.id = b.id",
         "SELECT * FROM a, b",
         "SELECT id FROM a GROUP BY id",
-        "SELECT id FROM a ORDER BY id",
-        "SELECT id FROM a LIMIT 5",
+        "SELECT id FROM a ORDER BY 1",
+        "SELECT id FROM a OFFSET 5",
+        "UPDATE a SET b = 1 LIMIT 5",
+        "DELETE FROM a ORDER BY id LIMIT 1",
         "SELECT COUNT(*) FROM a",
         "SELECT * FROM (SELECT * FROM a)",
         "SELECT * FROM a WHERE id IN (SELECT id FROM b)",
@@ -894,6 +896,12 @@ fn all_bounds_enforced_at_limit_and_limit_plus_one() {
 
     let mut bad = SqlLimits::default();
     bad.max_select_rows += 1;
+    assert!(matches!(bad.validate(), Err(SqlError::Bounds(_))));
+
+    let bad = SqlLimits {
+        max_sort_rows: database_engine::sql::MAX_SQL_SORT_ROWS + 1,
+        ..Default::default()
+    };
     assert!(matches!(bad.validate(), Err(SqlError::Bounds(_))));
 
     let bad = SqlLimits {
@@ -1937,6 +1945,615 @@ fn concurrent_read_modify_write_and_duplicate_pk_inserts_are_linearizable() {
 
     let (ckpt, _, _) = open_checkpoint(dir.path());
     check_backend(&|| SqlDatabase::new(DocumentDatabase::with_checkpoint_store(&ckpt)));
+}
+
+#[test]
+fn order_by_nulls_types_multikey_and_tiebreak_on_both_backends() {
+    for_both_sql(|db| {
+        db.execute(
+            "CREATE TABLE items (
+                id INTEGER PRIMARY KEY,
+                grp INTEGER,
+                score REAL,
+                tag TEXT,
+                flag BOOLEAN
+            )",
+            &[],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO items VALUES
+                (10, 2, 1.5, 'b', TRUE),
+                (2,  NULL, -0.0, 'a', FALSE),
+                (5,  1, 2.0, NULL, TRUE),
+                (1,  1, 2.0, 'Z', FALSE),
+                (8,  2, NULL, 'é', NULL),
+                (3,  NULL, 0.0, '', TRUE),
+                (4,  1, NULL, 'a', FALSE)",
+            &[],
+        )
+        .unwrap();
+
+        let ids_of = |sql: &str, params: &[SqlValue]| -> Vec<i64> {
+            match db.execute(sql, params).unwrap() {
+                SqlOutcome::Rows { rows, .. } => rows
+                    .into_iter()
+                    .map(|r| match r[0] {
+                        SqlValue::Integer(n) => n,
+                        ref other => panic!("expected integer id, got {other:?}"),
+                    })
+                    .collect(),
+                other => panic!("expected rows, got {other:?}"),
+            }
+        };
+
+        // Default ASC => NULLS FIRST, ties break by PK ASC (2 < 3, 1 < 4 < 5, 8 < 10).
+        assert_eq!(
+            ids_of("SELECT id FROM items ORDER BY grp", &[]),
+            vec![2, 3, 1, 4, 5, 8, 10]
+        );
+        assert_eq!(
+            ids_of("SELECT id FROM items ORDER BY grp ASC NULLS FIRST", &[]),
+            vec![2, 3, 1, 4, 5, 8, 10]
+        );
+        // ASC NULLS LAST => non-nulls first, NULLs last (ties still break by PK ASC).
+        assert_eq!(
+            ids_of("SELECT id FROM items ORDER BY grp ASC NULLS LAST", &[]),
+            vec![1, 4, 5, 8, 10, 2, 3]
+        );
+        // Default DESC => NULLS LAST, ties break by PK ASC!
+        assert_eq!(
+            ids_of("SELECT id FROM items ORDER BY grp DESC", &[]),
+            vec![8, 10, 1, 4, 5, 2, 3]
+        );
+        assert_eq!(
+            ids_of("SELECT id FROM items ORDER BY grp DESC NULLS LAST", &[]),
+            vec![8, 10, 1, 4, 5, 2, 3]
+        );
+        // DESC NULLS FIRST => NULLs first, then DESC, ties by PK ASC.
+        assert_eq!(
+            ids_of("SELECT id FROM items ORDER BY grp DESC NULLS FIRST", &[]),
+            vec![2, 3, 8, 10, 1, 4, 5]
+        );
+
+        // Multi-key ordering + ORDER BY columns not in SELECT list.
+        // grp ASC NULLS LAST:
+        //   grp=1: id=1(score=2.0), id=4(score=NULL), id=5(score=2.0)
+        //   grp=2: id=8(score=NULL), id=10(score=1.5)
+        //   grp=NULL: id=2(score=-0.0), id=3(score=0.0) -> -0.0 == 0.0 => PK ASC: 2, 3
+        assert_eq!(
+            ids_of(
+                "SELECT id FROM items ORDER BY grp ASC NULLS LAST, score DESC NULLS FIRST",
+                &[]
+            ),
+            vec![4, 1, 5, 8, 10, 2, 3]
+        );
+        assert_eq!(
+            db.execute("SELECT tag FROM items ORDER BY flag DESC, id ASC", &[])
+                .unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["tag".into()],
+                rows: vec![
+                    vec![SqlValue::Text("".into())],   // id=3 flag=TRUE
+                    vec![SqlValue::Null],               // id=5 flag=TRUE
+                    vec![SqlValue::Text("b".into())],   // id=10 flag=TRUE
+                    vec![SqlValue::Text("Z".into())],   // id=1 flag=FALSE
+                    vec![SqlValue::Text("a".into())],   // id=2 flag=FALSE
+                    vec![SqlValue::Text("a".into())],   // id=4 flag=FALSE
+                    vec![SqlValue::Text("é".into())],   // id=8 flag=NULL (DESC => NULLS LAST)
+                ],
+            }
+        );
+
+        // TEXT UTF-8 byte order ('': 0, 'Z': 90, 'a': 97, 'b': 98, 'é': 0xc3...).
+        assert_eq!(
+            ids_of("SELECT id FROM items ORDER BY tag ASC NULLS LAST", &[]),
+            vec![3, 1, 2, 4, 10, 8, 5]
+        );
+
+        // PK DESC and PK ASC with trailing keys.
+        assert_eq!(
+            ids_of("SELECT id FROM items ORDER BY id DESC", &[]),
+            vec![10, 8, 5, 4, 3, 2, 1]
+        );
+        assert_eq!(
+            ids_of("SELECT id FROM items ORDER BY id DESC, score ASC", &[]),
+            vec![10, 8, 5, 4, 3, 2, 1]
+        );
+        assert_eq!(
+            ids_of("SELECT id FROM items ORDER BY id ASC, score DESC", &[]),
+            vec![1, 2, 3, 4, 5, 8, 10]
+        );
+
+        // TEXT PK tie-break ascending on non-PK DESC sort.
+        db.execute(
+            "CREATE TABLE tpk (k TEXT PRIMARY KEY, v INTEGER)",
+            &[],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO tpk VALUES ('z', 1), ('a', 1), ('é', 1), ('Z', 2)",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            db.execute("SELECT k FROM tpk ORDER BY v DESC", &[]).unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["k".into()],
+                rows: vec![
+                    vec![SqlValue::Text("Z".into())],
+                    vec![SqlValue::Text("a".into())],
+                    vec![SqlValue::Text("z".into())],
+                    vec![SqlValue::Text("é".into())],
+                ],
+            }
+        );
+        assert_eq!(
+            db.execute("SELECT k FROM tpk ORDER BY k DESC LIMIT 2 OFFSET 1", &[])
+                .unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["k".into()],
+                rows: vec![
+                    vec![SqlValue::Text("z".into())],
+                    vec![SqlValue::Text("a".into())],
+                ],
+            }
+        );
+    });
+}
+
+#[test]
+fn limit_offset_edges_params_early_termination_and_sort_bounds() {
+    for_both_sql(|mut db| {
+        db.execute(
+            "CREATE TABLE nums (id INTEGER PRIMARY KEY, val INTEGER, tag TEXT)",
+            &[],
+        )
+        .unwrap();
+        let mut ins = String::from("INSERT INTO nums VALUES ");
+        for i in 0..50_i64 {
+            if i > 0 {
+                ins.push(',');
+            }
+            ins.push_str(&format!("({i}, {}, 't{:02}')", (50 - i) % 10, i));
+        }
+        db.execute(&ins, &[]).unwrap();
+
+        let get_ids = |db: &SqlDatabase<'_>, sql: &str, params: &[SqlValue]| -> Vec<i64> {
+            match db.execute(sql, params).unwrap() {
+                SqlOutcome::Rows { rows, .. } => rows
+                    .into_iter()
+                    .map(|r| match r[0] {
+                        SqlValue::Integer(n) => n,
+                        _ => unreachable!(),
+                    })
+                    .collect(),
+                _ => unreachable!(),
+            }
+        };
+
+        // LIMIT/OFFSET edges: 0, at end, beyond end, huge values.
+        assert_eq!(get_ids(&db, "SELECT id FROM nums LIMIT 0", &[]), Vec::<i64>::new());
+        assert_eq!(
+            get_ids(&db, "SELECT id FROM nums ORDER BY val DESC LIMIT 0 OFFSET 100", &[]),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            get_ids(&db, "SELECT id FROM nums LIMIT 5 OFFSET 45", &[]),
+            vec![45, 46, 47, 48, 49]
+        );
+        assert_eq!(
+            get_ids(&db, "SELECT id FROM nums LIMIT 5 OFFSET 50", &[]),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            get_ids(&db, "SELECT id FROM nums LIMIT 5 OFFSET 500", &[]),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            get_ids(&db, "SELECT id FROM nums ORDER BY id DESC LIMIT 3 OFFSET 48", &[]),
+            vec![1, 0]
+        );
+        assert_eq!(
+            get_ids(&db, "SELECT id FROM nums ORDER BY id DESC LIMIT 3 OFFSET 50", &[]),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            get_ids(
+                &db,
+                "SELECT id FROM nums ORDER BY val ASC LIMIT 9223372036854775807 OFFSET 9223372036854775807",
+                &[]
+            ),
+            Vec::<i64>::new()
+        );
+        assert_eq!(
+            get_ids(
+                &db,
+                "SELECT id FROM nums ORDER BY val ASC LIMIT 9223372036854775807 OFFSET 48",
+                &[]
+            )
+            .len(),
+            2
+        );
+
+        // Parameterized LIMIT / OFFSET + WHERE param ordering.
+        assert_eq!(
+            get_ids(
+                &db,
+                "SELECT id FROM nums WHERE id >= ? ORDER BY id ASC LIMIT ? OFFSET ?",
+                &[
+                    SqlValue::Integer(10),
+                    SqlValue::Integer(3),
+                    SqlValue::Integer(2),
+                ]
+            ),
+            vec![12, 13, 14]
+        );
+
+        // Parameter validation errors (Bounds for negative, Type for non-integer, NoSuchColumn even with LIMIT 0).
+        assert!(matches!(
+            db.execute("SELECT id FROM nums LIMIT ?", &[SqlValue::Integer(-1)]).unwrap_err(),
+            SqlError::Bounds(_)
+        ));
+        assert!(matches!(
+            db.execute("SELECT id FROM nums LIMIT 1 OFFSET ?", &[SqlValue::Integer(-5)]).unwrap_err(),
+            SqlError::Bounds(_)
+        ));
+        for bad in [
+            SqlValue::Null,
+            SqlValue::Real(2.0),
+            SqlValue::Text("2".into()),
+            SqlValue::Boolean(true),
+        ] {
+            assert!(matches!(
+                db.execute("SELECT id FROM nums LIMIT ?", std::slice::from_ref(&bad)).unwrap_err(),
+                SqlError::Type(_)
+            ));
+            assert!(matches!(
+                db.execute("SELECT id FROM nums LIMIT 1 OFFSET ?", &[bad]).unwrap_err(),
+                SqlError::Type(_)
+            ));
+        }
+        assert!(matches!(
+            db.execute("SELECT id FROM nums ORDER BY nope LIMIT 0", &[]).unwrap_err(),
+            SqlError::NoSuchColumn { .. }
+        ));
+
+        // Early termination proved via max_visited_rows = 5 on 50-row table.
+        db.set_limits(SqlLimits {
+            max_visited_rows: 5,
+            max_select_rows: 10,
+            max_sort_rows: 10,
+            ..Default::default()
+        })
+        .unwrap();
+
+        // LIMIT 0 visits 0 rows.
+        assert_eq!(
+            get_ids(&db, "SELECT id FROM nums ORDER BY val DESC LIMIT 0", &[]),
+            Vec::<i64>::new()
+        );
+        // Streaming PK ASC visits exactly OFFSET + LIMIT = 5 rows.
+        assert_eq!(
+            get_ids(&db, "SELECT id FROM nums LIMIT 5", &[]),
+            vec![0, 1, 2, 3, 4]
+        );
+        assert_eq!(
+            get_ids(&db, "SELECT id FROM nums ORDER BY id ASC LIMIT 3 OFFSET 2", &[]),
+            vec![2, 3, 4]
+        );
+        assert_eq!(
+            get_ids(&db, "SELECT id FROM nums WHERE id >= 20 ORDER BY id ASC LIMIT 5", &[]),
+            vec![20, 21, 22, 23, 24]
+        );
+        // OFFSET 2 + LIMIT 4 requires visiting 6 rows > max_visited_rows (5).
+        assert!(matches!(
+            db.execute("SELECT id FROM nums ORDER BY id ASC LIMIT 4 OFFSET 2", &[]).unwrap_err(),
+            SqlError::Bounds(_)
+        ));
+        // Non-PK ORDER BY and PK DESC must scan all 50 rows > max_visited_rows (5).
+        assert!(matches!(
+            db.execute("SELECT id FROM nums ORDER BY val ASC LIMIT 2", &[]).unwrap_err(),
+            SqlError::Bounds(_)
+        ));
+        assert!(matches!(
+            db.execute("SELECT id FROM nums ORDER BY id DESC LIMIT 2", &[]).unwrap_err(),
+            SqlError::Bounds(_)
+        ));
+
+        // Sort buffer and max_select_rows bounds: top-K LIMIT 5 succeeds when total=50 > max_sort_rows=10,
+        // while unbounded sort or OFFSET+LIMIT > max_sort_rows fails with Bounds.
+        db.set_limits(SqlLimits {
+            max_visited_rows: 100,
+            max_select_rows: 5,
+            max_sort_rows: 10,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            get_ids(&db, "SELECT id FROM nums ORDER BY val ASC, id ASC LIMIT 5", &[]),
+            vec![0, 10, 20, 30, 40]
+        );
+        assert_eq!(
+            get_ids(&db, "SELECT id FROM nums ORDER BY val ASC LIMIT 4 OFFSET 6", &[]),
+            vec![19, 29, 39, 49]
+        );
+        assert_eq!(
+            get_ids(&db, "SELECT id FROM nums ORDER BY id DESC LIMIT 5 OFFSET 5", &[]),
+            vec![44, 43, 42, 41, 40]
+        );
+        // Full sort without LIMIT on 50 rows exceeds max_select_rows/max_sort_rows.
+        assert!(matches!(
+            db.execute("SELECT id FROM nums ORDER BY val ASC", &[]).unwrap_err(),
+            SqlError::Bounds(_)
+        ));
+        // OFFSET 8 + LIMIT 5 = 13 > max_sort_rows (10).
+        assert!(matches!(
+            db.execute("SELECT id FROM nums ORDER BY val ASC LIMIT 5 OFFSET 8", &[]).unwrap_err(),
+            SqlError::Bounds(_)
+        ));
+        // LIMIT 6 > max_select_rows (5) when 50 rows match.
+        assert!(matches!(
+            db.execute("SELECT id FROM nums ORDER BY val ASC LIMIT 6", &[]).unwrap_err(),
+            SqlError::Bounds(_)
+        ));
+        // OFFSET 47 + LIMIT 6 needs 53 > max_sort_rows (10), so it fails with Bounds.
+        assert!(matches!(
+            db.execute("SELECT id FROM nums ORDER BY val ASC LIMIT 6 OFFSET 47", &[])
+                .unwrap_err(),
+            SqlError::Bounds(_)
+        ));
+    });
+
+    // Separate check for LIMIT > max_select_rows when matching rows after OFFSET <= max_select_rows.
+    for_both_sql(|mut db| {
+        db.set_limits(SqlLimits {
+            max_select_rows: 5,
+            max_sort_rows: 100,
+            ..Default::default()
+        })
+        .unwrap();
+        db.execute("CREATE TABLE t (id INT PRIMARY KEY, v INT)", &[]).unwrap();
+        db.execute("INSERT INTO t VALUES (1,3),(2,1),(3,2)", &[]).unwrap();
+        let SqlOutcome::Rows { rows, .. } = db
+            .execute("SELECT id FROM t ORDER BY v ASC LIMIT 50", &[])
+            .unwrap()
+        else {
+            panic!("expected rows");
+        };
+        assert_eq!(
+            rows,
+            vec![
+                vec![SqlValue::Integer(2)],
+                vec![SqlValue::Integer(3)],
+                vec![SqlValue::Integer(1)],
+            ]
+        );
+    });
+}
+
+#[test]
+fn randomized_order_limit_offset_differential_against_model() {
+    use std::cmp::Ordering;
+
+    #[derive(Clone)]
+    struct ModelRow {
+        id: i64,
+        n: Option<i64>,
+        r: Option<f64>,
+        s: Option<String>,
+        b: Option<bool>,
+    }
+
+    impl ModelRow {
+        fn col(&self, idx: usize) -> SqlValue {
+            match idx {
+                0 => SqlValue::Integer(self.id),
+                1 => self.n.map_or(SqlValue::Null, SqlValue::Integer),
+                2 => self.r.map_or(SqlValue::Null, SqlValue::Real),
+                3 => self.s.clone().map_or(SqlValue::Null, SqlValue::Text),
+                4 => self.b.map_or(SqlValue::Null, SqlValue::Boolean),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    fn cmp_model_val(a: &SqlValue, b: &SqlValue, desc: bool, nulls_first: bool) -> Ordering {
+        match (a, b) {
+            (SqlValue::Null, SqlValue::Null) => Ordering::Equal,
+            (SqlValue::Null, _) => if nulls_first { Ordering::Less } else { Ordering::Greater },
+            (_, SqlValue::Null) => if nulls_first { Ordering::Greater } else { Ordering::Less },
+            (SqlValue::Integer(x), SqlValue::Integer(y)) => {
+                let o = x.cmp(y);
+                if desc { o.reverse() } else { o }
+            }
+            (SqlValue::Real(x), SqlValue::Real(y)) => {
+                let o = x.partial_cmp(y).unwrap();
+                if desc { o.reverse() } else { o }
+            }
+            (SqlValue::Text(x), SqlValue::Text(y)) => {
+                let o = x.as_bytes().cmp(y.as_bytes());
+                if desc { o.reverse() } else { o }
+            }
+            (SqlValue::Boolean(x), SqlValue::Boolean(y)) => {
+                let o = x.cmp(y);
+                if desc { o.reverse() } else { o }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    for_both_sql(|db| {
+        db.execute(
+            "CREATE TABLE r (id INTEGER PRIMARY KEY, n INTEGER, r REAL, s TEXT, b BOOLEAN)",
+            &[],
+        )
+        .unwrap();
+
+        let mut model: BTreeMap<i64, ModelRow> = BTreeMap::new();
+        let mut rng = 0x1234_5678_9ABC_DEF0_u64;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+
+        let mut ins_sql = String::from("INSERT INTO r VALUES ");
+        let mut ins_params = Vec::new();
+        for i in 0..40_i64 {
+            if i > 0 {
+                ins_sql.push(',');
+            }
+            ins_sql.push_str("(?, ?, ?, ?, ?)");
+            let id = i * 3 - 50;
+            let n = if next().is_multiple_of(4) {
+                None
+            } else {
+                Some(((next() % 7) as i64) - 3)
+            };
+            let r = if next().is_multiple_of(4) {
+                None
+            } else {
+                let vals = [-2.5, -0.0, 0.0, 1.5, 2.0];
+                Some(vals[(next() as usize) % vals.len()])
+            };
+            let s = if next().is_multiple_of(4) {
+                None
+            } else {
+                let vals = ["", "A", "a", "b", "é"];
+                Some(vals[(next() as usize) % vals.len()].to_owned())
+            };
+            let b = if next().is_multiple_of(4) {
+                None
+            } else {
+                Some(next() & 1 != 0)
+            };
+            ins_params.push(SqlValue::Integer(id));
+            ins_params.push(n.map_or(SqlValue::Null, SqlValue::Integer));
+            ins_params.push(r.map_or(SqlValue::Null, SqlValue::Real));
+            ins_params.push(s.clone().map_or(SqlValue::Null, SqlValue::Text));
+            ins_params.push(b.map_or(SqlValue::Null, SqlValue::Boolean));
+            model.insert(id, ModelRow { id, n, r, s, b });
+        }
+        db.execute(&ins_sql, &ins_params).unwrap();
+
+        let col_names = ["id", "n", "r", "s", "b"];
+        for _ in 0..200 {
+            let mut sql = String::from("SELECT ");
+            let proj: Vec<usize> = if next() & 1 == 0 {
+                sql.push('*');
+                vec![0, 1, 2, 3, 4]
+            } else {
+                let cnt = 1 + (next() % 3) as usize;
+                let mut cols = Vec::new();
+                for i in 0..cnt {
+                    if i > 0 {
+                        sql.push_str(", ");
+                    }
+                    let c = (next() as usize) % 5;
+                    sql.push_str(col_names[c]);
+                    cols.push(c);
+                }
+                cols
+            };
+            sql.push_str(" FROM r");
+
+            let mut params = Vec::new();
+            let lo_bound = if next() % 3 == 0 {
+                let lo = ((next() % 120) as i64) - 60;
+                sql.push_str(" WHERE id >= ?");
+                params.push(SqlValue::Integer(lo));
+                Some(lo)
+            } else {
+                None
+            };
+
+            let mut order_spec = Vec::new();
+            if !next().is_multiple_of(6) {
+                sql.push_str(" ORDER BY ");
+                let key_cnt = 1 + (next() % 3) as usize;
+                for i in 0..key_cnt {
+                    if i > 0 {
+                        sql.push_str(", ");
+                    }
+                    let c = (next() as usize) % 5;
+                    let desc = next() & 1 != 0;
+                    let nulls_opt = match next() % 3 {
+                        0 => None,
+                        1 => Some(true),
+                        _ => Some(false),
+                    };
+                    sql.push_str(col_names[c]);
+                    if desc {
+                        sql.push_str(" DESC");
+                    } else if next() & 1 != 0 {
+                        sql.push_str(" ASC");
+                    }
+                    if let Some(nf) = nulls_opt {
+                        sql.push_str(if nf { " NULLS FIRST" } else { " NULLS LAST" });
+                    }
+                    let nulls_first = nulls_opt.unwrap_or(!desc);
+                    order_spec.push((c, desc, nulls_first));
+                }
+            }
+
+            let (limit, offset) = if !next().is_multiple_of(5) {
+                let lim = match next() % 6 {
+                    0 => 0,
+                    1 => 1,
+                    2 => 5,
+                    3 => 15,
+                    4 => 40,
+                    _ => 100,
+                };
+                sql.push_str(" LIMIT ?");
+                params.push(SqlValue::Integer(lim));
+                let off = if next() & 1 != 0 {
+                    let o = (next() % 45) as i64;
+                    sql.push_str(" OFFSET ?");
+                    params.push(SqlValue::Integer(o));
+                    o as usize
+                } else {
+                    0
+                };
+                (Some(lim as usize), off)
+            } else {
+                (None, 0)
+            };
+
+            let actual = db.execute(&sql, &params).unwrap();
+            let forced = db.execute_force_full_scan_for_test(&sql, &params).unwrap();
+            assert_eq!(actual, forced, "planned vs forced mismatch on `{sql}`");
+
+            let mut expected_rows: Vec<&ModelRow> = model
+                .values()
+                .filter(|row| lo_bound.is_none_or(|lo| row.id >= lo))
+                .collect();
+            if !order_spec.is_empty() {
+                expected_rows.sort_by(|a, b| {
+                    for &(c, desc, nulls_first) in &order_spec {
+                        let o = cmp_model_val(&a.col(c), &b.col(c), desc, nulls_first);
+                        if o != Ordering::Equal {
+                            return o;
+                        }
+                    }
+                    a.id.cmp(&b.id)
+                });
+            }
+            let expected_projected: Vec<Vec<SqlValue>> = expected_rows
+                .into_iter()
+                .skip(offset)
+                .take(limit.unwrap_or(usize::MAX))
+                .map(|row| proj.iter().map(|&c| row.col(c)).collect())
+                .collect();
+            let expected = SqlOutcome::Rows {
+                columns: proj.iter().map(|&c| col_names[c].to_owned()).collect(),
+                rows: expected_projected,
+            };
+            assert_eq!(actual, expected, "model mismatch for `{sql}` params={params:?}");
+        }
+    });
 }
 
 #[test]

@@ -54,11 +54,33 @@ pub(crate) enum SelectColumns {
     List(Vec<String>),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NullsOrder {
+    First,
+    Last,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OrderByItem {
+    pub(crate) column: String,
+    pub(crate) desc: bool,
+    pub(crate) nulls: Option<NullsOrder>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LimitValue {
+    Literal(usize),
+    Param(usize),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SelectStmt {
     pub(crate) columns: SelectColumns,
     pub(crate) table: String,
     pub(crate) filter: Option<Expr>,
+    pub(crate) order_by: Vec<OrderByItem>,
+    pub(crate) limit: Option<LimitValue>,
+    pub(crate) offset: Option<LimitValue>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -824,20 +846,257 @@ impl Parser<'_> {
                 offset: Some(self.peek().offset),
             });
         }
-        self.check_trailing_unsupported()?;
+        if !(self.at_kw("where")
+            || self.at_kw("order")
+            || self.at_kw("limit")
+            || self.at_kw("offset"))
+        {
+            self.check_trailing_unsupported()?;
+        }
 
         let filter = if self.eat_kw("where") {
             Some(self.parse_expr(1)?)
         } else {
             None
         };
+        if !(self.at_kw("order") || self.at_kw("limit") || self.at_kw("offset")) {
+            self.check_trailing_unsupported()?;
+        }
+
+        let order_by = if self.eat_kw("order") {
+            self.parse_order_by()?
+        } else {
+            Vec::new()
+        };
+        if !(self.at_kw("limit") || self.at_kw("offset")) {
+            self.check_trailing_unsupported()?;
+        }
+
+        let limit = if self.eat_kw("limit") {
+            Some(self.parse_limit_value("LIMIT")?)
+        } else {
+            None
+        };
+        let offset = if self.eat_kw("offset") {
+            if limit.is_none() {
+                return Err(SqlError::Unsupported {
+                    feature: "OFFSET without LIMIT".into(),
+                    offset: Some(self.peek().offset),
+                });
+            }
+            Some(self.parse_limit_value("OFFSET")?)
+        } else {
+            None
+        };
+
+        if self.at_kw("order") {
+            return Err(SqlError::Syntax {
+                offset: self.peek().offset,
+                message: "ORDER BY must precede LIMIT".into(),
+            });
+        }
+        if matches!(
+            self.peek().kind,
+            TokenKind::Plus
+                | TokenKind::Minus
+                | TokenKind::Star
+                | TokenKind::Slash
+                | TokenKind::Percent
+                | TokenKind::Concat
+        ) {
+            return Err(SqlError::Unsupported {
+                feature: "arithmetic / concatenation operators".into(),
+                offset: Some(self.peek().offset),
+            });
+        }
         self.check_trailing_unsupported()?;
 
         Ok(SelectStmt {
             columns,
             table,
             filter,
+            order_by,
+            limit,
+            offset,
         })
+    }
+
+    fn parse_order_by(&mut self) -> Result<Vec<OrderByItem>, SqlError> {
+        self.expect_kw("by")?;
+        let mut items = Vec::new();
+        loop {
+            if items.len() >= self.limits.max_columns {
+                return Err(SqlError::Bounds(format!(
+                    "ORDER BY item count exceeds max_columns ({})",
+                    self.limits.max_columns
+                )));
+            }
+            let tok = self.peek().clone();
+            match &tok.kind {
+                TokenKind::Integer(_) => {
+                    return Err(SqlError::Unsupported {
+                        feature: "ORDER BY column position".into(),
+                        offset: Some(tok.offset),
+                    });
+                }
+                TokenKind::Minus
+                    if matches!(
+                        self.peek_n(1).map(|t| &t.kind),
+                        Some(TokenKind::Integer(_))
+                    ) =>
+                {
+                    return Err(SqlError::Unsupported {
+                        feature: "ORDER BY column position".into(),
+                        offset: Some(tok.offset),
+                    });
+                }
+                TokenKind::LParen => {
+                    return Err(SqlError::Unsupported {
+                        feature: "expressions in ORDER BY".into(),
+                        offset: Some(tok.offset),
+                    });
+                }
+                _ => {}
+            }
+            let (column, col_offset) = self.expect_ident("column name in ORDER BY")?;
+            if matches!(self.peek().kind, TokenKind::Dot) {
+                return Err(SqlError::Unsupported {
+                    feature: "qualified column names (table.column)".into(),
+                    offset: Some(col_offset),
+                });
+            }
+            if matches!(self.peek().kind, TokenKind::LParen) {
+                return Err(SqlError::Unsupported {
+                    feature: format!("function or aggregate call '{column}(...)'"),
+                    offset: Some(col_offset),
+                });
+            }
+            if matches!(
+                self.peek().kind,
+                TokenKind::Plus
+                    | TokenKind::Minus
+                    | TokenKind::Star
+                    | TokenKind::Slash
+                    | TokenKind::Percent
+                    | TokenKind::Concat
+            ) {
+                return Err(SqlError::Unsupported {
+                    feature: "expressions in ORDER BY".into(),
+                    offset: Some(self.peek().offset),
+                });
+            }
+            let desc = if self.eat_kw("asc") {
+                false
+            } else {
+                self.eat_kw("desc")
+            };
+            let nulls = if self.eat_kw("nulls") {
+                if self.eat_kw("first") {
+                    Some(NullsOrder::First)
+                } else if self.eat_kw("last") {
+                    Some(NullsOrder::Last)
+                } else {
+                    return Err(SqlError::Syntax {
+                        offset: self.peek().offset,
+                        message: "expected FIRST or LAST after NULLS".into(),
+                    });
+                }
+            } else {
+                None
+            };
+            items.push(OrderByItem {
+                column,
+                desc,
+                nulls,
+            });
+            if matches!(self.peek().kind, TokenKind::Comma) {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+        Ok(items)
+    }
+
+    fn parse_limit_value(&mut self, clause: &str) -> Result<LimitValue, SqlError> {
+        let tok = self.peek().clone();
+        match tok.kind {
+            TokenKind::Integer(raw) => {
+                self.advance();
+                let n = parse_signed_integer(&raw, false, tok.offset)?;
+                let val = usize::try_from(n).map_err(|_| {
+                    SqlError::Bounds(format!("{clause} value {n} exceeds supported range"))
+                })?;
+                Ok(LimitValue::Literal(val))
+            }
+            TokenKind::Minus => {
+                self.advance();
+                let num = self.peek().clone();
+                match num.kind {
+                    TokenKind::Integer(raw) => {
+                        self.advance();
+                        let n = parse_signed_integer(&raw, true, num.offset)?;
+                        if n < 0 {
+                            Err(SqlError::Bounds(format!(
+                                "{clause} must be non-negative, got {n}"
+                            )))
+                        } else {
+                            Ok(LimitValue::Literal(0))
+                        }
+                    }
+                    TokenKind::Real(raw) => {
+                        self.advance();
+                        parse_real(&raw, true, num.offset)?;
+                        Err(SqlError::Type(format!(
+                            "{clause} requires an INTEGER value, got REAL"
+                        )))
+                    }
+                    _ => Err(SqlError::Syntax {
+                        offset: tok.offset,
+                        message: format!("{clause} expects a non-negative INTEGER literal or '?'"),
+                    }),
+                }
+            }
+            TokenKind::Real(raw) => {
+                self.advance();
+                parse_real(&raw, false, tok.offset)?;
+                Err(SqlError::Type(format!(
+                    "{clause} requires an INTEGER value, got REAL"
+                )))
+            }
+            TokenKind::String(_) => {
+                self.advance();
+                Err(SqlError::Type(format!(
+                    "{clause} requires an INTEGER value, got TEXT"
+                )))
+            }
+            TokenKind::Question => {
+                self.advance();
+                if self.param_count >= self.limits.max_params {
+                    return Err(SqlError::Bounds(format!(
+                        "parameter count exceeds max_params ({})",
+                        self.limits.max_params
+                    )));
+                }
+                let idx = self.param_count;
+                self.param_count += 1;
+                Ok(LimitValue::Param(idx))
+            }
+            TokenKind::Ident {
+                ref text,
+                quoted: false,
+            } if matches!(text.as_str(), "null" | "true" | "false") => {
+                let kind = if text == "null" { "NULL" } else { "BOOLEAN" };
+                self.advance();
+                Err(SqlError::Type(format!(
+                    "{clause} requires an INTEGER value, got {kind}"
+                )))
+            }
+            _ => Err(SqlError::Syntax {
+                offset: tok.offset,
+                message: format!("{clause} expects a non-negative INTEGER literal or '?'"),
+            }),
+        }
     }
 
     fn parse_update(&mut self) -> Result<UpdateStmt, SqlError> {
