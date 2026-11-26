@@ -256,3 +256,46 @@ fn outcome_unknown_propagates_unchanged_on_commit_io_fault() {
     );
     assert!(err.as_io_error().is_some());
 }
+
+#[test]
+fn classify_io_error_distinguishes_bounds_from_other_invalid_input() {
+    use std::io;
+
+    let schema_err = io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "field does not match its schema type",
+    );
+    match exec::classify_io_error(schema_err) {
+        SqlError::Io(err) => {
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+            assert_eq!(err.to_string(), "field does not match its schema type");
+        }
+        other => panic!("expected SqlError::Io, got {other:?}"),
+    }
+
+    let missing_err = io::Error::new(io::ErrorKind::InvalidInput, "required field is missing");
+    assert!(matches!(
+        exec::classify_io_error(missing_err),
+        SqlError::Io(_)
+    ));
+
+    for msg in [
+        "document exceeds 1 MiB",
+        "snapshot key count limit exceeded",
+        "atomic batch exceeds 16 MiB encoded payload",
+        "transaction write count limit exceeded",
+    ] {
+        let kind =
+            if msg.contains("1 MiB") || msg.contains("atomic batch") || msg.contains("write count")
+            {
+                io::ErrorKind::InvalidInput
+            } else {
+                io::ErrorKind::Other
+            };
+        let err = io::Error::new(kind, msg);
+        assert!(
+            matches!(exec::classify_io_error(err), SqlError::Bounds(_)),
+            "expected SqlError::Bounds for {msg}"
+        );
+    }
+}
