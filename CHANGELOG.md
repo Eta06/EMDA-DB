@@ -4,6 +4,12 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add literal column `DEFAULT` values to SQL `CREATE TABLE`. They are
+  checked against the column type, length and `NOT NULL` when the table is
+  created and fill omitted columns on `INSERT`; explicit values, including
+  `NULL`, win. Expressions, `DEFAULT` on primary keys, `DEFAULT VALUES` and
+  `ADD COLUMN ... DEFAULT` are rejected as unsupported. Tests cover both
+  backends, reopen, indexing of defaulted values and a SQLite comparison.
 - Add bounded, uncorrelated subqueries (`expr [NOT] IN (SELECT one_column ...)`,
   `[NOT] EXISTS (SELECT ...)`, and scalar `(SELECT one_column ...)`) to the
   embedded SQL subset:

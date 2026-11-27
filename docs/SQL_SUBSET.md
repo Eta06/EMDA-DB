@@ -103,7 +103,8 @@ table_item     := col_def
                 | PRIMARY KEY "(" ident ")"
                 | UNIQUE "(" ident ("," ident)* ")"
                 | FOREIGN KEY "(" ident ")" fk_ref
-col_def        := ident data_type (NOT NULL | PRIMARY KEY | UNIQUE | fk_ref)*
+col_def        := ident data_type (NOT NULL | PRIMARY KEY | UNIQUE | DEFAULT default_lit | fk_ref)*
+default_lit    := ["-"] integer | ["-"] real | string | TRUE | FALSE | NULL
 fk_ref         := REFERENCES ident ["(" ident ")"] (ON (DELETE | UPDATE) (NO ACTION | RESTRICT))*
 data_type      := INTEGER | INT | BIGINT
                 | REAL | DOUBLE | FLOAT
@@ -163,7 +164,7 @@ Notes on specific constructs:
 - `LIMIT` and `OFFSET` values must be non-negative `INTEGER` literals or `?` parameters (`SqlError::Bounds` for negative `INTEGER` values; `SqlError::Type` for `NULL`, `REAL`, `TEXT`, or `BOOLEAN`; `SqlError::Syntax` for out-of-`i64`-range integer literals).
 - Aggregate and grouping queries follow standard SQL / PostgreSQL strictness: in any query with `GROUP BY`, `HAVING`, or an aggregate call in `SELECT` or `ORDER BY`, every non-aggregated column in `SELECT`, `HAVING`, or `ORDER BY` must appear in `GROUP BY` (rejected as `SqlError::Syntax`, with no SQLite-style "bare column" leniency). `HAVING` may reference grouping columns and aggregates only (not `SELECT` aliases); `ORDER BY` may reference grouping columns, select-item aliases (`AS alias`), or aggregate expressions (`COUNT(*)`, `SUM(col)`, etc.). Arithmetic expressions, nested aggregates, aggregates in `WHERE` or `GROUP BY`, `SUM`/`AVG`/`MIN`/`MAX` with `DISTINCT`, `GROUP BY` column positions/`ROLLUP`/`CUBE`/`GROUPING SETS`, `OVER`, and `FILTER` fail with `SqlError::Unsupported` (or `Syntax` for invalid forms such as `SUM(*)` or `COUNT(DISTINCT *)`).
 - Secondary indexes (`CREATE [UNIQUE] INDEX` and `UNIQUE` constraints) support `INTEGER`, `TEXT`/`VARCHAR(n)`, and `BOOLEAN` columns (1–4 columns per index, up to 16 indexes per table). `DROP INDEX [IF EXISTS] name ON table` drops an explicit secondary index cleanly, and refuses dropping an index that backs a table or column `UNIQUE` constraint with `SqlError::Constraint`. `REAL` columns in indexes/unique constraints, partial `CREATE INDEX ... WHERE ...`, `ASC`/`DESC` index ordering, `USING ...`, `DROP INDEX name` (without `ON table`), `DROP INDEX ... CONCURRENTLY`/`CASCADE`/`RESTRICT`, and `DROP TABLE` fail with `SqlError::Unsupported`.
-- Recognized SQL outside this grammar (`RIGHT`/`FULL`/`CROSS`/`NATURAL` joins, `JOIN ... USING`, comma joins, `SELECT DISTINCT`, `UNION`/`INTERSECT`/`EXCEPT`, scalar/non-aggregate function calls, derived tables `FROM (SELECT ...)`, correlated subqueries, multi-column tuple `IN`, value-list `IN (...)`, `WITH` CTEs, `DROP TABLE ... CASCADE`/`RESTRICT` or several tables, `ALTER TABLE` actions other than `ADD COLUMN`, `BEGIN`/`COMMIT`/`ROLLBACK`, `RETURNING`, `ON CONFLICT`, `DEFAULT`, `CHECK`, composite `FOREIGN KEY`/`REFERENCES`, `ON DELETE`/`ON UPDATE` `CASCADE`/`SET NULL`/`SET DEFAULT`, `MATCH`, `DEFERRABLE`, `CONSTRAINT` names, `BETWEEN`, `LIKE`, `CASE`, `CAST`, arithmetic operators, and qualified `table.column` or table aliases outside a join or subquery) fails with `SqlError::Unsupported` naming the feature.
+- Recognized SQL outside this grammar (`RIGHT`/`FULL`/`CROSS`/`NATURAL` joins, `JOIN ... USING`, comma joins, `SELECT DISTINCT`, `UNION`/`INTERSECT`/`EXCEPT`, scalar/non-aggregate function calls, derived tables `FROM (SELECT ...)`, correlated subqueries, multi-column tuple `IN`, value-list `IN (...)`, `WITH` CTEs, `DROP TABLE ... CASCADE`/`RESTRICT` or several tables, `ALTER TABLE` actions other than `ADD COLUMN`, `BEGIN`/`COMMIT`/`ROLLBACK`, `RETURNING`, `ON CONFLICT`, `DEFAULT` expressions other than literals, `DEFAULT` on a `PRIMARY KEY` column, `DEFAULT VALUES`, `CHECK`, composite `FOREIGN KEY`/`REFERENCES`, `ON DELETE`/`ON UPDATE` `CASCADE`/`SET NULL`/`SET DEFAULT`, `MATCH`, `DEFERRABLE`, `CONSTRAINT` names, `BETWEEN`, `LIKE`, `CASE`, `CAST`, arithmetic operators, and qualified `table.column` or table aliases outside a join or subquery) fails with `SqlError::Unsupported` naming the feature.
 
 ## Types, coercion, and NULL semantics
 
@@ -305,6 +306,23 @@ Bounded, **uncorrelated** subqueries are supported in `WHERE` (`SELECT`, `UPDATE
 - **Planner, isolation & bounds**: Outer PK/index access paths remain active for remaining `AND` conjuncts alongside subqueries, and non-negated `pk IN (subquery)` uses `AccessPlan::Empty` (empty set) or batched `PRIMARY KEY` lookups when at most 64 distinct candidate keys exist. Each subquery runs once inside the same `DocumentTransaction` (`ReadSet`), seeing staged writes in `SqlDatabase::transaction` and triggering `SqlError::Conflict` on commit if another writer modifies read inner data concurrently during a write statement or multi-statement transaction. Inner and outer scans share `SqlLimits::max_visited_rows`, and `IN` sets enforce `SqlLimits::max_subquery_values`, returning `SqlError::Bounds` rather than truncating.
 - **Not supported**: Correlated subqueries, derived tables in `FROM`, `IN (val1, val2, ...)` value lists, multi-column `(a, b) IN (...)`, and `WITH` CTEs or `UNION` inside subqueries return `SqlError::Unsupported`.
 
+## Column defaults
+
+- `CREATE TABLE` accepts `DEFAULT` followed by one literal: a possibly
+  negative integer or real, a string, `TRUE`, `FALSE` or `NULL`. The value
+  is checked against the column's type, `VARCHAR(n)` length and `NOT NULL`
+  when the table is created; an `INTEGER` literal may default a `REAL`
+  column. `DEFAULT NULL` is the same as no default.
+- An `INSERT` with a column list fills each omitted column that has a
+  default with it, so a `NOT NULL` column with a default may be omitted. An
+  explicit value, including `NULL`, is used as written. A defaulted value is
+  stored, validated and indexed like a written one.
+- Defaults are kept in the table's catalog entry; catalogs written before
+  defaults existed load unchanged. Expressions and functions such as
+  `CURRENT_TIMESTAMP`, `DEFAULT` on a `PRIMARY KEY` column, `DEFAULT VALUES`,
+  the `DEFAULT` keyword inside `VALUES`, and `ALTER TABLE ... ADD COLUMN ...
+  DEFAULT` return `Unsupported`.
+
 ## Dropping tables
 
 `DROP TABLE [IF EXISTS] name` returns `SqlOutcome::TableDropped`. A missing table is `NoSuchTable` unless `IF EXISTS` is given. `CASCADE`, `RESTRICT` and several table names return `Unsupported`.
@@ -339,7 +357,7 @@ Bounded, **uncorrelated** subqueries are supported in `WHERE` (`SELECT`, `UPDATE
 `ALTER TABLE name ADD [COLUMN] column type [NOT NULL]` returns `SqlOutcome::TableAltered`. The type names are those of `CREATE TABLE`, including `VARCHAR(n)`.
 
 - It changes only the catalog, in one transaction. Existing rows have no value for the new column and read it as `NULL`; they are not rewritten, so the statement costs the same on any table size.
-- `NOT NULL` is accepted only on an empty table, because existing rows would otherwise be `NULL`. There is no `DEFAULT` yet.
+- `NOT NULL` is accepted only on an empty table, because existing rows would otherwise be `NULL`. `ADD COLUMN` does not accept `DEFAULT`, because existing rows would need it written.
 - The new column can be indexed with `CREATE INDEX` and used in every statement. Cached plans for the table are invalidated because the catalog entry changed.
 - A duplicate column name is a `Syntax` error, and a table holds at most `max_columns` columns (`Bounds`).
 - `DROP COLUMN`, `RENAME`, `ALTER COLUMN`, `ADD CONSTRAINT`, `PRIMARY KEY`, `UNIQUE`, `DEFAULT`, `CHECK`, `REFERENCES` and several actions in one statement return `Unsupported`. Add uniqueness with `CREATE UNIQUE INDEX`.

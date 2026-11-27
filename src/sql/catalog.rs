@@ -48,6 +48,11 @@ pub(crate) struct ColumnDef {
     pub(crate) name: String,
     pub(crate) col_type: SqlType,
     pub(crate) not_null: bool,
+    /// The stored form of the column's `DEFAULT`, already checked against
+    /// its type; never JSON `null`. Absent in catalogs written before
+    /// defaults existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) default: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

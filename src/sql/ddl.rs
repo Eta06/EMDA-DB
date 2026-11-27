@@ -387,6 +387,7 @@ pub(crate) fn add_column_in_tx(
             name: statement.column.clone(),
             col_type: statement.column_type,
             not_null: statement.not_null,
+            default: None,
         });
         updated.validate()?;
         catalog::save_table_def(tx, &table.catalog_key, &updated)?;

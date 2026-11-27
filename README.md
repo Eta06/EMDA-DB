@@ -60,7 +60,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   lookups. See the [document guide](docs/DOCUMENT_MODEL.md).
 - **Embedded SQL**, through the Rust API. The [SQL subset](docs/SQL_SUBSET.md)
   lists every form and bound:
-  - Tables with `PRIMARY KEY`, `NOT NULL` and `UNIQUE`; `DROP TABLE`;
+  - Tables with `PRIMARY KEY`, `NOT NULL`, `UNIQUE` and literal `DEFAULT`s;
+    `DROP TABLE`;
     `ALTER TABLE ... ADD COLUMN`.
   - Online `CREATE [UNIQUE] INDEX`: 1–4 columns, up to 16 indexes per table.
   - `INNER` and `LEFT JOIN` of up to eight tables, using key, index or hash
@@ -85,7 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Being built now
 
 - **SQL.** `RIGHT`/`FULL` joins, aggregates over joins, correlated
-  subqueries, composite and cascading foreign keys, `DEFAULT`/`CHECK`, more
+  subqueries, composite and cascading foreign keys, `CHECK`, more
   `ALTER TABLE` actions, and faster scans, aggregates and indexed reads.
 - **Service and operations.** A network API with authentication, project
   isolation and quotas, safe scale-to-zero, replication and failover.

@@ -86,6 +86,8 @@ pub(crate) struct ColumnSpec {
     pub(crate) name: String,
     pub(crate) col_type: SqlType,
     pub(crate) not_null: bool,
+    /// `DEFAULT` literal, checked against the column type at execution.
+    pub(crate) default: Option<(LiteralValue, usize)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -767,6 +769,53 @@ impl Parser<'_> {
         })
     }
 
+    /// A `DEFAULT` value: a possibly negative number, a string, `TRUE`,
+    /// `FALSE` or `NULL`. Expressions and functions are not accepted.
+    fn parse_default_literal(&mut self) -> Result<LiteralValue, SqlError> {
+        let offset = self.peek().offset;
+        let negative = matches!(self.peek().kind, TokenKind::Minus);
+        if negative {
+            self.advance();
+        }
+        let value = match self.peek().kind.clone() {
+            TokenKind::Integer(raw) => {
+                self.advance();
+                LiteralValue::Integer(parse_signed_integer(&raw, negative, offset)?)
+            }
+            TokenKind::Real(raw) => {
+                self.advance();
+                LiteralValue::Real(parse_real(&raw, negative, offset)?)
+            }
+            TokenKind::String(text) if !negative => {
+                self.advance();
+                LiteralValue::Text(text)
+            }
+            TokenKind::Ident {
+                text,
+                quoted: false,
+            } if !negative
+                && matches!(
+                    text.to_ascii_lowercase().as_str(),
+                    "true" | "false" | "null"
+                ) =>
+            {
+                self.advance();
+                match text.to_ascii_lowercase().as_str() {
+                    "true" => LiteralValue::Boolean(true),
+                    "false" => LiteralValue::Boolean(false),
+                    _ => LiteralValue::Null,
+                }
+            }
+            _ => {
+                return Err(SqlError::Unsupported {
+                    feature: "DEFAULT expression other than a literal".into(),
+                    offset: Some(offset),
+                });
+            }
+        };
+        Ok(value)
+    }
+
     fn parse_create_table_body(&mut self) -> Result<CreateTableStmt, SqlError> {
         self.advance();
 
@@ -909,6 +958,7 @@ impl Parser<'_> {
                 let mut not_null = false;
                 let mut is_pk = false;
                 let mut is_unique = false;
+                let mut default = None;
                 let col_idx = columns.len();
                 loop {
                     if self.eat_kw("not") {
@@ -928,8 +978,17 @@ impl Parser<'_> {
                     } else if self.eat_kw("references") {
                         let parsed_ref = self.parse_references_tail()?;
                         col_fks.push((col_idx, parsed_ref));
-                    } else if self.at_kw("default")
-                        || self.at_kw("check")
+                    } else if self.at_kw("default") {
+                        let offset = self.peek().offset;
+                        self.advance();
+                        if default.is_some() {
+                            return Err(SqlError::Syntax {
+                                offset,
+                                message: format!("column '{col_name}' declares DEFAULT twice"),
+                            });
+                        }
+                        default = Some((self.parse_default_literal()?, offset));
+                    } else if self.at_kw("check")
                         || self.at_kw("autoincrement")
                         || self.at_kw("generated")
                         || self.at_kw("collate")
@@ -958,6 +1017,7 @@ impl Parser<'_> {
                     name: col_name,
                     col_type,
                     not_null,
+                    default,
                 });
             }
 

@@ -349,15 +349,15 @@ fn exec_create_table(
             limits.max_columns
         )));
     }
-    let columns: Vec<ColumnDef> = stmt
-        .columns
-        .iter()
-        .map(|col| ColumnDef {
+    let mut columns: Vec<ColumnDef> = Vec::with_capacity(stmt.columns.len());
+    for (idx, col) in stmt.columns.iter().enumerate() {
+        columns.push(ColumnDef {
             name: col.name.clone(),
             col_type: col.col_type,
             not_null: col.not_null,
-        })
-        .collect();
+            default: column_default(col, idx == stmt.primary_key_index, limits)?,
+        });
+    }
     let indexes: Vec<IndexDef> = stmt
         .unique_constraints
         .iter()
@@ -913,6 +913,8 @@ fn omit_explicit_nulls_bounded(
 
 struct BoundInsertPlan {
     target_indices: Vec<usize>,
+    /// Omitted columns that take their `DEFAULT`.
+    defaulted: Vec<usize>,
 }
 
 fn get_or_build_insert_plan(
@@ -939,7 +941,7 @@ fn get_or_build_insert_plan(
                 indices.push(idx);
             }
             for (idx, col) in table.columns.iter().enumerate() {
-                if !indices.contains(&idx) && col.not_null {
+                if !indices.contains(&idx) && col.not_null && col.default.is_none() {
                     if idx == table.primary_key_index {
                         return Err(SqlError::Constraint(format!(
                             "PRIMARY KEY column '{}' cannot be omitted",
@@ -956,7 +958,13 @@ fn get_or_build_insert_plan(
         }
         None => (0..table.columns.len()).collect(),
     };
-    let plan = Arc::new(BoundInsertPlan { target_indices });
+    let defaulted = (0..table.columns.len())
+        .filter(|idx| !target_indices.contains(idx) && table.columns[*idx].default.is_some())
+        .collect();
+    let plan = Arc::new(BoundInsertPlan {
+        target_indices,
+        defaulted,
+    });
     let mut guard = cache.insert_plans.write();
     if guard.len() >= MAX_CACHED_PLANS {
         guard.clear();
@@ -1204,6 +1212,12 @@ fn exec_insert(
             });
         }
         let mut obj = Map::with_capacity(table.columns.len());
+        for &col_idx in &plan.defaulted {
+            let col = &table.columns[col_idx];
+            if let Some(default) = &col.default {
+                obj.insert(col.name.clone(), default.clone());
+            }
+        }
         let mut pk_val: Option<InsertPk> = None;
         for (expr, &col_idx) in tuple.iter().zip(&plan.target_indices) {
             let col = &table.columns[col_idx];
@@ -1252,6 +1266,12 @@ fn exec_insert(
             });
         }
         let mut obj = Map::with_capacity(table.columns.len());
+        for &col_idx in &plan.defaulted {
+            let col = &table.columns[col_idx];
+            if let Some(default) = &col.default {
+                obj.insert(col.name.clone(), default.clone());
+            }
+        }
         let mut pk_val: Option<InsertPk> = None;
         for (expr, &col_idx) in tuple.iter().zip(&plan.target_indices) {
             let col = &table.columns[col_idx];
@@ -5563,6 +5583,43 @@ impl<'r> RowRef<'r> {
             Self::Map(obj) => decode_col_ref(obj, col),
             Self::Flat(doc) => decode_flat_col(doc, col),
         }
+    }
+}
+
+/// Checks a column's `DEFAULT` literal against its type and constraints and
+/// returns its stored form. `DEFAULT NULL` is the same as no default.
+fn column_default(
+    col: &super::parser::ColumnSpec,
+    is_primary_key: bool,
+    limits: &SqlLimits,
+) -> Result<Option<Value>, SqlError> {
+    let Some((literal, offset)) = &col.default else {
+        return Ok(None);
+    };
+    if is_primary_key {
+        return Err(SqlError::Unsupported {
+            feature: "DEFAULT on a PRIMARY KEY column".into(),
+            offset: Some(*offset),
+        });
+    }
+    let value = match literal {
+        LiteralValue::Null => SqlValue::Null,
+        LiteralValue::Integer(n) => SqlValue::Integer(*n),
+        LiteralValue::Real(f) => SqlValue::Real(*f),
+        LiteralValue::Text(s) => SqlValue::Text(s.clone()),
+        LiteralValue::Boolean(b) => SqlValue::Boolean(*b),
+    };
+    let coerced = coerce_for_column(
+        &value,
+        &col.name,
+        col.col_type,
+        col.not_null,
+        true,
+        limits.max_text_bytes,
+    )?;
+    match coerced {
+        SqlValue::Null => Ok(None),
+        other => sql_value_to_json(&other, &col.name).map(Some),
     }
 }
 
