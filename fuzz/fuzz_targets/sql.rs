@@ -1,5 +1,6 @@
 #![no_main]
 
+use database_engine::sql::SqlTransaction;
 use database_engine::{
     CheckpointStore, DocumentDatabase, SqlDatabase, SqlError, SqlLimits, SqlOutcome, SqlValue,
     Store,
@@ -59,6 +60,7 @@ fn assert_documented_error(err: &SqlError) {
         | SqlError::IndexExists(_)
         | SqlError::Bounds(_)
         | SqlError::ParameterCount { .. } => {}
+        SqlError::TransactionAborted(_) => {}
         SqlError::Conflict(io_err) => {
             panic!("unexpected transaction conflict in single-threaded fuzz run: {io_err}");
         }
@@ -987,13 +989,38 @@ fn check_full_table(db: &SqlDatabase<'_>, model: &BTreeMap<Pk, Row>) {
     );
 }
 
-fn exec_insert_op(
-    db: &SqlDatabase<'_>,
+trait SqlExec {
+    fn exec(&mut self, sql: &str, params: &[SqlValue]) -> Result<SqlOutcome, SqlError>;
+    fn exec_forced(&mut self, sql: &str, params: &[SqlValue]) -> Result<SqlOutcome, SqlError>;
+}
+
+impl SqlExec for &SqlDatabase<'_> {
+    fn exec(&mut self, sql: &str, params: &[SqlValue]) -> Result<SqlOutcome, SqlError> {
+        self.execute(sql, params)
+    }
+
+    fn exec_forced(&mut self, sql: &str, params: &[SqlValue]) -> Result<SqlOutcome, SqlError> {
+        self.execute_force_full_scan_for_test(sql, params)
+    }
+}
+
+impl SqlExec for &mut SqlTransaction<'_> {
+    fn exec(&mut self, sql: &str, params: &[SqlValue]) -> Result<SqlOutcome, SqlError> {
+        self.execute(sql, params)
+    }
+
+    fn exec_forced(&mut self, sql: &str, params: &[SqlValue]) -> Result<SqlOutcome, SqlError> {
+        self.execute_force_full_scan_for_test(sql, params)
+    }
+}
+
+fn exec_insert_op_with(
+    db: &mut dyn SqlExec,
     model: &mut BTreeMap<Pk, Row>,
     cur: &mut ByteCursor<'_>,
     text_pk: bool,
     has_unique_n: bool,
-) {
+) -> Result<(), SqlError> {
     let row_count = 1 + (cur.next_or(0) % 3) as usize;
     let explicit_cols = cur.next_or(0) & 1 != 0;
     let omit_req = explicit_cols && cur.next_or(0).is_multiple_of(9);
@@ -1159,9 +1186,15 @@ fn exec_insert_op(
         }
     }
 
-    let actual = db.execute(&sql, &params);
+    let actual = db.exec(&sql, &params);
     if let Some(exp_err) = expected_err {
+        let err = actual.as_ref().err().map(|e| e.to_string());
+        let is_expected = actual.is_err();
         assert_expected_error(actual, exp_err, &sql);
+        if is_expected {
+            return Err(SqlError::Constraint(err.unwrap_or_default()));
+        }
+        Ok(())
     } else {
         assert_eq!(
             actual.unwrap_or_else(|e| panic!("INSERT `{sql}` failed: {e}")),
@@ -1172,16 +1205,28 @@ fn exec_insert_op(
         for (pk, row) in staged_rows {
             model.insert(pk, row);
         }
+        Ok(())
     }
 }
 
-fn exec_select_op(
+fn exec_insert_op(
     db: &SqlDatabase<'_>,
+    model: &mut BTreeMap<Pk, Row>,
+    cur: &mut ByteCursor<'_>,
+    text_pk: bool,
+    has_unique_n: bool,
+) {
+    let mut runner = db;
+    let _ = exec_insert_op_with(&mut runner, model, cur, text_pk, has_unique_n);
+}
+
+fn exec_select_op_with(
+    db: &mut dyn SqlExec,
     model: &BTreeMap<Pk, Row>,
     cur: &mut ByteCursor<'_>,
     text_pk: bool,
     check_forced_scan: bool,
-) {
+) -> Result<(), SqlError> {
     let select_all = cur.next_or(0) & 1 == 0;
     let mut cols = Vec::new();
     let mut sql = String::from("SELECT ");
@@ -1280,10 +1325,11 @@ fn exec_select_op(
         bind_err = Some(e);
     }
 
-    let actual = db.execute(&sql, &params);
+    let actual = db.exec(&sql, &params);
     if let Some(exp_err) = bind_err {
+        let err = actual.as_ref().err().map(|e| e.to_string());
         assert_expected_error(actual, exp_err, &sql);
-        return;
+        return Err(SqlError::Type(err.unwrap_or_default()));
     }
 
     let expected_cols: Vec<String> = cols
@@ -1340,7 +1386,7 @@ fn exec_select_op(
     let outcome = actual.unwrap_or_else(|e| panic!("SELECT `{sql}` failed: {e}"));
     if check_forced_scan {
         let scanned = db
-            .execute_force_full_scan_for_test(&sql, &params)
+            .exec_forced(&sql, &params)
             .unwrap_or_else(|e| panic!("forced-scan SELECT `{sql}` failed: {e}"));
         assert_eq!(
             outcome, scanned,
@@ -1355,6 +1401,18 @@ fn exec_select_op(
         },
         "SELECT mismatch for `{sql}` with params={params:?}"
     );
+    Ok(())
+}
+
+fn exec_select_op(
+    db: &SqlDatabase<'_>,
+    model: &BTreeMap<Pk, Row>,
+    cur: &mut ByteCursor<'_>,
+    text_pk: bool,
+    check_forced_scan: bool,
+) {
+    let mut runner = db;
+    let _ = exec_select_op_with(&mut runner, model, cur, text_pk, check_forced_scan);
 }
 
 #[derive(Clone, Debug)]
@@ -1367,13 +1425,13 @@ enum AssignRhs {
     },
 }
 
-fn exec_update_op(
-    db: &SqlDatabase<'_>,
+fn exec_update_op_with(
+    db: &mut dyn SqlExec,
     model: &mut BTreeMap<Pk, Row>,
     cur: &mut ByteCursor<'_>,
     text_pk: bool,
     has_unique_n: bool,
-) {
+) -> Result<(), SqlError> {
     let mut params = Vec::new();
     let mut assigns: Vec<(Col, AssignRhs)> = Vec::new();
     let mut sql = String::from("UPDATE m SET ");
@@ -1567,16 +1625,20 @@ fn exec_update_op(
         }
     }
 
-    let actual = db.execute(&sql, &params);
+    let actual = db.exec(&sql, &params);
     if let Some(exp_err) = expected_err {
+        let err = actual.as_ref().err().map(|e| e.to_string());
         assert_expected_error(actual, exp_err, &sql);
+        Err(SqlError::Constraint(err.unwrap_or_default()))
     } else if transient_unique_swap && matches!(actual, Err(SqlError::Constraint(_))) {
         // Row-by-row unique check may fail on transient swap; table remains unchanged.
+        Err(SqlError::Constraint("transient unique swap".into()))
     } else if staged_updates.is_empty() && has_non_exact_int_param_to_real {
         // Non-exact INTEGER param assigned to REAL when 0 rows match may fail at bind time
         // or succeed with 0 updated rows; either way, model is unchanged.
         match actual {
-            Ok(SqlOutcome::Updated { rows: 0 }) | Err(SqlError::Type(_)) => {}
+            Ok(SqlOutcome::Updated { rows: 0 }) => Ok(()),
+            Err(SqlError::Type(msg)) => Err(SqlError::Type(msg)),
             other => {
                 panic!("unexpected result for 0-row non-exact int param UPDATE `{sql}`: {other:?}")
             }
@@ -1591,15 +1653,27 @@ fn exec_update_op(
         for (pk, row) in staged_updates {
             model.insert(pk, row);
         }
+        Ok(())
     }
 }
 
-fn exec_delete_op(
+fn exec_update_op(
     db: &SqlDatabase<'_>,
     model: &mut BTreeMap<Pk, Row>,
     cur: &mut ByteCursor<'_>,
     text_pk: bool,
+    has_unique_n: bool,
 ) {
+    let mut runner = db;
+    let _ = exec_update_op_with(&mut runner, model, cur, text_pk, has_unique_n);
+}
+
+fn exec_delete_op_with(
+    db: &mut dyn SqlExec,
+    model: &mut BTreeMap<Pk, Row>,
+    cur: &mut ByteCursor<'_>,
+    text_pk: bool,
+) -> Result<(), SqlError> {
     let mut sql = String::from("DELETE FROM m");
     let mut params = Vec::new();
     let where_node = if !cur.next_or(0).is_multiple_of(5) {
@@ -1627,10 +1701,11 @@ fn exec_delete_op(
         bind_err = Some(e);
     }
 
-    let actual = db.execute(&sql, &params);
+    let actual = db.exec(&sql, &params);
     if let Some(exp_err) = bind_err {
+        let err = actual.as_ref().err().map(|e| e.to_string());
         assert_expected_error(actual, exp_err, &sql);
-        return;
+        return Err(SqlError::Type(err.unwrap_or_default()));
     }
 
     let to_delete: Vec<Pk> = model
@@ -1651,6 +1726,17 @@ fn exec_delete_op(
     for pk in to_delete {
         model.remove(&pk);
     }
+    Ok(())
+}
+
+fn exec_delete_op(
+    db: &SqlDatabase<'_>,
+    model: &mut BTreeMap<Pk, Row>,
+    cur: &mut ByteCursor<'_>,
+    text_pk: bool,
+) {
+    let mut runner = db;
+    let _ = exec_delete_op_with(&mut runner, model, cur, text_pk);
 }
 
 fn model_scalar_key(v: &SqlValue) -> (u8, i64, u64, String, bool) {
@@ -1690,13 +1776,13 @@ fn model_cmp_values(a: &SqlValue, b: &SqlValue, desc: bool, nulls_first: bool) -
     }
 }
 
-fn exec_aggregate_select_op(
-    db: &SqlDatabase<'_>,
+fn exec_aggregate_select_op_with(
+    db: &mut dyn SqlExec,
     model: &BTreeMap<Pk, Row>,
     cur: &mut ByteCursor<'_>,
     text_pk: bool,
     check_forced_scan: bool,
-) {
+) -> Result<(), SqlError> {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum AggOp {
         CountStar,
@@ -2016,10 +2102,11 @@ fn exec_aggregate_select_op(
         }
     }
 
-    let actual = db.execute(&sql, &params);
+    let actual = db.exec(&sql, &params);
     if let Some(exp_err) = bind_err {
+        let err = actual.as_ref().err().map(|e| e.to_string());
         assert_expected_error(actual, exp_err, &sql);
-        return;
+        return Err(SqlError::Type(err.unwrap_or_default()));
     }
 
     let filtered: Vec<&Row> = model
@@ -2073,8 +2160,9 @@ fn exec_aggregate_select_op(
     }
 
     if let Some(exp_err) = runtime_err {
+        let err = actual.as_ref().err().map(|e| e.to_string());
         assert_expected_error(actual, exp_err, &sql);
-        return;
+        return Err(SqlError::Bounds(err.unwrap_or_default()));
     }
 
     if limit == Some(0) {
@@ -2085,7 +2173,7 @@ fn exec_aggregate_select_op(
                 rows: Vec::new(),
             }
         );
-        return;
+        return Ok(());
     }
 
     final_groups.sort_by(|(ga, aa), (gb, ab)| {
@@ -2129,7 +2217,7 @@ fn exec_aggregate_select_op(
     let outcome = actual.unwrap_or_else(|e| panic!("AGG SELECT `{sql}` failed: {e}"));
     if check_forced_scan {
         let scanned = db
-            .execute_force_full_scan_for_test(&sql, &params)
+            .exec_forced(&sql, &params)
             .unwrap_or_else(|e| panic!("forced-scan AGG SELECT `{sql}` failed: {e}"));
         assert_eq!(
             outcome, scanned,
@@ -2144,6 +2232,18 @@ fn exec_aggregate_select_op(
         },
         "AGG SELECT mismatch for `{sql}` params={params:?}"
     );
+    Ok(())
+}
+
+fn exec_aggregate_select_op(
+    db: &SqlDatabase<'_>,
+    model: &BTreeMap<Pk, Row>,
+    cur: &mut ByteCursor<'_>,
+    text_pk: bool,
+    check_forced_scan: bool,
+) {
+    let mut runner = db;
+    let _ = exec_aggregate_select_op_with(&mut runner, model, cur, text_pk, check_forced_scan);
 }
 
 fn exec_error_probe(db: &SqlDatabase<'_>, selector: u8) {
@@ -2231,6 +2331,82 @@ fn exec_drop_unique_n_op(db: &SqlDatabase<'_>, has_unique_n: &mut bool, cur: &mu
     }
 }
 
+fn exec_multi_tx_op(
+    db: &SqlDatabase<'_>,
+    model: &mut BTreeMap<Pk, Row>,
+    cur: &mut ByteCursor<'_>,
+    text_pk: bool,
+    has_unique_n: bool,
+    with_indexes: bool,
+) {
+    let steps = 1 + (cur.next_or(0) % 4) as usize;
+    let mode = cur.next_or(0) % 3;
+    let mut staged_model = model.clone();
+    let mut saw_stmt_err = false;
+    let mut intentional_abort = false;
+
+    let tx_res = db.transaction(|tx| {
+        let mut runner = tx;
+        for _ in 0..steps {
+            let sub = cur.next_or(0) % 6;
+            let step_res = match sub {
+                0 => {
+                    exec_insert_op_with(&mut runner, &mut staged_model, cur, text_pk, has_unique_n)
+                }
+                1 => exec_select_op_with(&mut runner, &staged_model, cur, text_pk, with_indexes),
+                2 => exec_aggregate_select_op_with(
+                    &mut runner,
+                    &staged_model,
+                    cur,
+                    text_pk,
+                    with_indexes,
+                ),
+                3 => {
+                    exec_update_op_with(&mut runner, &mut staged_model, cur, text_pk, has_unique_n)
+                }
+                4 => exec_delete_op_with(&mut runner, &mut staged_model, cur, text_pk),
+                _ => {
+                    // Probe online DDL rejection inside explicit transaction.
+                    let err = runner
+                        .exec("CREATE INDEX fuzz_tx_idx ON m (n)", &[])
+                        .unwrap_err();
+                    assert!(matches!(err, SqlError::Unsupported { .. }));
+                    Err(err)
+                }
+            };
+            if let Err(err) = step_res {
+                saw_stmt_err = true;
+                if mode != 2 {
+                    return Err(err);
+                }
+                // In mode 2, swallow the error and verify follow-up call + commit fail with TransactionAborted.
+                let follow = runner.exec("SELECT COUNT(*) FROM m", &[]).unwrap_err();
+                assert!(matches!(follow, SqlError::TransactionAborted(_)));
+                break;
+            }
+        }
+        if mode == 1 {
+            intentional_abort = true;
+            return Err(SqlError::Constraint("fuzz intentional rollback".into()));
+        }
+        Ok(())
+    });
+
+    if saw_stmt_err && mode == 2 {
+        assert!(
+            matches!(tx_res, Err(SqlError::TransactionAborted(_))),
+            "swallowed statement error must poison tx, got {tx_res:?}"
+        );
+    } else if intentional_abort {
+        assert!(matches!(tx_res, Err(SqlError::Constraint(_))));
+    } else if saw_stmt_err {
+        assert!(tx_res.is_err());
+    } else {
+        tx_res.expect("multi-statement transaction should commit");
+        *model = staged_model;
+    }
+}
+
 fn fuzz_structured_model(root: &Path, data: &[u8]) -> Backend {
     let mut cur = ByteCursor::new(data);
     let flags = cur.next_or(0);
@@ -2282,7 +2458,7 @@ fn fuzz_structured_model(root: &Path, data: &[u8]) -> Backend {
         let Some(op) = cur.next() else {
             break;
         };
-        match op % 11 {
+        match op % 12 {
             0 | 1 => {
                 exec_insert_op(&backend.sql(), &mut model, &mut cur, text_pk, has_unique_n);
                 check_full_table(&backend.sql(), &model);
@@ -2311,6 +2487,17 @@ fn fuzz_structured_model(root: &Path, data: &[u8]) -> Backend {
             }
             8 => {
                 exec_drop_unique_n_op(&backend.sql(), &mut has_unique_n, &mut cur);
+            }
+            9 => {
+                exec_multi_tx_op(
+                    &backend.sql(),
+                    &mut model,
+                    &mut cur,
+                    text_pk,
+                    has_unique_n,
+                    with_indexes,
+                );
+                check_full_table(&backend.sql(), &model);
             }
             _ => {
                 exec_error_probe(&backend.sql(), cur.next_or(0));

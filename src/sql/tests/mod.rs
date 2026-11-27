@@ -299,6 +299,45 @@ fn outcome_unknown_propagates_unchanged_on_commit_io_fault() {
 }
 
 #[test]
+fn transaction_with_retry_never_retries_outcome_unknown() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    fs::create_dir(&path).unwrap();
+    fs::write(
+        path.join("records.log"),
+        include_bytes!("../../../tests/fixtures/v2-empty-records.log"),
+    )
+    .unwrap();
+    fs::write(
+        path.join("commit.state"),
+        include_bytes!("../../../tests/fixtures/v2-empty-commit.state"),
+    )
+    .unwrap();
+
+    let armed = Arc::new(Mutex::new(None));
+    let store = open_versioned_fault_store(&path, Arc::clone(&armed)).unwrap();
+    let db = SqlDatabase::new(DocumentDatabase::new(&store));
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)", &[])
+        .unwrap();
+
+    *armed.lock().unwrap() = Some(Fault::SyncAfter);
+    let mut attempts = 0usize;
+    let err = db
+        .transaction_with_retry(10, |tx| {
+            attempts += 1;
+            tx.execute("INSERT INTO t VALUES (1, 'a')", &[])?;
+            tx.execute("INSERT INTO t VALUES (2, 'b')", &[])?;
+            Ok(())
+        })
+        .unwrap_err();
+    assert!(
+        matches!(err, SqlError::OutcomeUnknown(_)),
+        "expected OutcomeUnknown, got {err:?}"
+    );
+    assert_eq!(attempts, 1, "OutcomeUnknown must never be retried");
+}
+
+#[test]
 fn classify_io_error_distinguishes_bounds_from_other_invalid_input() {
     use std::io;
 

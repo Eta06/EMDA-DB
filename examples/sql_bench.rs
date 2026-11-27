@@ -543,5 +543,127 @@ fn main() -> Result<()> {
     let sqlite_agg = sqlite(&root.join("sqlite-agg.db"))?;
     println!("{}", aggregate_workload("sqlite", &sqlite_agg, rows, ops)?);
     drop(sqlite_agg);
+
+    let store_tx = Store::open(root.join("store-tx"))?;
+    println!(
+        "{}",
+        tx_workload(
+            "emda-store",
+            &SqlDatabase::new(DocumentDatabase::new(&store_tx)),
+            rows,
+            ops
+        )?
+    );
+    drop(store_tx);
+
+    let initial_tx = Store::open(root.join("checkpoint-tx-log"))?;
+    let digest_tx = initial_tx.checkpoint_to(root.join("checkpoint-tx"))?;
+    drop(initial_tx);
+    let ckpt_tx = CheckpointStore::open(
+        root.join("checkpoint-tx-log"),
+        root.join("checkpoint-tx"),
+        &digest_tx,
+    )?;
+    println!(
+        "{}",
+        tx_workload(
+            "emda-checkpoint",
+            &SqlDatabase::new(DocumentDatabase::with_checkpoint_store(&ckpt_tx)),
+            rows,
+            ops
+        )?
+    );
+    drop(ckpt_tx);
+
+    let sqlite_tx = sqlite(&root.join("sqlite-tx.db"))?;
+    println!("{}", sqlite_tx_workload(&sqlite_tx, rows, ops)?);
+    drop(sqlite_tx);
     Ok(())
+}
+
+const TX_UPDATES_PER_TX: i64 = 10;
+
+fn tx_workload(name: &str, db: &SqlDatabase<'_>, rows: i64, ops: i64) -> Result<String> {
+    db.exec(
+        "CREATE TABLE tx_items (id INTEGER PRIMARY KEY, name TEXT NOT NULL, score REAL, active BOOLEAN)",
+        &[],
+    )?;
+    let tuple = "(?, ?, ?, ?)";
+    for chunk in (0..rows).collect::<Vec<_>>().chunks(100) {
+        let sql = format!(
+            "INSERT INTO tx_items VALUES {}",
+            vec![tuple; chunk.len()].join(", ")
+        );
+        let params = chunk
+            .iter()
+            .flat_map(|id| row_params(*id))
+            .collect::<Vec<_>>();
+        db.exec(&sql, &params)?;
+    }
+
+    let update_stmt = db.prepare("UPDATE tx_items SET score = ? WHERE id = ?")?;
+    let mut samples = Vec::new();
+    for op in 0..ops {
+        time(&mut samples, || {
+            db.transaction(|tx| {
+                for step in 0..TX_UPDATES_PER_TX {
+                    let id = (op * 7919 + step * 101) % rows;
+                    let score = (op * TX_UPDATES_PER_TX + step) as f64;
+                    tx.execute_prepared(
+                        &update_stmt,
+                        &[SqlValue::Real(score), SqlValue::Integer(id)],
+                    )?;
+                }
+                Ok(())
+            })?;
+            Ok(())
+        })?;
+    }
+
+    Ok(format!(
+        "{{\"backend\":\"{name}-tx\",\"rows\":{rows},\"stmts_per_tx\":{TX_UPDATES_PER_TX},\"tx_10_updates\":{}}}",
+        Samples(samples).json(),
+    ))
+}
+
+fn sqlite_tx_workload(db: &Sqlite, rows: i64, ops: i64) -> Result<String> {
+    db.exec(
+        "CREATE TABLE tx_items (id INTEGER PRIMARY KEY, name TEXT NOT NULL, score REAL, active BOOLEAN)",
+        &[],
+    )?;
+    let tuple = "(?, ?, ?, ?)";
+    for chunk in (0..rows).collect::<Vec<_>>().chunks(100) {
+        let sql = format!(
+            "INSERT INTO tx_items VALUES {}",
+            vec![tuple; chunk.len()].join(", ")
+        );
+        let params = chunk
+            .iter()
+            .flat_map(|id| row_params(*id))
+            .collect::<Vec<_>>();
+        db.exec(&sql, &params)?;
+    }
+
+    let update_sql = "UPDATE tx_items SET score = ?1 WHERE id = ?2";
+    let mut samples = Vec::new();
+    for op in 0..ops {
+        time(&mut samples, || {
+            db.0.execute_batch("BEGIN IMMEDIATE")?;
+            {
+                let mut stmt = db.0.prepare_cached(update_sql)?;
+                for step in 0..TX_UPDATES_PER_TX {
+                    let id = (op * 7919 + step * 101) % rows;
+                    let score = (op * TX_UPDATES_PER_TX + step) as f64;
+                    stmt.execute(rusqlite::params![score, id])?;
+                }
+            }
+            db.0.execute_batch("COMMIT")?;
+            Ok(())
+        })?;
+    }
+
+    Ok(format!(
+        "{{\"backend\":\"sqlite-tx\",\"rows\":{rows},\"stmts_per_tx\":{TX_UPDATES_PER_TX},\"tx_10_updates\":{}}}",
+        Samples(samples).json(),
+    ))
 }
