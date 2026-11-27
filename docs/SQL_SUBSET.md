@@ -104,7 +104,7 @@ Notes on specific constructs:
 - `LIMIT` and `OFFSET` values must be non-negative `INTEGER` literals or `?` parameters (`SqlError::Bounds` for negative `INTEGER` values; `SqlError::Type` for `NULL`, `REAL`, `TEXT`, or `BOOLEAN`; `SqlError::Syntax` for out-of-`i64`-range integer literals).
 - Aggregate and grouping queries follow standard SQL / PostgreSQL strictness: in any query with `GROUP BY`, `HAVING`, or an aggregate call in `SELECT` or `ORDER BY`, every non-aggregated column in `SELECT`, `HAVING`, or `ORDER BY` must appear in `GROUP BY` (rejected as `SqlError::Syntax`, with no SQLite-style "bare column" leniency). `HAVING` may reference grouping columns and aggregates only (not `SELECT` aliases); `ORDER BY` may reference grouping columns, select-item aliases (`AS alias`), or aggregate expressions (`COUNT(*)`, `SUM(col)`, etc.). Arithmetic expressions, nested aggregates, aggregates in `WHERE` or `GROUP BY`, `SUM`/`AVG`/`MIN`/`MAX` with `DISTINCT`, `GROUP BY` column positions/`ROLLUP`/`CUBE`/`GROUPING SETS`, `OVER`, and `FILTER` fail with `SqlError::Unsupported` (or `Syntax` for invalid forms such as `SUM(*)` or `COUNT(DISTINCT *)`).
 - Secondary indexes (`CREATE [UNIQUE] INDEX` and `UNIQUE` constraints) support `INTEGER`, `TEXT`/`VARCHAR(n)`, and `BOOLEAN` columns (1–4 columns per index, up to 16 indexes per table). `DROP INDEX [IF EXISTS] name ON table` drops an explicit secondary index cleanly, and refuses dropping an index that backs a table or column `UNIQUE` constraint with `SqlError::Constraint`. `REAL` columns in indexes/unique constraints, partial `CREATE INDEX ... WHERE ...`, `ASC`/`DESC` index ordering, `USING ...`, `DROP INDEX name` (without `ON table`), `DROP INDEX ... CONCURRENTLY`/`CASCADE`/`RESTRICT`, and `DROP TABLE` fail with `SqlError::Unsupported`.
-- Recognized SQL outside this grammar (`JOIN`, comma joins, `SELECT DISTINCT`, `UNION`/`INTERSECT`/`EXCEPT`, scalar/non-aggregate function calls, subqueries, `DROP TABLE`, `ALTER`, `BEGIN`/`COMMIT`/`ROLLBACK`, `RETURNING`, `ON CONFLICT`, `DEFAULT`, `CHECK`, `FOREIGN KEY`/`REFERENCES`, `IN`, `BETWEEN`, `LIKE`, `CASE`, `CAST`, arithmetic operators, qualified `table.column`, table aliases) fails with `SqlError::Unsupported` naming the feature.
+- Recognized SQL outside this grammar (`RIGHT`/`FULL`/`CROSS`/`NATURAL` joins, `JOIN ... USING`, comma joins, `SELECT DISTINCT`, `UNION`/`INTERSECT`/`EXCEPT`, scalar/non-aggregate function calls, subqueries, `DROP TABLE`, `ALTER`, `BEGIN`/`COMMIT`/`ROLLBACK`, `RETURNING`, `ON CONFLICT`, `DEFAULT`, `CHECK`, `FOREIGN KEY`/`REFERENCES`, `IN`, `BETWEEN`, `LIKE`, `CASE`, `CAST`, arithmetic operators, and qualified `table.column` or table aliases outside a join) fails with `SqlError::Unsupported` naming the feature.
 
 ## Types, coercion, and NULL semantics
 
@@ -199,6 +199,40 @@ Type rules:
   - Unlike PostgreSQL (`SUM(bigint)` -> `numeric`) and SQLite (`SUM(integer)` promotes to `REAL` on `i64` overflow), EMDA-DB returns `INTEGER` for `SUM(INTEGER)` and fails with `SqlError::Bounds` on `i64` overflow.
   - `COUNT` returns `INTEGER` (`i64`, matching SQLite; PostgreSQL uses `bigint`), `AVG` returns `REAL` (`f64`, matching SQLite; PostgreSQL uses `numeric` for integers), `NULL` defaults to `NULLS FIRST` for `ASC` / `NULLS LAST` for `DESC` (matching SQLite; opposite of PostgreSQL), and `GROUP BY` without `ORDER BY` guarantees deterministic ascending `NULLS FIRST` group order (neither PostgreSQL nor SQLite guarantees group order).
 
+## Joins
+
+```text
+join_select := SELECT join_item ("," join_item)* FROM table_ref join_clause+
+               [WHERE expr] [ORDER BY join_order ("," join_order)*]
+               [LIMIT limit_val [OFFSET limit_val]]
+join_item   := "*" | ident "." "*" | [ident "."] ident
+table_ref   := ident [[AS] ident]
+join_clause := ([INNER] | LEFT [OUTER]) JOIN table_ref ON expr
+join_order  := [ident "."] ident [ASC | DESC] [NULLS FIRST | NULLS LAST]
+```
+
+```sql
+SELECT u.name, t.title, o.total
+FROM orders o
+JOIN users u ON u.id = o.user_id
+LEFT JOIN teams t ON t.id = u.team
+WHERE o.total > ? ORDER BY o.total DESC LIMIT 10
+```
+
+- **Scope.** One to seven joins (at most eight tables), joined left to right. An `ON` clause sees the tables to its left; `WHERE`, `ORDER BY` and the select list see all of them. Columns may be qualified by a table name or alias; an unqualified name that exists in more than one table is a `Syntax` error, as is reusing a table name or alias. `*` expands every table's columns in table order and `t.*` one table's. Output column names are the unqualified column names.
+- **Semantics.** Standard SQL three-valued logic: a pair joins when its complete `ON` expression is `TRUE`. `LEFT JOIN` keeps a left row that matches nothing and fills the right table's columns with `NULL`, so a condition in `ON` keeps the left row while the same condition in `WHERE` removes it. `INTEGER` and `REAL` keys compare numerically, so `INTEGER` 2 joins `REAL` 2.0 and never 2.5. Type rules match single-table statements; for example `TEXT = INTEGER` is a `Type` error.
+- **Access paths.** For each table, from the `ON` conjuncts (or, for the first table, `WHERE` conjuncts with a constant or parameter):
+  1. `t.pk = expr` reads one row by primary key.
+  2. `t.col = expr` uses a ready secondary index whose leading column is `col` and whose other columns are `NOT NULL`. A compound index with a nullable trailing column omits rows with a `NULL` there, so it is not used.
+  3. `t.col = expr` otherwise builds a hash table of `t` once per statement.
+  4. Anything else scans `t` once and loops over it.
+
+  The complete `ON` (and `WHERE`) is evaluated on every candidate, so the path never changes the result. `WHERE` conjuncts that use only the first table are applied before joining.
+- **Order and early stop.** Without `ORDER BY`, rows come out in the first table's primary-key order, each followed by its matches in the joined table's key order (index order for index lookups). That order is deterministic but not part of the SQL standard. Without `ORDER BY`, or with `ORDER BY` on the first table's primary key ascending alone, reading stops once `OFFSET + LIMIT` rows exist. Otherwise rows are sorted with the single-table `ORDER BY` rules, keeping join order for ties.
+- **Bounds.** Rows read from every table and combined rows formed during the join each count against `max_visited_rows`. Results count against `max_select_rows`, and sorted joins hold at most `max_sort_rows` rows. Exceeding a bound fails with `Bounds`; nothing is truncated.
+- **Transactions.** A join runs in one read-set document transaction, so it reads one consistent state and records point and range dependencies like other statements.
+- **Not yet supported.** `RIGHT`, `FULL`, `CROSS` and `NATURAL` joins, `USING`, comma-separated `FROM` lists, subqueries, aggregates or `GROUP BY` over a join, and aliases in the select list of a join return `Unsupported`.
+
 ## Statement and catalog caching
 
 `SqlDatabase` maintains bounded in-memory caches for parsed statements (in `execute`), decoded `TableDef` catalog entries, and table-bound execution plans:
@@ -274,5 +308,5 @@ Every DML statement (`INSERT`, `UPDATE`, `DELETE`, `SELECT`) and small DDL state
 
 ## Implemented vs planned
 
-- **Implemented**: `CREATE TABLE [IF NOT EXISTS]` (including column-level `UNIQUE` and table-level `UNIQUE (col, ...)`), `CREATE [UNIQUE] INDEX [IF NOT EXISTS]` (single-tx for small tables and bounded resumable online build for large populated tables), `DROP INDEX [IF EXISTS] name ON table`, `INSERT`, `SELECT` (`*`, column list, `COUNT(*)` / `COUNT(col)` / `COUNT(DISTINCT col)` / `SUM(col)` / `AVG(col)` / `MIN(col)` / `MAX(col)`, `AS` aliases, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY` with `ASC`/`DESC`/`NULLS FIRST`/`NULLS LAST` over columns/aliases/aggregates, `LIMIT`/`OFFSET`), `UPDATE`, `DELETE`, `SqlValue`/`SqlLimits`/`SqlError`/`SqlStatement` prepared reuse, per-`SqlDatabase` catalog/statement/plan caching, compiled index templates, 3VL expressions, exact numeric comparisons, ascending PK order guarantee and streaming `ORDER BY pk ASC`, index-order `ORDER BY ... LIMIT` streaming, first-entry `MIN(pk)`/`MIN(index_leading_col)` optimization, bounded `ORDER BY pk DESC` and top-K / full sort, bounded `GROUP BY` and `COUNT(DISTINCT)`, primary-key point (`=`) and range (`>`, `>=`, `<`, `<=`) access paths, single and compound secondary index equality/range access via `DocumentTransaction::query_index`, bounded full-collection scan fallback via `DocumentTransaction::scan_documents`, `ReadSet` optimistic concurrency, and row PK/document-ID integrity verification.
-- **Planned (later slices)**: `JOIN`, subqueries, multi-statement explicit SQL transactions (`BEGIN` / `COMMIT` / `ROLLBACK`), schema migrations (`ALTER TABLE` / `DROP TABLE`), and `EXPLAIN` / SQL diagnostics.
+- **Implemented**: `CREATE TABLE [IF NOT EXISTS]` (including column-level `UNIQUE` and table-level `UNIQUE (col, ...)`), `CREATE [UNIQUE] INDEX [IF NOT EXISTS]` (single-tx for small tables and bounded resumable online build for large populated tables), `DROP INDEX [IF EXISTS] name ON table`, `INSERT`, `SELECT` (`*`, column list, `COUNT(*)` / `COUNT(col)` / `COUNT(DISTINCT col)` / `SUM(col)` / `AVG(col)` / `MIN(col)` / `MAX(col)`, `AS` aliases, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY` with `ASC`/`DESC`/`NULLS FIRST`/`NULLS LAST` over columns/aliases/aggregates, `LIMIT`/`OFFSET`), `UPDATE`, `DELETE`, `SqlValue`/`SqlLimits`/`SqlError`/`SqlStatement` prepared reuse, per-`SqlDatabase` catalog/statement/plan caching, compiled index templates, 3VL expressions, exact numeric comparisons, ascending PK order guarantee and streaming `ORDER BY pk ASC`, index-order `ORDER BY ... LIMIT` streaming, first-entry `MIN(pk)`/`MIN(index_leading_col)` optimization, bounded `ORDER BY pk DESC` and top-K / full sort, bounded `GROUP BY` and `COUNT(DISTINCT)`, primary-key point (`=`) and range (`>`, `>=`, `<`, `<=`) access paths, single and compound secondary index equality/range access via `DocumentTransaction::query_index`, bounded full-collection scan fallback via `DocumentTransaction::scan_documents`, `ReadSet` optimistic concurrency, and row PK/document-ID integrity verification, and `INNER`/`LEFT [OUTER] JOIN` of up to eight tables (see [Joins](#joins)).
+- **Planned (later slices)**: `RIGHT`/`FULL` joins, aggregates over joins, subqueries, multi-statement explicit SQL transactions (`BEGIN` / `COMMIT` / `ROLLBACK`), schema migrations (`ALTER TABLE` / `DROP TABLE`), and `EXPLAIN` / SQL diagnostics.
