@@ -46,7 +46,7 @@ fn example(store: &Store) -> Result<(), Box<dyn std::error::Error>> {
 Keywords are case-insensitive. Unquoted identifiers (`[A-Za-z_][A-Za-z0-9_]*`) fold to ASCII lowercase. Double-quoted identifiers (`"Name"`, with `""` escaping `"`) preserve case. Identifiers must be 1–128 UTF-8 bytes. `--` starts a line comment outside strings and quoted identifiers.
 
 ```text
-statement      := (create_table | create_index | insert | select | update | delete) [";"]
+statement      := (create_table | create_index | drop_index | insert | select | update | delete) [";"]
 
 create_table   := CREATE TABLE [IF NOT EXISTS] ident "(" table_item ("," table_item)* ")"
 table_item     := col_def
@@ -59,6 +59,7 @@ data_type      := INTEGER | INT | BIGINT
                 | BOOLEAN | BOOL
 
 create_index   := CREATE [UNIQUE] INDEX [IF NOT EXISTS] ident ON ident "(" ident ("," ident)* ")"
+drop_index     := DROP INDEX [IF EXISTS] ident ON ident
 
 insert         := INSERT INTO ident ["(" ident ("," ident)* ")"]
                   VALUES tuple ("," tuple)*
@@ -95,8 +96,8 @@ Notes on specific constructs:
 - Updating a `PRIMARY KEY` column in `UPDATE ... SET` is rejected as `SqlError::Unsupported`.
 - `ORDER BY` column positions (`ORDER BY 1`), expressions or qualified names in `ORDER BY`, standalone `OFFSET` without `LIMIT`, and `ORDER BY` / `LIMIT` / `OFFSET` on `UPDATE` or `DELETE` are rejected as `SqlError::Unsupported`.
 - `LIMIT` and `OFFSET` values must be non-negative `INTEGER` literals or `?` parameters (`SqlError::Bounds` for negative `INTEGER` values; `SqlError::Type` for `NULL`, `REAL`, `TEXT`, or `BOOLEAN`; `SqlError::Syntax` for out-of-`i64`-range integer literals).
-- Secondary indexes (`CREATE [UNIQUE] INDEX` and `UNIQUE` constraints) support `INTEGER`, `TEXT`/`VARCHAR(n)`, and `BOOLEAN` columns (1–4 columns per index, up to 16 indexes per table). `REAL` columns in indexes/unique constraints, partial `CREATE INDEX ... WHERE ...`, `ASC`/`DESC` index ordering, `USING ...`, and `DROP INDEX` fail with `SqlError::Unsupported`.
-- Recognized SQL outside this grammar (`JOIN`, comma joins, `GROUP BY`, `HAVING`, `DISTINCT`, `UNION`/`INTERSECT`/`EXCEPT`, aggregates/function calls, subqueries, `DROP`, `ALTER`, `BEGIN`/`COMMIT`/`ROLLBACK`, `RETURNING`, `ON CONFLICT`, `DEFAULT`, `CHECK`, `FOREIGN KEY`/`REFERENCES`, `IN`, `BETWEEN`, `LIKE`, `CASE`, `CAST`, arithmetic operators, qualified `table.column`, aliases `AS`) fails with `SqlError::Unsupported` naming the feature.
+- Secondary indexes (`CREATE [UNIQUE] INDEX` and `UNIQUE` constraints) support `INTEGER`, `TEXT`/`VARCHAR(n)`, and `BOOLEAN` columns (1–4 columns per index, up to 16 indexes per table). `DROP INDEX [IF EXISTS] name ON table` drops an explicit secondary index cleanly, and refuses dropping an index that backs a table or column `UNIQUE` constraint with `SqlError::Constraint`. `REAL` columns in indexes/unique constraints, partial `CREATE INDEX ... WHERE ...`, `ASC`/`DESC` index ordering, `USING ...`, `DROP INDEX name` (without `ON table`), `DROP INDEX ... CONCURRENTLY`/`CASCADE`/`RESTRICT`, and `DROP TABLE` fail with `SqlError::Unsupported`.
+- Recognized SQL outside this grammar (`JOIN`, comma joins, `GROUP BY`, `HAVING`, `DISTINCT`, `UNION`/`INTERSECT`/`EXCEPT`, aggregates/function calls, subqueries, `DROP TABLE`, `ALTER`, `BEGIN`/`COMMIT`/`ROLLBACK`, `RETURNING`, `ON CONFLICT`, `DEFAULT`, `CHECK`, `FOREIGN KEY`/`REFERENCES`, `IN`, `BETWEEN`, `LIKE`, `CASE`, `CAST`, arithmetic operators, qualified `table.column`, aliases `AS`) fails with `SqlError::Unsupported` naming the feature.
 
 ## Types, coercion, and NULL semantics
 
@@ -127,14 +128,23 @@ Type rules:
 - Every table is stored as one `DocumentDatabase` collection plus a durable catalog entry stored atomically in the same transaction under the raw-key prefix `\0emda-sql\x01T<table_name>`.
 - **Do not write SQL tables through `DocumentDatabase` or the raw key-value APIs.** Raw keys under `\0emda-sql\x01T` are reserved by convention only (only `\0emda-document\x01` is enforced as reserved by the document layer). Writing a SQL collection directly through `DocumentDatabase` or raw keys can bypass SQL constraints (`VARCHAR(n)`), corrupt catalog entries, or introduce mismatched document IDs.
 - **Row integrity check**: On every row decode (across point, range, and full-scan paths), the SQL layer verifies that the document ID equals the canonical encoding of the row's primary-key column value. Any mismatch returns `SqlError::Io` (`io::ErrorKind::InvalidData`) naming the table.
-- Creating a table also installs a matching `CollectionSchema` (`required: col.not_null`, `nullable: !col.not_null`) as defense in depth. SQL `NULL` values are stored by omitting the field from the document JSON object so document-layer secondary and unique indexes omit any row where an indexed column is `NULL`. Rows written by earlier revisions may hold an explicit JSON `null` instead; reads treat both forms as `NULL`, and `CREATE INDEX` rewrites such rows to omit the indexed fields in the same transaction, before the index is built.
+- Creating a table also installs a matching `CollectionSchema` (`required: col.not_null`, `nullable: !col.not_null`) as defense in depth. SQL `NULL` values are stored by omitting the field from the document JSON object so document-layer secondary and unique indexes omit any row where an indexed column is `NULL`. Rows written by earlier revisions may hold an explicit JSON `null` instead; reads treat both forms as `NULL`, and `CREATE INDEX` rewrites such rows in bounded steps (`<= 128` rows per transaction) to omit the indexed fields before starting the index build.
 - Every table must declare **exactly one** `PRIMARY KEY` column of type `INTEGER` or `TEXT`. The primary key column is implicitly `NOT NULL`.
 - Duplicate primary keys (either against existing rows or within a multi-row `INSERT`), `UNIQUE` violations, and `NOT NULL` / `VARCHAR(n)` violations fail with `SqlError::Constraint` and roll back the entire statement.
 - **Secondary indexes and `UNIQUE` constraints**:
-  - `CREATE [UNIQUE] INDEX [IF NOT EXISTS] name ON table (col, ...)` and column/table `UNIQUE` constraints map directly onto `DocumentTransaction::create_index` and document-layer single/compound scalar indexes (`1..=4` columns, up to `16` indexes per table, index names scoped per table).
+  - `CREATE [UNIQUE] INDEX [IF NOT EXISTS] name ON table (col, ...)` and column/table `UNIQUE` constraints map directly onto document-layer single/compound scalar indexes (`1..=4` columns, up to `16` indexes per table, index names scoped per table).
   - **NULL semantics**: Following PostgreSQL and SQLite, `UNIQUE` permits multiple `NULL` values (including compound tuples such as `(1, NULL)` and `(1, NULL)`), because SQL `NULL` is stored as an absent JSON field and omitted from document indexes.
-  - **Populated-table index builds**: `CREATE [UNIQUE] INDEX` runs as a single bounded atomic transaction via `DocumentTransaction::create_index` (up to `256` existing rows and `32 MiB` of scanned document bytes), updating both document index metadata/keys and the SQL catalog entry in the same `DB02` commit record. Tables exceeding `256` rows or `32 MiB` fail with `SqlError::Bounds`, and unique violations on existing rows fail with `SqlError::Constraint`. A crash or failure mid-build leaves the table, its existing rows, and the catalog completely unchanged (no partial index or pending maintenance job).
-  - **String and key limits**: Indexed `TEXT` values are bounded to `256` UTF-8 bytes (`MAX_INDEX_STRING_BYTES`), and encoded index keys are bounded to `1,024` bytes; exceeding either fails with `SqlError::Bounds` and rolls back the statement.
+  - **Populated-table index builds**:
+    - Small tables (`<= 256` rows and `<= 32 MiB` of scanned document bytes) build atomically in a single `ReadSet` transaction via `DocumentTransaction::create_index`, updating both document index metadata/keys and the SQL catalog entry together in one `DB02` commit record.
+    - Larger populated tables automatically switch to the document layer's bounded resumable online index build (`start_index_build` + `advance_index_build` in `Conservative` transactions of up to `128` rows per commit):
+      1. Indexed explicit JSON `null` fields on legacy rows are rewritten away in bounded chunks (`<= 128` rows per commit).
+      2. The index is recorded in the SQL catalog in `building` state (`"state": "building"`) alongside the document-layer background job (`start_index_build`), then advanced to completion inside `execute`.
+      3. **Planner safety**: The SQL query planner never uses an index in `building` or `dropping` state (`IndexState::Ready` is required), falling back to primary-key or full-scan paths until the build commits its `ready` catalog transition. Concurrent `INSERT` / `UPDATE` / `DELETE` transactions maintain any active `building` job automatically via the document layer and conflict cleanly on overlapping keys; maintenance steps retry confirmed pre-commit conflicts (`SqlError::Conflict`) up to 256 times per step and never retry `SqlError::OutcomeUnknown`.
+      4. **Mid-build failures and crashes**: If a unique violation or other failure (outside `OutcomeUnknown`) occurs mid-build, SQL cleans up the partial document index (`cancel_index_build` + bounded `advance_index_drop`) and removes the `building` catalog entry before returning `SqlError::Constraint` (or the underlying `Bounds`/`Io` error). If the process crashes (`SIGKILL`) mid-build, readers see all committed rows via primary-key/full scans without using the incomplete index, and either re-running `CREATE [UNIQUE] INDEX` resumes and completes (or cleans up on unique violation) the `building` index, or `DROP INDEX name ON table` cancels and cleans it up.
+  - **`DROP INDEX [IF EXISTS] name ON table`**:
+    - Indexes declared explicitly via `CREATE [UNIQUE] INDEX` may be dropped cleanly. Indexes backing a table or column `UNIQUE` constraint (`is_constraint: true`) are protected and reject `DROP INDEX` (even with `IF EXISTS`) with `SqlError::Constraint`.
+    - Small indexes (`<= 768` index keys) drop atomically with the catalog entry in one transaction via `DocumentTransaction::drop_index`; larger indexes transition the catalog entry to `dropping`, call `DocumentTransaction::start_index_drop`, and drive `advance_index_drop` in bounded `128`-key steps before removing the catalog entry.
+  - **String and key limits**: Indexed `TEXT` values are bounded to `256` UTF-8 bytes (`MAX_INDEX_STRING_BYTES`), and encoded index keys are bounded to `1,024` bytes; exceeding either fails with `SqlError::Bounds` and leaves no partial index or catalog entry.
 - **Primary-key ordering guarantee**:
   - `INTEGER` primary keys encode `(value ^ i64::MIN) as u64` as `i:<16 lowercase hex digits>`.
   - `TEXT` primary keys encode `t:<utf8_bytes>` (maximum `254` UTF-8 bytes to fit the 256-byte document ID limit; longer keys fail with `SqlError::Bounds`).
@@ -196,7 +206,7 @@ All bounds live in `SqlLimits` (implementing `Default`), configurable via `SqlDa
 | Indexed `TEXT` bytes | 256 | 256 | Document-layer `MAX_INDEX_STRING_BYTES` |
 | Columns per index | 4 | 4 | Document-layer `MAX_INDEX_FIELDS` |
 | Indexes per table | 16 | 16 | Document-layer collection index cap |
-| Populated `CREATE INDEX` | 256 rows / 32 MiB | 256 rows / 32 MiB | Single-transaction `DocumentTransaction::create_index` build |
+| Online `CREATE`/`DROP` step | 128 rows/keys | 128 rows/keys | Bounded chunk size for resumable index build, drop, and explicit-NULL rewrite |
 | Row serialized bytes | 1 MiB | 1 MiB | Document layer `MAX_DOCUMENT_BYTES` |
 | Atomic batch bytes | 16 MiB | 16 MiB | Storage `MAX_ATOMIC_BATCH_BYTES` per statement |
 
@@ -207,8 +217,8 @@ Statements never silently truncate: exceeding any bound fails with `SqlError::Bo
 - `Syntax { offset, message }`: lexical or grammar error with byte offset.
 - `Unsupported { feature, offset }`: recognized SQL outside slice 1.
 - `Type(String)`: type mismatch, non-finite float, or non-exact `INTEGER` -> `REAL` coercion.
-- `Constraint(String)`: duplicate primary key, `UNIQUE` violation, `NOT NULL`, `VARCHAR(n)` overflow, or missing/invalid `PRIMARY KEY` definition.
-- `NoSuchTable(String)` / `NoSuchColumn { table, column }`: unknown table or column.
+- `Constraint(String)`: duplicate primary key, `UNIQUE` violation, `NOT NULL`, `VARCHAR(n)` overflow, missing/invalid `PRIMARY KEY` definition, or attempting `DROP INDEX` on a constraint-backed index.
+- `NoSuchTable(String)` / `NoSuchColumn { table, column }` / `NoSuchIndex { table, index }`: unknown table, column, or index.
 - `TableExists(String)` / `IndexExists(String)`: `CREATE TABLE` or `CREATE [UNIQUE] INDEX` on an existing table or index without `IF NOT EXISTS`.
 - `Bounds(String)`: exceeded `SqlLimits`, positively identified storage/document size or batch/quota limits, or `Store` snapshot budget.
 - `ParameterCount { expected, actual }`: wrong number of `params` passed to `execute` / `execute_prepared`.
@@ -218,16 +228,16 @@ Statements never silently truncate: exceeding any bound fails with `SqlError::Bo
 
 ## Atomicity, durability, and backend behavior
 
-Every SQL statement runs inside a single `DocumentDatabase::transaction_detailed` call using `DocumentTransactionMode::ReadSet`:
+Every DML statement (`INSERT`, `UPDATE`, `DELETE`, `SELECT`) and small DDL statement runs inside a single `DocumentDatabase::transaction_detailed` call using `DocumentTransactionMode::ReadSet` (while multi-step online `CREATE INDEX` / `DROP INDEX` / explicit-NULL rewrite steps use `DocumentTransactionMode::Conservative`):
 - **Read-set concurrency**: Point gets, inserts, updates, and deletes record precise point dependencies (and scans record range dependencies) instead of conflicting globally on unrelated writes. On both `Store` and `CheckpointStore`, concurrent statements touching disjoint tables or disjoint primary keys commit with zero conflicts; overlapping read/write sets (such as concurrent updates to the same row or concurrent inserts of the same key) are rejected pre-commit as `SqlError::Conflict(err)`. Retained backends serialize transactions on their exclusive handle.
 - **Atomicity**: A failure at any point (including row 2 of a multi-row `INSERT` or `UPDATE`) aborts the transaction; partial writes are never committed.
 - **Durability**: Successful writes commit in one synchronized `DB02` atomic batch record and survive drop and reopen.
-- **Conflicts and unknown outcomes**: Pre-commit conflicts surface as `SqlError::Conflict(err)` and commit I/O failures surface as `SqlError::OutcomeUnknown(err)` unchanged. The SQL layer **never retries automatically** and **never reports success for an uncertain commit**.
+- **Conflicts and unknown outcomes**: Pre-commit conflicts on single-transaction statements surface as `SqlError::Conflict(err)` and commit I/O failures surface as `SqlError::OutcomeUnknown(err)` unchanged. DML statements **never retry automatically** and **never report success for an uncertain commit**; multi-step online `CREATE INDEX` and `DROP INDEX` steps retry confirmed pre-commit `Conflict` errors up to 256 times per step and never retry `OutcomeUnknown`.
 - **`Store` vs `CheckpointStore` snapshot boundary**:
-  - Ordinary `Store` transactions capture an in-memory key-index snapshot capped at **16,384 live keys and 4 MiB of live key bytes** (`MAX_SNAPSHOT_KEYS` / `MAX_SNAPSHOT_KEY_BYTES`). Once a `Store` holds more than 16,384 live keys (including 2 keys per SQL table for collection metadata and catalog entry), subsequent `Store` SQL statements fail before execution with `SqlError::Bounds` (`snapshot key count limit exceeded`).
-  - `CheckpointStore` transactions do not capture a full-store snapshot and can hold and scan tables beyond 16,384 rows (subject to `CheckpointStore`'s suffix-overlay limits between checkpoint rollovers and `SqlLimits::max_visited_rows`).
+  - Ordinary `Store` transactions capture an in-memory key-index snapshot capped at **16,384 live keys and 4 MiB of live key bytes** (`MAX_SNAPSHOT_KEYS` / `MAX_SNAPSHOT_KEY_BYTES`). Once a `Store` holds more than 16,384 live keys (including 2 keys per SQL table for collection metadata and catalog entry, plus index keys), subsequent `Store` SQL statements fail before execution with `SqlError::Bounds` (`snapshot key count limit exceeded`).
+  - `CheckpointStore` transactions do not capture a full-store snapshot and can hold and index tables well beyond 16,384 rows (for managed checkpoint configurations, automatic checkpoint rollover keeps the suffix overlay bounded).
 
 ## Implemented vs planned
 
-- **Implemented**: `CREATE TABLE [IF NOT EXISTS]` (including column-level `UNIQUE` and table-level `UNIQUE (col, ...)`), `CREATE [UNIQUE] INDEX [IF NOT EXISTS]`, `INSERT`, `SELECT` (`*` or column list, `WHERE`, `ORDER BY` with `ASC`/`DESC`/`NULLS FIRST`/`NULLS LAST`, `LIMIT`/`OFFSET`), `UPDATE`, `DELETE`, `SqlValue`/`SqlLimits`/`SqlError`/`SqlStatement` prepared reuse, per-`SqlDatabase` catalog/statement/plan caching, 3VL expressions, exact numeric comparisons, ascending PK order guarantee and streaming `ORDER BY pk ASC`, index-order `ORDER BY ... LIMIT` streaming, bounded `ORDER BY pk DESC` and top-K / full sort, primary-key point (`=`) and range (`>`, `>=`, `<`, `<=`) access paths, single and compound secondary index equality/range access via `DocumentTransaction::query_index`, bounded full-collection scan fallback via `DocumentTransaction::scan_documents`, `ReadSet` optimistic concurrency, and row PK/document-ID integrity verification.
-- **Planned (later slices)**: `JOIN`, `GROUP BY` / aggregates, subqueries, multi-statement explicit SQL transactions (`BEGIN` / `COMMIT` / `ROLLBACK`), schema migrations (`ALTER` / `DROP`), and `EXPLAIN` / SQL diagnostics.
+- **Implemented**: `CREATE TABLE [IF NOT EXISTS]` (including column-level `UNIQUE` and table-level `UNIQUE (col, ...)`), `CREATE [UNIQUE] INDEX [IF NOT EXISTS]` (single-tx for small tables and bounded resumable online build for large populated tables), `DROP INDEX [IF EXISTS] name ON table`, `INSERT`, `SELECT` (`*` or column list, `WHERE`, `ORDER BY` with `ASC`/`DESC`/`NULLS FIRST`/`NULLS LAST`, `LIMIT`/`OFFSET`), `UPDATE`, `DELETE`, `SqlValue`/`SqlLimits`/`SqlError`/`SqlStatement` prepared reuse, per-`SqlDatabase` catalog/statement/plan caching, compiled index templates, 3VL expressions, exact numeric comparisons, ascending PK order guarantee and streaming `ORDER BY pk ASC`, index-order `ORDER BY ... LIMIT` streaming, bounded `ORDER BY pk DESC` and top-K / full sort, primary-key point (`=`) and range (`>`, `>=`, `<`, `<=`) access paths, single and compound secondary index equality/range access via `DocumentTransaction::query_index`, bounded full-collection scan fallback via `DocumentTransaction::scan_documents`, `ReadSet` optimistic concurrency, and row PK/document-ID integrity verification.
+- **Planned (later slices)**: `JOIN`, `GROUP BY` / aggregates, subqueries, multi-statement explicit SQL transactions (`BEGIN` / `COMMIT` / `ROLLBACK`), schema migrations (`ALTER TABLE` / `DROP TABLE`), and `EXPLAIN` / SQL diagnostics.
