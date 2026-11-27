@@ -16,11 +16,8 @@ const CURSOR_MAGIC: &[u8; 8] = b"EMDAIC01";
 const CURSOR_HEADER_BYTES: usize = CURSOR_MAGIC.len() + 32;
 const CURSOR_CHECKSUM_BYTES: usize = 4;
 const CURSOR_SCOPE_MEMO_ENTRIES: usize = 8;
-const INLINE_INDEX_BYTES: usize = 1024;
-const INLINE_INDEX_ENTRIES: usize = 32;
-// Maximum length of any valid document key:
-// PREFIX (15) + b'D' (1) + 2 + MAX_NAME_BYTES (128) + MAX_ID_BYTES (256) = 402.
-const MAX_DOC_KEY_STACK: usize = 512;
+const INLINE_INDEX_BYTES: usize = 512;
+const INLINE_INDEX_ENTRIES: usize = 16;
 
 type CursorScopeMemo = Vec<(String, IndexDefinition, [u8; 32])>;
 
@@ -136,30 +133,6 @@ impl IndexEntries {
             let end = self.spill_ends[index];
             &self.spill_bytes[start..end]
         }
-    }
-}
-
-/// Reusable fixed-capacity stack buffer initialized with a constant prefix.
-struct PrefixKeyBuf<const N: usize> {
-    buf: [u8; N],
-    prefix_len: usize,
-}
-
-impl<const N: usize> PrefixKeyBuf<N> {
-    fn new(prefix: &[u8]) -> Self {
-        assert!(prefix.len() <= N);
-        let mut buf = [0; N];
-        buf[..prefix.len()].copy_from_slice(prefix);
-        Self {
-            buf,
-            prefix_len: prefix.len(),
-        }
-    }
-
-    fn with_suffix(&mut self, suffix: &[u8]) -> &[u8] {
-        let end = self.prefix_len + suffix.len();
-        self.buf[self.prefix_len..end].copy_from_slice(suffix);
-        &self.buf[..end]
     }
 }
 
@@ -433,6 +406,112 @@ fn entry_id<'a>(entry: &'a [u8], prefix: &[u8], fields: usize) -> io::Result<&'a
     Ok(id)
 }
 
+fn write_collection_prefix(out: &mut TupleBuf, kind: u8, name: &str) -> io::Result<()> {
+    key::name(name)?;
+    out.clear();
+    out.extend_from_slice(key::PREFIX);
+    out.extend_from_slice(&[kind]);
+    out.extend_from_slice(&(name.len() as u16).to_be_bytes());
+    out.extend_from_slice(name.as_bytes());
+    Ok(())
+}
+
+fn write_index_prefix(
+    out: &mut TupleBuf,
+    kind: u8,
+    collection: &str,
+    name: &str,
+) -> io::Result<()> {
+    write_collection_prefix(out, kind, collection)?;
+    key::name(name)?;
+    out.extend_from_slice(&(name.len() as u16).to_be_bytes());
+    out.extend_from_slice(name.as_bytes());
+    Ok(())
+}
+
+fn index_bounds_into(
+    index_prefix: &[u8],
+    equal: &[IndexValue],
+    lower: Option<&IndexBound>,
+    upper: Option<&IndexBound>,
+    after: &mut TupleBuf,
+    before: &mut TupleBuf,
+) -> io::Result<()> {
+    after.clear();
+    after.extend_from_slice(index_prefix);
+    for value in equal {
+        value.encode_to_buf(after)?;
+    }
+    before.clear();
+    before.extend_from_slice(after.as_slice());
+    if let Some(lower) = lower {
+        lower.value.encode_to_buf(after)?;
+        if !lower.inclusive {
+            after.end_in_place();
+        }
+    }
+    if let Some(upper) = upper {
+        upper.value.encode_to_buf(before)?;
+        if upper.inclusive {
+            before.end_in_place();
+        }
+    } else {
+        before.end_in_place();
+    }
+    Ok(())
+}
+
+/// Skips `fields` encoded scalar tags without UTF-8 validation, returning the
+/// raw `(tuple, id)` slices for read-ahead peek hints only. Every entry that
+/// is actually read still passes full `entry_id` validation first.
+fn peek_tuple_and_id<'a>(
+    entry: &'a [u8],
+    prefix: &[u8],
+    fields: usize,
+) -> Option<(&'a [u8], &'a [u8])> {
+    let body = entry.strip_prefix(prefix)?;
+    let mut offset = 0_usize;
+    for _ in 0..fields {
+        match body.get(offset)? {
+            0x10 => offset += 1,
+            0x20 => {
+                if offset + 2 > body.len() {
+                    return None;
+                }
+                offset += 2;
+            }
+            0x30 => {
+                if offset + 9 > body.len() {
+                    return None;
+                }
+                offset += 9;
+            }
+            0x40 => {
+                offset += 1;
+                loop {
+                    let byte = *body.get(offset)?;
+                    offset += 1;
+                    if byte == 0 {
+                        let escaped = *body.get(offset)?;
+                        offset += 1;
+                        match escaped {
+                            0 => break,
+                            0xff => {}
+                            _ => return None,
+                        }
+                    }
+                }
+            }
+            _ => return None,
+        }
+    }
+    let id = &body[offset..];
+    if id.is_empty() || id.len() > key::MAX_ID_BYTES {
+        return None;
+    }
+    Some((&body[..offset], id))
+}
+
 struct StoredPageOutcome {
     entries_read: usize,
     returned: usize,
@@ -455,7 +534,7 @@ impl DocumentTransaction<'_, '_> {
         if query.limit == 0 || query.limit > MAX_QUERY_DOCUMENTS {
             return Err(key::invalid("query limit must be between 1 and 256"));
         }
-        let metadata = self.metadata(collection)?;
+        let metadata = self.metadata_fast(collection)?;
         let definition = index_definition(&metadata, name)?;
         let scope = cursor_scope(collection, definition)?;
         if let Some(cursor) = &query.after {
@@ -464,8 +543,9 @@ impl DocumentTransaction<'_, '_> {
                     "cursor belongs to a different index definition",
                 ));
             }
-            let prefix = key::index(b'I', collection, name)?;
-            entry_id(&cursor.position, &prefix, definition.fields.len())
+            let mut prefix = TupleBuf::new();
+            write_index_prefix(&mut prefix, b'I', collection, name)?;
+            entry_id(&cursor.position, prefix.as_slice(), definition.fields.len())
                 .map_err(|_| key::invalid("cursor contains an invalid index position"))?;
         }
         let mut documents = Vec::new();
@@ -513,34 +593,47 @@ impl DocumentTransaction<'_, '_> {
         upper: Option<&IndexBound>,
         unique_equality: bool,
         mut next_page_limit: impl FnMut() -> usize,
-        mut visit: impl FnMut(&str, StoredDocument<'_>) -> Result<ControlFlow<()>, E>,
+        mut visit: impl FnMut(&str, &StoredDocument<'_>) -> Result<ControlFlow<()>, E>,
     ) -> io::Result<Result<(), E>> {
         let mut page_limit = next_page_limit();
         if page_limit == 0 {
             return Ok(Ok(()));
         }
-        let metadata = self.metadata(collection)?;
+        let metadata = self.metadata_fast(collection)?;
         let definition = index_definition(&metadata, name)?;
         if equal.len() > definition.fields.len()
             || (equal.len() == definition.fields.len() && (lower.is_some() || upper.is_some()))
         {
             return Err(key::invalid("query bounds exceed the index field count"));
         }
-        let index_prefix = key::index(b'I', collection, &definition.name)?;
-        let IndexBounds {
-            after, mut before, ..
-        } = index_bounds(&index_prefix, equal, lower, upper)?;
-        let initial_after = &after[..after.len().min(crate::record::MAX_KEY)];
+        let mut index_prefix = TupleBuf::new();
+        write_index_prefix(&mut index_prefix, b'I', collection, &definition.name)?;
+        let mut initial_after = TupleBuf::new();
+        let mut before = TupleBuf::new();
+        index_bounds_into(
+            index_prefix.as_slice(),
+            equal,
+            lower,
+            upper,
+            &mut initial_after,
+            &mut before,
+        )?;
+        if initial_after.len() > crate::record::MAX_KEY {
+            initial_after.truncate(crate::record::MAX_KEY);
+        }
         if before.len() > crate::record::MAX_KEY {
             before.truncate(crate::record::MAX_KEY);
-            before = key::end(&before);
+            before.end_in_place();
         }
-        if initial_after >= before.as_slice() {
+        if initial_after.as_slice() >= before.as_slice() {
             return Ok(Ok(()));
         }
-        let doc_prefix = key::collection(b'D', collection)?;
-        let unique_prefix = if definition.unique {
-            Some(key::index(b'U', collection, &definition.name)?)
+        let mut doc_prefix = TupleBuf::new();
+        write_collection_prefix(&mut doc_prefix, b'D', collection)?;
+        let mut unique_prefix = TupleBuf::new();
+        let unique_prefix_slice = if definition.unique {
+            write_index_prefix(&mut unique_prefix, b'U', collection, &definition.name)?;
+            Some(unique_prefix.as_slice())
         } else {
             None
         };
@@ -549,15 +642,15 @@ impl DocumentTransaction<'_, '_> {
         let mut cursor: Option<Vec<u8>> = None;
         loop {
             let limit = page_limit.min(MAX_QUERY_DOCUMENTS);
-            let page_after = cursor.as_deref().unwrap_or(initial_after);
+            let page_after = cursor.as_deref().unwrap_or(initial_after.as_slice());
             let outcome = match self.visit_index_page_stored(
                 definition,
                 &metadata,
-                &index_prefix,
-                &doc_prefix,
-                unique_prefix.as_deref(),
+                index_prefix.as_slice(),
+                doc_prefix.as_slice(),
+                unique_prefix_slice,
                 page_after,
-                &before,
+                before.as_slice(),
                 limit,
                 &IndexScanOptions {
                     after: None,
@@ -569,7 +662,7 @@ impl DocumentTransaction<'_, '_> {
                 },
                 &mut entries,
                 &mut tuple_buf,
-                &mut visit,
+                |id, stored| visit(id, stored),
             )? {
                 Ok(outcome) => outcome,
                 Err(visitor_error) => return Ok(Err(visitor_error)),
@@ -661,27 +754,39 @@ impl DocumentTransaction<'_, '_> {
         {
             return Err(key::invalid("query bounds exceed the index field count"));
         }
-        let index_prefix = key::index(b'I', collection, &definition.name)?;
-        let IndexBounds {
-            equal_prefix,
-            after,
-            mut before,
-        } = index_bounds(
-            &index_prefix,
-            &query.equal,
-            query.lower.as_ref(),
-            query.upper.as_ref(),
-        )?;
+        let mut index_prefix = TupleBuf::new();
+        write_index_prefix(&mut index_prefix, b'I', collection, &definition.name)?;
+        let mut after_buf = TupleBuf::new();
+        let mut before = TupleBuf::new();
         let after = if let Some(cursor) = options.after {
+            let IndexBounds {
+                equal_prefix,
+                after: exact_after,
+                before: exact_before,
+            } = index_bounds(
+                index_prefix.as_slice(),
+                &query.equal,
+                query.lower.as_ref(),
+                query.upper.as_ref(),
+            )?;
             if !cursor.starts_with(&equal_prefix)
-                || cursor >= before.as_slice()
-                || cursor < after.as_slice()
+                || cursor >= exact_before.as_slice()
+                || cursor < exact_after.as_slice()
             {
                 return Err(key::invalid("cursor is outside the query bounds"));
             }
+            before.extend_from_slice(&exact_before);
             cursor
         } else {
-            after.as_slice()
+            index_bounds_into(
+                index_prefix.as_slice(),
+                &query.equal,
+                query.lower.as_ref(),
+                query.upper.as_ref(),
+                &mut after_buf,
+                &mut before,
+            )?;
+            after_buf.as_slice()
         };
         // No stored key can extend a maximum-length prefix. An exclusive
         // lower bound can drop its remaining bytes. An exclusive upper bound
@@ -689,7 +794,7 @@ impl DocumentTransaction<'_, '_> {
         let after = &after[..after.len().min(crate::record::MAX_KEY)];
         if before.len() > crate::record::MAX_KEY {
             before.truncate(crate::record::MAX_KEY);
-            before = key::end(&before);
+            before.end_in_place();
         }
         let plan = |entries_read, returned| IndexQueryPlan {
             index: definition.name.clone(),
@@ -707,9 +812,12 @@ impl DocumentTransaction<'_, '_> {
                 response_bytes: 0,
             });
         }
-        let doc_prefix = key::collection(b'D', collection)?;
-        let unique_prefix = if definition.unique {
-            Some(key::index(b'U', collection, &definition.name)?)
+        let mut doc_prefix = TupleBuf::new();
+        write_collection_prefix(&mut doc_prefix, b'D', collection)?;
+        let mut unique_prefix = TupleBuf::new();
+        let unique_prefix_slice = if definition.unique {
+            write_index_prefix(&mut unique_prefix, b'U', collection, &definition.name)?;
+            Some(unique_prefix.as_slice())
         } else {
             None
         };
@@ -719,11 +827,11 @@ impl DocumentTransaction<'_, '_> {
             .visit_index_page_stored(
                 definition,
                 metadata,
-                &index_prefix,
-                &doc_prefix,
-                unique_prefix.as_deref(),
+                index_prefix.as_slice(),
+                doc_prefix.as_slice(),
+                unique_prefix_slice,
                 after,
-                &before,
+                before.as_slice(),
                 query.limit,
                 &options,
                 &mut entries,
@@ -731,7 +839,7 @@ impl DocumentTransaction<'_, '_> {
                 |id, stored| {
                     let document = match stored {
                         StoredDocument::Flat(flat) => Value::Object(flat.to_map()),
-                        StoredDocument::Full(document) => document,
+                        StoredDocument::Full(document) => std::mem::take(document),
                     };
                     visit(DocumentEntry {
                         id: id.to_owned(),
@@ -766,7 +874,7 @@ impl DocumentTransaction<'_, '_> {
         options: &IndexScanOptions<'_>,
         entries: &mut IndexEntries,
         tuple_buf: &mut TupleBuf,
-        mut visit: impl FnMut(&str, StoredDocument<'_>) -> Result<ControlFlow<()>, E>,
+        mut visit: impl FnMut(&str, &mut StoredDocument<'_>) -> Result<ControlFlow<()>, E>,
     ) -> io::Result<Result<StoredPageOutcome, E>> {
         entries.clear();
         let mut nonempty_entry = false;
@@ -798,10 +906,8 @@ impl DocumentTransaction<'_, '_> {
                     .candidate_limit
                     .map_or(entries_read, |cap| cap.min(entries_read))
             };
-            let mut doc_key_buf = PrefixKeyBuf::<MAX_DOC_KEY_STACK>::new(doc_prefix);
-            let mut peek_key_buf = PrefixKeyBuf::<MAX_DOC_KEY_STACK>::new(doc_prefix);
-            let mut unique_key_buf =
-                unique_prefix.map(PrefixKeyBuf::<{ crate::record::MAX_KEY }>::new);
+            let mut doc_key_buf = TupleBuf::new();
+            doc_key_buf.extend_from_slice(doc_prefix);
             self.with_point_reader(|reader| {
                 for index in 0..entries_read {
                     if options.unique_equality && returned != 0 {
@@ -815,95 +921,139 @@ impl DocumentTransaction<'_, '_> {
                     }
                     let entry = entries.get(index);
                     let id = entry_id(entry, index_prefix, definition.fields.len())?;
-                    let document_key = doc_key_buf.with_suffix(id.as_bytes());
-                    let mut next_document_bytes = document_key_value_bytes;
+                    doc_key_buf.truncate(doc_prefix.len());
+                    doc_key_buf.extend_from_slice(id.as_bytes());
+                    let document_key = doc_key_buf.as_slice();
+                    let doc_bytes_before = document_key_value_bytes;
+                    let used_before = used;
+                    let mut next_document_bytes = doc_bytes_before;
                     let upcoming_end = peek_limit.max(index + 1).min(entries_read);
-                    let encoded = reader
-                        .read_document_bytes_with_peek(
-                            document_key,
-                            |len| {
-                                next_document_bytes = document_key_value_bytes
-                                    .checked_add(document_key.len())
-                                    .and_then(|total| total.checked_add(len))
-                                    .ok_or_else(|| {
-                                        key::invalid("document scan byte count overflow")
-                                    })?;
-                                if options
-                                    .byte_limit
-                                    .is_some_and(|limit| next_document_bytes > limit)
-                                {
-                                    return Err(key::invalid(
-                                        "document scan exceeds the operation limit",
-                                    ));
+                    let has_upcoming = index + 1 < upcoming_end;
+                    let found = reader.visit_document_bytes_with_peek(
+                        document_key,
+                        has_upcoming,
+                        |len| {
+                            next_document_bytes = doc_bytes_before
+                                .checked_add(document_key.len())
+                                .and_then(|total| total.checked_add(len))
+                                .ok_or_else(|| key::invalid("document scan byte count overflow"))?;
+                            if options
+                                .byte_limit
+                                .is_some_and(|limit| next_document_bytes > limit)
+                            {
+                                return Err(key::invalid(
+                                    "document scan exceeds the operation limit",
+                                ));
+                            }
+                            if options.reject_response_overflow
+                                && options.response_byte_limit.is_some_and(|limit| {
+                                    used_before
+                                        .checked_add(id.len())
+                                        .and_then(|total| total.checked_add(len))
+                                        .is_none_or(|total| total > limit)
+                                })
+                            {
+                                return Err(key::invalid("lookup response exceeds its byte limit"));
+                            }
+                            Ok(())
+                        },
+                        |push_key| {
+                            let mut peek_key_buf = TupleBuf::new();
+                            peek_key_buf.extend_from_slice(doc_prefix);
+                            for next_index in index + 1..upcoming_end {
+                                let next_entry = entries.get(next_index);
+                                let Some((_, next_id)) = peek_tuple_and_id(
+                                    next_entry,
+                                    index_prefix,
+                                    definition.fields.len(),
+                                ) else {
+                                    break;
+                                };
+                                peek_key_buf.truncate(doc_prefix.len());
+                                peek_key_buf.extend_from_slice(next_id);
+                                if !push_key(peek_key_buf.as_slice()) {
+                                    break;
                                 }
-                                if options.reject_response_overflow
-                                    && options.response_byte_limit.is_some_and(|limit| {
-                                        used.checked_add(id.len())
-                                            .and_then(|total| total.checked_add(len))
-                                            .is_none_or(|total| total > limit)
-                                    })
-                                {
-                                    return Err(key::invalid(
-                                        "lookup response exceeds its byte limit",
-                                    ));
+                            }
+                        },
+                        |encoded, unique_verifier| {
+                            let next_used = used_before
+                                .checked_add(id.len())
+                                .and_then(|n| n.checked_add(encoded.len()))
+                                .ok_or_else(|| key::invalid("query response size overflow"))?;
+                            if options
+                                .response_byte_limit
+                                .is_some_and(|limit| next_used > limit)
+                            {
+                                return Ok(None);
+                            }
+                            let mut stored = Self::decode_stored(encoded, &metadata.schema)?;
+                            index::verify_entry_stored(
+                                definition,
+                                &stored,
+                                index_prefix,
+                                id,
+                                entry,
+                                tuple_buf,
+                            )?;
+                            if let Some(unique_prefix) = unique_prefix {
+                                let mut unique_key_buf = TupleBuf::new();
+                                unique_key_buf.extend_from_slice(unique_prefix);
+                                unique_key_buf.extend_from_slice(tuple_buf.as_slice());
+                                unique_verifier.verify_owner(
+                                    unique_key_buf.as_slice(),
+                                    id,
+                                    has_upcoming,
+                                    |push_key| {
+                                        let mut peek_unique_buf = TupleBuf::new();
+                                        peek_unique_buf.extend_from_slice(unique_prefix);
+                                        for next_index in index + 1..upcoming_end {
+                                            let next_entry = entries.get(next_index);
+                                            let Some((next_tuple, _)) = peek_tuple_and_id(
+                                                next_entry,
+                                                index_prefix,
+                                                definition.fields.len(),
+                                            ) else {
+                                                break;
+                                            };
+                                            if unique_prefix.len() + next_tuple.len()
+                                                > crate::record::MAX_KEY
+                                            {
+                                                break;
+                                            }
+                                            peek_unique_buf.truncate(unique_prefix.len());
+                                            peek_unique_buf.extend_from_slice(next_tuple);
+                                            if !push_key(peek_unique_buf.as_slice()) {
+                                                break;
+                                            }
+                                        }
+                                    },
+                                )?;
+                            }
+                            match visit(id, &mut stored) {
+                                Ok(ControlFlow::Continue(())) => {}
+                                Ok(ControlFlow::Break(())) => {
+                                    stopped = true;
                                 }
-                                Ok(())
-                            },
-                            |push_key| {
-                                for next_index in index + 1..upcoming_end {
-                                    let next_entry = entries.get(next_index);
-                                    let Ok(next_id) =
-                                        entry_id(next_entry, index_prefix, definition.fields.len())
-                                    else {
-                                        break;
-                                    };
-                                    let next_key = peek_key_buf.with_suffix(next_id.as_bytes());
-                                    if !push_key(next_key) {
-                                        break;
-                                    }
+                                Err(err) => {
+                                    visitor_error = Some(err);
                                 }
-                            },
-                        )?
-                        .ok_or_else(|| invalid_data("index references a missing document"))?;
-                    let next_used = used
-                        .checked_add(id.len())
-                        .and_then(|n| n.checked_add(encoded.len()))
-                        .ok_or_else(|| key::invalid("query response size overflow"))?;
-                    if options
-                        .response_byte_limit
-                        .is_some_and(|limit| next_used > limit)
-                    {
-                        break;
-                    }
-                    document_key_value_bytes = next_document_bytes;
-                    let stored = Self::decode_stored(&encoded, &metadata.schema)?;
-                    index::verify_entry_stored(
-                        definition,
-                        &stored,
-                        index_prefix,
-                        id,
-                        entry,
-                        tuple_buf,
+                            }
+                            Ok(Some(next_used))
+                        },
                     )?;
-                    if let Some(unique_buf) = unique_key_buf.as_mut() {
-                        let unique_key = unique_buf.with_suffix(tuple_buf.as_slice());
-                        if reader.read_unique_owner(unique_key)?.as_deref() != Some(id.as_bytes()) {
-                            return Err(invalid_data("invalid unique index entry"));
-                        }
-                    }
+                    let Some(outcome) = found else {
+                        return Err(invalid_data("index references a missing document"));
+                    };
+                    let Some(next_used) = outcome else {
+                        break;
+                    };
+                    document_key_value_bytes = next_document_bytes;
                     used = next_used;
                     returned += 1;
                     cursor_index = Some(index);
-                    match visit(id, stored) {
-                        Ok(ControlFlow::Continue(())) => {}
-                        Ok(ControlFlow::Break(())) => {
-                            stopped = true;
-                            break;
-                        }
-                        Err(err) => {
-                            visitor_error = Some(err);
-                            break;
-                        }
+                    if stopped || visitor_error.is_some() {
+                        break;
                     }
                 }
                 Ok(())
@@ -1028,5 +1178,343 @@ mod query_helper_tests {
             consume_value(&[0x40, b'a']).unwrap_err().to_string(),
             "truncated index string"
         );
+    }
+
+    #[test]
+    fn stack_index_bounds_match_allocating_bounds_including_max_key_truncation() {
+        let long_s = "a".repeat(256);
+        let max_s = "\u{7f}".repeat(256);
+        let cases: Vec<(
+            &str,
+            &str,
+            Vec<IndexValue>,
+            Option<IndexBound>,
+            Option<IndexBound>,
+        )> = vec![
+            ("items", "idx", vec![], None, None),
+            (
+                "items",
+                "idx",
+                vec![IndexValue::Integer(42)],
+                Some(IndexBound {
+                    value: IndexValue::String("ab".into()),
+                    inclusive: true,
+                }),
+                Some(IndexBound {
+                    value: IndexValue::String("cd".into()),
+                    inclusive: false,
+                }),
+            ),
+            (
+                "items",
+                "idx",
+                vec![IndexValue::Boolean(true)],
+                Some(IndexBound {
+                    value: IndexValue::Integer(i64::MAX),
+                    inclusive: false,
+                }),
+                Some(IndexBound {
+                    value: IndexValue::Integer(i64::MAX),
+                    inclusive: true,
+                }),
+            ),
+            (
+                "items",
+                "idx",
+                vec![
+                    IndexValue::String(long_s.clone()),
+                    IndexValue::String(long_s.clone()),
+                    IndexValue::String(long_s.clone()),
+                ],
+                Some(IndexBound {
+                    value: IndexValue::String(max_s.clone()),
+                    inclusive: false,
+                }),
+                Some(IndexBound {
+                    value: IndexValue::String(max_s.clone()),
+                    inclusive: true,
+                }),
+            ),
+        ];
+        for (collection, name, equal, lower, upper) in cases {
+            let prefix = key::index(b'I', collection, name).unwrap();
+            let mut prefix_buf = TupleBuf::new();
+            write_index_prefix(&mut prefix_buf, b'I', collection, name).unwrap();
+            assert_eq!(prefix_buf.as_slice(), prefix.as_slice());
+
+            let IndexBounds {
+                after, mut before, ..
+            } = index_bounds(&prefix, &equal, lower.as_ref(), upper.as_ref()).unwrap();
+            let expected_after = &after[..after.len().min(crate::record::MAX_KEY)];
+            if before.len() > crate::record::MAX_KEY {
+                before.truncate(crate::record::MAX_KEY);
+                before = key::end(&before);
+            }
+            let mut fast_after = TupleBuf::new();
+            let mut fast_before = TupleBuf::new();
+            index_bounds_into(
+                &prefix,
+                &equal,
+                lower.as_ref(),
+                upper.as_ref(),
+                &mut fast_after,
+                &mut fast_before,
+            )
+            .unwrap();
+            if fast_after.len() > crate::record::MAX_KEY {
+                fast_after.truncate(crate::record::MAX_KEY);
+            }
+            if fast_before.len() > crate::record::MAX_KEY {
+                fast_before.truncate(crate::record::MAX_KEY);
+                fast_before.end_in_place();
+            }
+            assert_eq!(fast_after.as_slice(), expected_after);
+            assert_eq!(fast_before.as_slice(), before.as_slice());
+        }
+    }
+
+    #[test]
+    fn visit_index_stored_handles_order_staging_unique_multipage_and_conflicts_on_both_backends() {
+        use crate::{CheckpointStore, CollectionSchema, DocumentDatabase, Store};
+        use serde_json::json;
+
+        fn exercise(db: &DocumentDatabase<'_>) {
+            db.create_collection("items", CollectionSchema::default())
+                .unwrap();
+            db.create_index(
+                "items",
+                IndexDefinition {
+                    name: "by_code".into(),
+                    fields: vec![vec!["code".into()]],
+                    unique: false,
+                    partial: None,
+                },
+            )
+            .unwrap();
+            db.create_index(
+                "items",
+                IndexDefinition {
+                    name: "by_rev".into(),
+                    fields: vec![vec!["rev".into()]],
+                    unique: true,
+                    partial: None,
+                },
+            )
+            .unwrap();
+            // Insert 300 rows (> 256 page size), with `code` ascending with ID
+            // (exercises cursor fast path), `rev` descending with ID (exercises
+            // out-of-order peek cache & unique owner coalescing), and mix flat
+            // rows with escaped-string / nested rows (exercises Full fallback).
+            for chunk in (0..300_i64).collect::<Vec<_>>().chunks(50) {
+                db.transaction(|tx| {
+                    for &i in chunk {
+                        let id = format!("r:{i:04}");
+                        let doc = if i % 29 == 0 {
+                            json!({"id": i, "code": i, "rev": 1000 - i, "note": "line1\nline2", "nested": {"k": i}})
+                        } else {
+                            json!({"id": i, "code": i, "rev": 1000 - i, "note": format!("n{i}")})
+                        };
+                        tx.insert("items", &id, &doc)?;
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            }
+
+            // Full multi-page scan (> 256 rows) on non-unique ascending index.
+            let mut ids = Vec::new();
+            db.transaction_with_read_set(|tx| {
+                tx.visit_index_stored(
+                    "items",
+                    "by_code",
+                    &[],
+                    None,
+                    None,
+                    false,
+                    || 256,
+                    |id, stored| {
+                        let got = match stored {
+                            StoredDocument::Flat(f) => f.get("id").and_then(|v| v.as_i64()),
+                            StoredDocument::Full(v) => v.get("id").and_then(Value::as_i64),
+                        };
+                        ids.push((id.to_owned(), got.unwrap()));
+                        Ok::<ControlFlow<()>, ()>(ControlFlow::Continue(()))
+                    },
+                )?
+                .unwrap();
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(ids.len(), 300);
+            for (i, (id, val)) in ids.iter().enumerate() {
+                assert_eq!(id, &format!("r:{i:04}"));
+                assert_eq!(*val, i as i64);
+            }
+
+            // Out-of-order range scan on UNIQUE index + staged update & delete + early stop.
+            let mut rev_ids = Vec::new();
+            db.transaction_with_read_set(|tx| {
+                tx.replace(
+                    "items",
+                    "r:0010",
+                    &json!({"id": 10, "code": 10, "rev": 990, "note": "staged"}),
+                    false,
+                )?;
+                tx.delete("items", "r:0012")?;
+                tx.visit_index_stored(
+                    "items",
+                    "by_rev",
+                    &[],
+                    Some(&IndexBound {
+                        value: IndexValue::Integer(985),
+                        inclusive: true,
+                    }),
+                    Some(&IndexBound {
+                        value: IndexValue::Integer(995),
+                        inclusive: true,
+                    }),
+                    false,
+                    || 256,
+                    |id, stored| {
+                        let note = match &stored {
+                            StoredDocument::Flat(f) => f.get("note").map(|v| format!("{v:?}")),
+                            StoredDocument::Full(v) => v.get("note").map(ToString::to_string),
+                        };
+                        rev_ids.push((id.to_owned(), note));
+                        Ok::<ControlFlow<()>, ()>(ControlFlow::Continue(()))
+                    },
+                )?
+                .unwrap();
+                Ok(())
+            })
+            .unwrap();
+            // rev 985..=995 corresponds to ids 15,14,13,(12 deleted),11,10,9,8,7,6,5.
+            let expected_ids: Vec<String> = [15, 14, 13, 11, 10, 9, 8, 7, 6, 5]
+                .into_iter()
+                .map(|i| format!("r:{i:04}"))
+                .collect();
+            assert_eq!(
+                rev_ids.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+                expected_ids
+            );
+            assert!(
+                rev_ids
+                    .iter()
+                    .find(|(id, _)| id == "r:0010")
+                    .unwrap()
+                    .1
+                    .as_deref()
+                    .unwrap()
+                    .contains("staged")
+            );
+        }
+
+        // Ordinary Store
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("store")).unwrap();
+        let db = DocumentDatabase::new(&store);
+        exercise(&db);
+        // Verify read-set conflict detection on ordinary Store.
+        let conflict = db.transaction_with_read_set(|tx| {
+            tx.visit_index_stored(
+                "items",
+                "by_code",
+                &[IndexValue::Integer(5)],
+                None,
+                None,
+                false,
+                || 2,
+                |_, _| Ok::<ControlFlow<()>, ()>(ControlFlow::Continue(())),
+            )?
+            .unwrap();
+            // Concurrent modification to the document read through the index.
+            db.replace(
+                "items",
+                "r:0005",
+                &json!({"id": 5, "code": 5, "rev": 995, "note": "concurrent"}),
+                false,
+            )?;
+            tx.replace(
+                "items",
+                "r:0006",
+                &json!({"id": 6, "code": 6, "rev": 994, "note": "mine"}),
+                false,
+            )?;
+            Ok(())
+        });
+        assert!(crate::is_transaction_conflict(&conflict.unwrap_err()));
+
+        // CheckpointStore (with persisted checkpoint blocks + suffix overlay)
+        let ckpt_log = dir.path().join("ckpt-log");
+        let ckpt_dir = dir.path().join("ckpt");
+        let initial = Store::open(&ckpt_log).unwrap();
+        let digest = initial.checkpoint_to(&ckpt_dir).unwrap();
+        drop(initial);
+        let ckpt = CheckpointStore::open(&ckpt_log, &ckpt_dir, &digest).unwrap();
+        let cdb = DocumentDatabase::with_checkpoint_store(&ckpt);
+        exercise(&cdb);
+        // Re-checkpoint so the 300 rows live inside verified checkpoint blocks, then query again!
+        let ckpt_dir2 = dir.path().join("ckpt2");
+        let digest2 = ckpt.checkpoint_to(&ckpt_dir2).unwrap();
+        drop(ckpt);
+        let ckpt2 = crate::test_support::retry_lock(|| {
+            CheckpointStore::open(&ckpt_log, &ckpt_dir2, &digest2)
+        })
+        .unwrap();
+        let cdb2 = DocumentDatabase::with_checkpoint_store(&ckpt2);
+        let mut count = 0_usize;
+        cdb2.transaction_with_read_set(|tx| {
+            tx.visit_index_stored(
+                "items",
+                "by_code",
+                &[],
+                Some(&IndexBound {
+                    value: IndexValue::Integer(20),
+                    inclusive: true,
+                }),
+                Some(&IndexBound {
+                    value: IndexValue::Integer(35),
+                    inclusive: false,
+                }),
+                false,
+                || 256,
+                |_, _| {
+                    count += 1;
+                    Ok::<ControlFlow<()>, ()>(ControlFlow::Continue(()))
+                },
+            )?
+            .unwrap();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(count, 15);
+        // Also verify read-set conflict detection on CheckpointStore.
+        let conflict = cdb2.transaction_with_read_set(|tx| {
+            tx.visit_index_stored(
+                "items",
+                "by_code",
+                &[IndexValue::Integer(25)],
+                None,
+                None,
+                false,
+                || 2,
+                |_, _| Ok::<ControlFlow<()>, ()>(ControlFlow::Continue(())),
+            )?
+            .unwrap();
+            cdb2.replace(
+                "items",
+                "r:0025",
+                &json!({"id": 25, "code": 25, "rev": 975, "note": "concurrent"}),
+                false,
+            )?;
+            tx.replace(
+                "items",
+                "r:0026",
+                &json!({"id": 26, "code": 26, "rev": 974, "note": "mine"}),
+                false,
+            )?;
+            Ok(())
+        });
+        assert!(crate::is_transaction_conflict(&conflict.unwrap_err()));
     }
 }

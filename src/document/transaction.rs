@@ -592,6 +592,91 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         Self::decode_metadata(collection, bytes)
     }
 
+    /// Reads and decodes collection metadata with the same read-set, read-budget,
+    /// checksum, and dropping checks as `metadata`, avoiding heap allocations for
+    /// the key and value buffer on memo hits.
+    pub(super) fn metadata_fast(&self, collection: &str) -> io::Result<Arc<Metadata>> {
+        key::name(collection)?;
+        let mut key_buf = [0_u8; 160];
+        let prefix = key::PREFIX;
+        let key_len = prefix.len() + 1 + 2 + collection.len();
+        key_buf[..prefix.len()].copy_from_slice(prefix);
+        key_buf[prefix.len()] = b'M';
+        key_buf[prefix.len() + 1..prefix.len() + 3]
+            .copy_from_slice(&(collection.len() as u16).to_be_bytes());
+        key_buf[prefix.len() + 3..key_len].copy_from_slice(collection.as_bytes());
+        let key = &key_buf[..key_len];
+
+        let decode_slice = |bytes: &[u8]| -> io::Result<Arc<Metadata>> {
+            let found = METADATA_MEMO.with(|memo| {
+                let mut memo = memo.borrow_mut();
+                let at = memo.iter().position(|(name, stored, _)| {
+                    name == collection && stored.as_slice() == bytes
+                })?;
+                let entry = memo.remove(at);
+                let metadata = Arc::clone(&entry.2);
+                memo.insert(0, entry);
+                Some(metadata)
+            });
+            let metadata = match found {
+                Some(metadata) => metadata,
+                None => {
+                    let metadata = Arc::new(Self::decode_metadata_uncached(collection, bytes)?);
+                    if bytes.len() <= METADATA_MEMO_MAX_BYTES {
+                        METADATA_MEMO.with(|memo| {
+                            let mut memo = memo.borrow_mut();
+                            memo.truncate(METADATA_MEMO_ENTRIES - 1);
+                            memo.insert(
+                                0,
+                                (collection.to_owned(), bytes.to_vec(), Arc::clone(&metadata)),
+                            );
+                        });
+                    }
+                    metadata
+                }
+            };
+            if metadata.dropping {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "collection deletion is in progress",
+                ));
+            }
+            Ok(metadata)
+        };
+
+        let decoded = match &self.backend {
+            BackendTransaction::Ordinary(tx) => {
+                self.charge_read(1, key.len())?;
+                tx.with_point_session(|session| {
+                    session.visit_admitted_with_peek(
+                        key,
+                        false,
+                        |len| self.charge_read(0, len),
+                        |_| {},
+                        |bytes, _| decode_slice(bytes),
+                    )
+                })?
+            }
+            BackendTransaction::Checkpoint(tx) => {
+                self.charge_read(1, key.len())?;
+                tx.with_point_session(|session| {
+                    session.visit_admitted_with_peek(
+                        key,
+                        false,
+                        |len| self.charge_read(0, len),
+                        |_| {},
+                        |bytes, _| decode_slice(bytes),
+                    )
+                })?
+            }
+            _ => {
+                let bytes = self.read(key)?;
+                return Self::decode_metadata(collection, bytes);
+            }
+        };
+        decoded.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "collection does not exist"))
+    }
+
     pub(super) fn metadata_including_drop(&self, collection: &str) -> io::Result<Arc<Metadata>> {
         let bytes = self.read(&key::collection(b'M', collection)?)?;
         Self::decode_metadata_including_drop(collection, bytes)
@@ -1883,6 +1968,7 @@ impl PointReader<'_, '_, '_, '_> {
         }
     }
 
+    #[allow(dead_code)]
     pub(super) fn read_document_bytes_with_peek(
         &mut self,
         key: &[u8],
@@ -1919,6 +2005,159 @@ impl PointReader<'_, '_, '_, '_> {
             return Err(invalid_data("invalid unique index owner"));
         }
         Ok(owner)
+    }
+}
+
+impl<'r, 's, 'a, 'store> PointReader<'r, 's, 'a, 'store> {
+    /// Reads document bytes as `read_document_bytes_with_peek` does, lending
+    /// the verified slice without copying on ordinary and checkpoint
+    /// transactions. Passes a disjoint unique-owner verifier so unique index
+    /// checks can run before returning while the document slice is borrowed.
+    pub(super) fn visit_document_bytes_with_peek<R>(
+        &mut self,
+        key: &[u8],
+        has_upcoming: bool,
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+        peek_keys: impl FnOnce(&mut dyn FnMut(&[u8]) -> bool),
+        visit: impl FnOnce(&[u8], &mut UniqueOwnerVerifier<'_, 'r, 's, 'a, 'store>) -> io::Result<R>,
+    ) -> io::Result<Option<R>> {
+        let tx = self.tx;
+        tx.charge_read(1, key.len())?;
+        let admit = |len| {
+            if len > MAX_DOCUMENT_BYTES {
+                return Err(invalid_data("stored document exceeds size limit"));
+            }
+            admit(len)?;
+            tx.charge_read(0, len)
+        };
+        match &mut self.backend {
+            PointReaderBackend::Ordinary(session) => session.visit_admitted_with_peek(
+                key,
+                has_upcoming,
+                admit,
+                peek_keys,
+                |bytes, sub| {
+                    let mut verifier = UniqueOwnerVerifier {
+                        tx,
+                        backend: UniqueVerifierBackend::SubRead(sub),
+                    };
+                    visit(bytes, &mut verifier)
+                },
+            ),
+            PointReaderBackend::Checkpoint(session) => session.visit_admitted_with_peek(
+                key,
+                has_upcoming,
+                admit,
+                peek_keys,
+                |bytes, sub| {
+                    let mut verifier = UniqueOwnerVerifier {
+                        tx,
+                        backend: UniqueVerifierBackend::SubRead(sub),
+                    };
+                    visit(bytes, &mut verifier)
+                },
+            ),
+            _ => {
+                let bytes = match &mut self.backend {
+                    PointReaderBackend::OrdinarySnapshot(session) => {
+                        session.get_admitted_with_peek(key, admit, peek_keys)
+                    }
+                    PointReaderBackend::CheckpointSnapshot(session) => {
+                        session.get_admitted_with_peek(key, admit, peek_keys)
+                    }
+                    PointReaderBackend::HistoricalCheckpoint(session) => {
+                        session.get_admitted_with_peek(key, admit, peek_keys)
+                    }
+                    PointReaderBackend::Direct => match &tx.backend {
+                        BackendTransaction::Retained(tx) => tx.get_admitted(key, admit),
+                        BackendTransaction::RetainedSnapshot(view) => view.get_admitted(key, admit),
+                        _ => unreachable!("direct point reader is only used for retained backends"),
+                    },
+                    PointReaderBackend::Ordinary(_) | PointReaderBackend::Checkpoint(_) => {
+                        unreachable!("handled above")
+                    }
+                }?;
+                match bytes {
+                    Some(bytes) => {
+                        let mut verifier = UniqueOwnerVerifier {
+                            tx,
+                            backend: UniqueVerifierBackend::Fallback(self),
+                        };
+                        visit(&bytes, &mut verifier).map(Some)
+                    }
+                    None => Ok(None),
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::type_complexity)]
+enum UniqueVerifierBackend<'u, 'r, 's, 'a, 'store> {
+    SubRead(
+        &'u mut dyn FnMut(
+            &[u8],
+            bool,
+            &mut dyn FnMut(usize) -> io::Result<()>,
+            &mut dyn FnMut(&mut dyn FnMut(&[u8]) -> bool),
+            &mut dyn FnMut(&[u8]) -> io::Result<()>,
+        ) -> io::Result<bool>,
+    ),
+    Fallback(&'u mut PointReader<'r, 's, 'a, 'store>),
+}
+
+pub(super) struct UniqueOwnerVerifier<'u, 'r, 's, 'a, 'store> {
+    tx: &'u DocumentTransaction<'a, 'store>,
+    backend: UniqueVerifierBackend<'u, 'r, 's, 'a, 'store>,
+}
+
+impl UniqueOwnerVerifier<'_, '_, '_, '_, '_> {
+    pub(super) fn verify_owner(
+        &mut self,
+        key: &[u8],
+        expected_id: &str,
+        has_upcoming: bool,
+        mut peek_keys: impl FnMut(&mut dyn FnMut(&[u8]) -> bool),
+    ) -> io::Result<()> {
+        match &mut self.backend {
+            UniqueVerifierBackend::SubRead(sub) => {
+                self.tx.charge_read(1, key.len())?;
+                let mut admit = |len| {
+                    if !(1..=key::MAX_ID_BYTES).contains(&len) {
+                        return Err(invalid_data("invalid unique index owner length"));
+                    }
+                    self.tx.charge_read(0, len)
+                };
+                let mut owner_ok = false;
+                let mut check_bytes = |bytes: &[u8]| {
+                    if bytes == expected_id.as_bytes() {
+                        owner_ok = true;
+                        Ok(())
+                    } else if std::str::from_utf8(bytes).is_err() {
+                        Err(invalid_data("invalid unique index owner"))
+                    } else {
+                        Err(invalid_data("invalid unique index entry"))
+                    }
+                };
+                let found = sub(
+                    key,
+                    has_upcoming,
+                    &mut admit,
+                    &mut peek_keys,
+                    &mut check_bytes,
+                )?;
+                if !found || !owner_ok {
+                    return Err(invalid_data("invalid unique index entry"));
+                }
+                Ok(())
+            }
+            UniqueVerifierBackend::Fallback(reader) => {
+                if reader.read_unique_owner(key)?.as_deref() != Some(expected_id.as_bytes()) {
+                    return Err(invalid_data("invalid unique index entry"));
+                }
+                Ok(())
+            }
+        }
     }
 }
 

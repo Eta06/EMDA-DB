@@ -382,7 +382,13 @@ impl CheckpointTransaction<'_> {
             log_generation: state.log_generation,
             lookup: state.view.base.lookup(),
             read_ahead: crate::log::LogReadAhead::new(&state.view.base.log),
+            unique_read_ahead: crate::log::LogReadAhead::new(&state.view.base.log),
+            used_read_ahead: false,
+            used_unique_read_ahead: false,
             read_set,
+            peek_buf: Vec::new(),
+            peek_entries: Vec::new(),
+            peek_head: 0,
         };
         action(&mut session)
     }
@@ -486,7 +492,100 @@ pub(crate) struct CheckpointPointSession<'a> {
     log_generation: Option<crate::log::GenerationId>,
     lookup: crate::checkpoint_view::CheckpointLookup<'a>,
     read_ahead: crate::log::LogReadAhead<'a>,
+    unique_read_ahead: crate::log::LogReadAhead<'a>,
+    used_read_ahead: bool,
+    used_unique_read_ahead: bool,
     read_set: Option<std::sync::MutexGuard<'a, super::read_set::ReadSet>>,
+    peek_buf: Vec<u8>,
+    peek_entries: Vec<(usize, usize, ValueLocation)>,
+    peek_head: usize,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn visit_checkpoint_sub_read(
+    tx: &CheckpointTransaction<'_>,
+    view: &RecoveredCheckpointView,
+    log_generation: Option<crate::log::GenerationId>,
+    lookup: &mut crate::checkpoint_view::CheckpointLookup<'_>,
+    read_ahead: &mut crate::log::LogReadAhead<'_>,
+    used_read_ahead: &mut bool,
+    read_set: &mut Option<std::sync::MutexGuard<'_, super::read_set::ReadSet>>,
+    peek_buf: &mut Vec<u8>,
+    peek_entries: &mut Vec<(usize, usize, ValueLocation)>,
+    peek_head: &mut usize,
+    key: &[u8],
+    has_upcoming: bool,
+    admit: &mut dyn FnMut(usize) -> io::Result<()>,
+    peek_keys: &mut dyn FnMut(&mut dyn FnMut(&[u8]) -> bool),
+    visit: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+) -> io::Result<bool> {
+    record::validate_key(key)?;
+    crate::cancellation::check(tx.cancellation.as_ref())?;
+    if tx
+        .deadline
+        .is_some_and(|deadline| Instant::now() >= deadline)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "transaction deadline exceeded",
+        ));
+    }
+    if !tx.staged.is_empty() {
+        if let Some(value) = tx.staged.get(key) {
+            if let Some(value) = value {
+                admit(value.len())?;
+                visit(value)?;
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+    }
+    let location = match view.overlay.get(key) {
+        Some(location) => *location,
+        None => {
+            // Switching `lookup` to another checkpoint block invalidates any
+            // cached `location_if_loaded` document entries so block read-budget
+            // accounting remains identical.
+            peek_entries.clear();
+            peek_buf.clear();
+            *peek_head = 0;
+            lookup.location(key)?
+        }
+    };
+    if let Some(read_set) = read_set.as_mut() {
+        read_set.record_point(tx.store, key, location, log_generation)?;
+    }
+    let Some(location) = location else {
+        return Ok(false);
+    };
+    admit(location.length)?;
+    if !has_upcoming && !*used_read_ahead && location.length <= 256 {
+        let mut stack_buf = [0_u8; 256];
+        view.base
+            .log
+            .read_into(location, &mut stack_buf[..location.length])?;
+        visit(&stack_buf[..location.length])?;
+        return Ok(true);
+    }
+    *used_read_ahead = true;
+    let value = read_ahead.read_slice_with_peek(location, |push| {
+        peek_keys(&mut |next_key| {
+            if !tx.staged.is_empty() && tx.staged.contains_key(next_key) {
+                return true;
+            }
+            let next_loc = match view.overlay.get(next_key) {
+                Some(loc) => *loc,
+                None => lookup.location_if_loaded(next_key),
+            };
+            if let Some(next_loc) = next_loc {
+                push(next_loc)
+            } else {
+                true
+            }
+        });
+    })?;
+    visit(&value)?;
+    Ok(true)
 }
 
 impl CheckpointPointSession<'_> {
@@ -542,6 +641,209 @@ impl CheckpointPointSession<'_> {
             });
         })?;
         Ok(Some(value))
+    }
+
+    /// Reads `key` with the same admission, read-set, checksum, block-cache,
+    /// and read-ahead semantics as `get_admitted_with_peek`, lending verified
+    /// value bytes without copying and reusing peeked locations while the same
+    /// checkpoint block remains loaded.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn visit_admitted_with_peek<R>(
+        &mut self,
+        key: &[u8],
+        has_upcoming: bool,
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+        peek_keys: impl FnOnce(&mut dyn FnMut(&[u8]) -> bool),
+        visit: impl FnOnce(
+            &[u8],
+            &mut dyn FnMut(
+                &[u8],
+                bool,
+                &mut dyn FnMut(usize) -> io::Result<()>,
+                &mut dyn FnMut(&mut dyn FnMut(&[u8]) -> bool),
+                &mut dyn FnMut(&[u8]) -> io::Result<()>,
+            ) -> io::Result<bool>,
+        ) -> io::Result<R>,
+    ) -> io::Result<Option<R>> {
+        let Self {
+            tx,
+            view,
+            log_generation,
+            lookup,
+            read_ahead,
+            unique_read_ahead,
+            used_read_ahead,
+            used_unique_read_ahead,
+            read_set,
+            peek_buf,
+            peek_entries,
+            peek_head,
+        } = self;
+        record::validate_key(key)?;
+        crate::cancellation::check(tx.cancellation.as_ref())?;
+        if tx
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "transaction deadline exceeded",
+            ));
+        }
+        if !tx.staged.is_empty() {
+            if let Some(value) = tx.staged.get(key) {
+                if let Some(value) = value {
+                    admit(value.len())?;
+                    let mut sub_read =
+                        |sub_key: &[u8],
+                         sub_upcoming: bool,
+                         sub_admit: &mut dyn FnMut(usize) -> io::Result<()>,
+                         sub_peek: &mut dyn FnMut(&mut dyn FnMut(&[u8]) -> bool),
+                         sub_visit: &mut dyn FnMut(&[u8]) -> io::Result<()>| {
+                            visit_checkpoint_sub_read(
+                                tx,
+                                view,
+                                *log_generation,
+                                lookup,
+                                unique_read_ahead,
+                                used_unique_read_ahead,
+                                read_set,
+                                peek_buf,
+                                peek_entries,
+                                peek_head,
+                                sub_key,
+                                sub_upcoming,
+                                sub_admit,
+                                sub_peek,
+                                sub_visit,
+                            )
+                        };
+                    return visit(value, &mut sub_read).map(Some);
+                }
+                return Ok(None);
+            }
+        }
+        let cached = if *peek_head < peek_entries.len()
+            && &peek_buf[peek_entries[*peek_head].0..peek_entries[*peek_head].1] == key
+        {
+            let loc = peek_entries[*peek_head].2;
+            *peek_head += 1;
+            Some(loc)
+        } else {
+            None
+        };
+        let location = match cached {
+            Some(loc) => Some(loc),
+            None => match view.overlay.get(key) {
+                Some(location) => *location,
+                None => {
+                    peek_entries.clear();
+                    peek_buf.clear();
+                    *peek_head = 0;
+                    lookup.location(key)?
+                }
+            },
+        };
+        if let Some(read_set) = read_set.as_mut() {
+            read_set.record_point(tx.store, key, location, *log_generation)?;
+        }
+        let Some(location) = location else {
+            return Ok(None);
+        };
+        admit(location.length)?;
+        if !has_upcoming && !*used_read_ahead && location.length <= 4096 {
+            let mut sub_read =
+                |sub_key: &[u8],
+                 sub_upcoming: bool,
+                 sub_admit: &mut dyn FnMut(usize) -> io::Result<()>,
+                 sub_peek: &mut dyn FnMut(&mut dyn FnMut(&[u8]) -> bool),
+                 sub_visit: &mut dyn FnMut(&[u8]) -> io::Result<()>| {
+                    visit_checkpoint_sub_read(
+                        tx,
+                        view,
+                        *log_generation,
+                        lookup,
+                        unique_read_ahead,
+                        used_unique_read_ahead,
+                        read_set,
+                        peek_buf,
+                        peek_entries,
+                        peek_head,
+                        sub_key,
+                        sub_upcoming,
+                        sub_admit,
+                        sub_peek,
+                        sub_visit,
+                    )
+                };
+            if location.length <= 128 {
+                let mut stack_buf = [0_u8; 128];
+                view.base
+                    .log
+                    .read_into(location, &mut stack_buf[..location.length])?;
+                return visit(&stack_buf[..location.length], &mut sub_read).map(Some);
+            }
+            if location.length <= 512 {
+                let mut stack_buf = [0_u8; 512];
+                view.base
+                    .log
+                    .read_into(location, &mut stack_buf[..location.length])?;
+                return visit(&stack_buf[..location.length], &mut sub_read).map(Some);
+            }
+            let mut stack_buf = [0_u8; 4096];
+            view.base
+                .log
+                .read_into(location, &mut stack_buf[..location.length])?;
+            return visit(&stack_buf[..location.length], &mut sub_read).map(Some);
+        }
+        *used_read_ahead = true;
+        let value = read_ahead.read_slice_with_peek(location, |push| {
+            peek_buf.clear();
+            peek_entries.clear();
+            *peek_head = 0;
+            peek_keys(&mut |next_key| {
+                if !tx.staged.is_empty() && tx.staged.contains_key(next_key) {
+                    return true;
+                }
+                let next_loc = match view.overlay.get(next_key) {
+                    Some(loc) => *loc,
+                    None => lookup.location_if_loaded(next_key),
+                };
+                if let Some(next_loc) = next_loc {
+                    let start = peek_buf.len();
+                    peek_buf.extend_from_slice(next_key);
+                    peek_entries.push((start, peek_buf.len(), next_loc));
+                    push(next_loc)
+                } else {
+                    true
+                }
+            });
+        })?;
+        let mut sub_read =
+            |sub_key: &[u8],
+             sub_upcoming: bool,
+             sub_admit: &mut dyn FnMut(usize) -> io::Result<()>,
+             sub_peek: &mut dyn FnMut(&mut dyn FnMut(&[u8]) -> bool),
+             sub_visit: &mut dyn FnMut(&[u8]) -> io::Result<()>| {
+                visit_checkpoint_sub_read(
+                    tx,
+                    view,
+                    *log_generation,
+                    lookup,
+                    unique_read_ahead,
+                    used_unique_read_ahead,
+                    read_set,
+                    peek_buf,
+                    peek_entries,
+                    peek_head,
+                    sub_key,
+                    sub_upcoming,
+                    sub_admit,
+                    sub_peek,
+                    sub_visit,
+                )
+            };
+        visit(&value, &mut sub_read).map(Some)
     }
 }
 

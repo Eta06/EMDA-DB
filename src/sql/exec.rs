@@ -3855,6 +3855,7 @@ fn exec_pk_sorted_select(
                     first = Some((key, projected));
                 } else {
                     if let Some(first_pair) = first.take() {
+                        rest.reserve(16);
                         rest.push(first_pair);
                     }
                     if in_order {
@@ -4432,13 +4433,18 @@ fn visit_index_rows_ref(
                     }
                 }
                 StoredDocument::Full(document) => {
-                    let obj = doc_into_object(document)?;
-                    let verified_pk = verify_doc_pk_id(table, id, &obj)?;
-                    if eval_where_doc(filter, table, &obj, params)? {
+                    let obj = document.as_object().ok_or_else(|| {
+                        SqlError::Io(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "stored row is not a JSON object",
+                        ))
+                    })?;
+                    let verified_pk = verify_doc_pk_id(table, id, obj)?;
+                    if eval_where_doc(filter, table, obj, params)? {
                         if let Some(cap) = stream_cap.get() {
                             stream_cap.set(Some(cap.saturating_sub(1)));
                         }
-                        on_match(id, verified_pk, RowRef::Map(&obj))
+                        on_match(id, verified_pk, RowRef::Map(obj))
                     } else {
                         Ok(ControlFlow::Continue(()))
                     }

@@ -150,17 +150,25 @@ impl IndexValue {
     }
 
     pub(super) fn encode(&self, out: &mut Vec<u8>) -> io::Result<()> {
+        self.encode_into(out)
+    }
+
+    pub(super) fn encode_to_buf(&self, out: &mut TupleBuf) -> io::Result<()> {
+        self.encode_into(out)
+    }
+
+    fn encode_into(&self, out: &mut impl ByteSink) -> io::Result<()> {
         match self {
-            Self::Null => out.push(0x10),
+            Self::Null => out.push_byte(0x10),
             Self::Boolean(value) => {
-                out.push(0x20);
-                out.push(u8::from(*value));
+                out.push_byte(0x20);
+                out.push_byte(u8::from(*value));
             }
             Self::Integer(value) => {
-                out.push(0x30);
-                out.extend_from_slice(&((*value as u64) ^ (1_u64 << 63)).to_be_bytes());
+                out.push_byte(0x30);
+                out.extend_bytes(&((*value as u64) ^ (1_u64 << 63)).to_be_bytes());
             }
-            Self::String(value) => encode_string(value, out)?,
+            Self::String(value) => encode_string_into(value, out)?,
         }
         Ok(())
     }
@@ -181,10 +189,10 @@ impl ByteSink for Vec<u8> {
     }
 }
 
-const INLINE_TUPLE_BYTES: usize = 128;
+const INLINE_TUPLE_BYTES: usize = 64;
 
-/// Reusable scratch buffer for encoded index tuples. Short tuples stay on the
-/// stack; longer ones spill to a vector.
+/// Reusable scratch buffer for encoded index tuples and short keys. Short
+/// buffers stay on the stack; longer ones spill to a vector.
 pub(super) struct TupleBuf {
     inline: [u8; INLINE_TUPLE_BYTES],
     len: usize,
@@ -214,6 +222,41 @@ impl TupleBuf {
         } else {
             &self.inline[..self.len]
         }
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(super) fn extend_from_slice(&mut self, bytes: &[u8]) {
+        self.extend_bytes(bytes);
+    }
+
+    pub(super) fn truncate(&mut self, len: usize) {
+        if len < self.len {
+            self.len = len;
+            if self.spilled {
+                self.spill.truncate(len);
+            }
+        }
+    }
+
+    pub(super) fn end_in_place(&mut self) {
+        let slice = if self.spilled {
+            &mut self.spill[..self.len]
+        } else {
+            &mut self.inline[..self.len]
+        };
+        let mut new_len = slice.len();
+        while new_len > 0 {
+            new_len -= 1;
+            if slice[new_len] != u8::MAX {
+                slice[new_len] += 1;
+                self.truncate(new_len + 1);
+                return;
+            }
+        }
+        unreachable!("reserved prefixes contain non-0xff bytes")
     }
 
     fn spill_for(&mut self, extra: usize) {
@@ -264,10 +307,6 @@ fn encode_string_into(value: &str, out: &mut impl ByteSink) -> io::Result<()> {
     }
     out.extend_bytes(&[0, 0]);
     Ok(())
-}
-
-fn encode_string(value: &str, out: &mut Vec<u8>) -> io::Result<()> {
-    encode_string_into(value, out)
 }
 
 fn encode_json_into(value: &Value, out: &mut impl ByteSink) -> io::Result<()> {

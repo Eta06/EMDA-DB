@@ -423,8 +423,16 @@ impl Transaction<'_> {
             tx: self,
             snapshot_index: &snapshot.index,
             deadline: snapshot.deadline,
+            log,
             read_ahead: crate::log::LogReadAhead::new(log),
+            unique_read_ahead: crate::log::LogReadAhead::new(log),
+            used_read_ahead: false,
+            used_unique_read_ahead: false,
             read_set,
+            cursor: None,
+            peek_buf: Vec::new(),
+            peek_entries: Vec::new(),
+            peek_head: 0,
         };
         action(&mut session)
     }
@@ -484,8 +492,120 @@ pub(crate) struct OrdinaryPointSession<'a> {
     tx: &'a Transaction<'a>,
     snapshot_index: &'a BTreeMap<Vec<u8>, ValueLocation>,
     deadline: Option<Instant>,
+    log: &'a crate::log::Log,
     read_ahead: crate::log::LogReadAhead<'a>,
+    unique_read_ahead: crate::log::LogReadAhead<'a>,
+    used_read_ahead: bool,
+    used_unique_read_ahead: bool,
     read_set: Option<std::sync::MutexGuard<'a, super::read_set::ReadSet>>,
+    cursor:
+        Option<std::iter::Peekable<std::collections::btree_map::Range<'a, Vec<u8>, ValueLocation>>>,
+    peek_buf: Vec<u8>,
+    peek_entries: Vec<(usize, usize, Option<ValueLocation>)>,
+    peek_head: usize,
+}
+
+type OrdinaryCursor<'a> =
+    std::iter::Peekable<std::collections::btree_map::Range<'a, Vec<u8>, ValueLocation>>;
+
+#[inline]
+fn lookup_with_cursor<'a>(
+    index: &'a BTreeMap<Vec<u8>, ValueLocation>,
+    cursor: &mut Option<OrdinaryCursor<'a>>,
+    key: &[u8],
+) -> (Option<ValueLocation>, bool) {
+    if let Some(iter) = cursor.as_mut() {
+        for _ in 0..4 {
+            match iter.peek() {
+                Some(&(cur_key, &loc)) => match cur_key.as_slice().cmp(key) {
+                    std::cmp::Ordering::Equal => {
+                        let _ = iter.next();
+                        return (Some(loc), true);
+                    }
+                    std::cmp::Ordering::Less => {
+                        let _ = iter.next();
+                    }
+                    std::cmp::Ordering::Greater => break,
+                },
+                None => break,
+            }
+        }
+    }
+    let mut iter = index
+        .range::<[u8], _>((std::ops::Bound::Included(key), Unbounded))
+        .peekable();
+    let found = match iter.peek() {
+        Some(&(cur_key, &loc)) if cur_key.as_slice() == key => {
+            let _ = iter.next();
+            Some(loc)
+        }
+        _ => None,
+    };
+    *cursor = Some(iter);
+    (found, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn visit_ordinary_sub_read(
+    tx: &Transaction<'_>,
+    snapshot_index: &BTreeMap<Vec<u8>, ValueLocation>,
+    deadline: Option<Instant>,
+    log: &crate::log::Log,
+    read_ahead: &mut crate::log::LogReadAhead<'_>,
+    used_read_ahead: &mut bool,
+    read_set: &mut Option<std::sync::MutexGuard<'_, super::read_set::ReadSet>>,
+    key: &[u8],
+    has_upcoming: bool,
+    admit: &mut dyn FnMut(usize) -> io::Result<()>,
+    peek_keys: &mut dyn FnMut(&mut dyn FnMut(&[u8]) -> bool),
+    visit: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+) -> io::Result<bool> {
+    crate::cancellation::check(tx.cancellation.as_ref())?;
+    record::validate_key(key)?;
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return Err(io::Error::new(io::ErrorKind::TimedOut, "snapshot expired"));
+    }
+    if tx.snapshot.borrowed_store().commits.failed() {
+        return Err(uncertain_error());
+    }
+    if !tx.staged.is_empty() {
+        if let Some(value) = tx.staged.get(key) {
+            if let Some(value) = value {
+                admit(value.len())?;
+                visit(value)?;
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+    }
+    if let Some(read_set) = read_set.as_mut() {
+        read_set.point(key)?;
+    }
+    let Some(&location) = snapshot_index.get(key) else {
+        return Ok(false);
+    };
+    admit(location.length)?;
+    if !has_upcoming && !*used_read_ahead && location.length <= 256 {
+        let mut stack_buf = [0_u8; 256];
+        log.read_into(location, &mut stack_buf[..location.length])?;
+        visit(&stack_buf[..location.length])?;
+        return Ok(true);
+    }
+    *used_read_ahead = true;
+    let value = read_ahead.read_slice_with_peek(location, |push| {
+        peek_keys(&mut |next_key| {
+            if !tx.staged.is_empty() && tx.staged.contains_key(next_key) {
+                return true;
+            }
+            if let Some(&next_loc) = snapshot_index.get(next_key) {
+                push(next_loc)
+            } else {
+                true
+            }
+        });
+    })?;
+    visit(&value)?;
+    Ok(true)
 }
 
 impl OrdinaryPointSession<'_> {
@@ -532,6 +652,187 @@ impl OrdinaryPointSession<'_> {
             });
         })?;
         Ok(Some(value))
+    }
+
+    /// Reads `key` with the same admission, read-set, checksum, and read-ahead
+    /// semantics as `get_admitted_with_peek`, lending the verified value bytes
+    /// without copying and reusing sequential B-tree cursor and peeked
+    /// locations across consecutive lookups.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn visit_admitted_with_peek<R>(
+        &mut self,
+        key: &[u8],
+        has_upcoming: bool,
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+        peek_keys: impl FnOnce(&mut dyn FnMut(&[u8]) -> bool),
+        visit: impl FnOnce(
+            &[u8],
+            &mut dyn FnMut(
+                &[u8],
+                bool,
+                &mut dyn FnMut(usize) -> io::Result<()>,
+                &mut dyn FnMut(&mut dyn FnMut(&[u8]) -> bool),
+                &mut dyn FnMut(&[u8]) -> io::Result<()>,
+            ) -> io::Result<bool>,
+        ) -> io::Result<R>,
+    ) -> io::Result<Option<R>> {
+        let Self {
+            tx,
+            snapshot_index,
+            deadline,
+            log,
+            read_ahead,
+            unique_read_ahead,
+            used_read_ahead,
+            used_unique_read_ahead,
+            read_set,
+            cursor,
+            peek_buf,
+            peek_entries,
+            peek_head,
+        } = self;
+        crate::cancellation::check(tx.cancellation.as_ref())?;
+        record::validate_key(key)?;
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "snapshot expired"));
+        }
+        if tx.snapshot.borrowed_store().commits.failed() {
+            return Err(uncertain_error());
+        }
+        if !tx.staged.is_empty() {
+            if let Some(value) = tx.staged.get(key) {
+                if let Some(value) = value {
+                    admit(value.len())?;
+                    let mut sub_read =
+                        |sub_key: &[u8],
+                         sub_upcoming: bool,
+                         sub_admit: &mut dyn FnMut(usize) -> io::Result<()>,
+                         sub_peek: &mut dyn FnMut(&mut dyn FnMut(&[u8]) -> bool),
+                         sub_visit: &mut dyn FnMut(&[u8]) -> io::Result<()>| {
+                            visit_ordinary_sub_read(
+                                tx,
+                                snapshot_index,
+                                *deadline,
+                                log,
+                                unique_read_ahead,
+                                used_unique_read_ahead,
+                                read_set,
+                                sub_key,
+                                sub_upcoming,
+                                sub_admit,
+                                sub_peek,
+                                sub_visit,
+                            )
+                        };
+                    return visit(value, &mut sub_read).map(Some);
+                }
+                return Ok(None);
+            }
+        }
+        if let Some(read_set) = read_set.as_mut() {
+            read_set.point(key)?;
+        }
+        let location = if *peek_head < peek_entries.len()
+            && &peek_buf[peek_entries[*peek_head].0..peek_entries[*peek_head].1] == key
+        {
+            let loc = peek_entries[*peek_head].2;
+            *peek_head += 1;
+            loc
+        } else if !has_upcoming && cursor.is_none() {
+            snapshot_index.get(key).copied()
+        } else {
+            lookup_with_cursor(snapshot_index, cursor, key).0
+        };
+        let Some(location) = location else {
+            return Ok(None);
+        };
+        admit(location.length)?;
+        if !has_upcoming && !*used_read_ahead && location.length <= 4096 {
+            let mut sub_read =
+                |sub_key: &[u8],
+                 sub_upcoming: bool,
+                 sub_admit: &mut dyn FnMut(usize) -> io::Result<()>,
+                 sub_peek: &mut dyn FnMut(&mut dyn FnMut(&[u8]) -> bool),
+                 sub_visit: &mut dyn FnMut(&[u8]) -> io::Result<()>| {
+                    visit_ordinary_sub_read(
+                        tx,
+                        snapshot_index,
+                        *deadline,
+                        log,
+                        unique_read_ahead,
+                        used_unique_read_ahead,
+                        read_set,
+                        sub_key,
+                        sub_upcoming,
+                        sub_admit,
+                        sub_peek,
+                        sub_visit,
+                    )
+                };
+            if location.length <= 128 {
+                let mut stack_buf = [0_u8; 128];
+                log.read_into(location, &mut stack_buf[..location.length])?;
+                return visit(&stack_buf[..location.length], &mut sub_read).map(Some);
+            }
+            if location.length <= 512 {
+                let mut stack_buf = [0_u8; 512];
+                log.read_into(location, &mut stack_buf[..location.length])?;
+                return visit(&stack_buf[..location.length], &mut sub_read).map(Some);
+            }
+            let mut stack_buf = [0_u8; 4096];
+            log.read_into(location, &mut stack_buf[..location.length])?;
+            return visit(&stack_buf[..location.length], &mut sub_read).map(Some);
+        }
+        *used_read_ahead = true;
+        let value = read_ahead.read_slice_with_peek(location, |push| {
+            peek_buf.clear();
+            peek_entries.clear();
+            *peek_head = 0;
+            let mut peek_cursor = cursor.clone();
+            let mut peek_diverged = false;
+            peek_keys(&mut |next_key| {
+                if !tx.staged.is_empty() && tx.staged.contains_key(next_key) {
+                    return true;
+                }
+                let (next_loc, hit_cursor) =
+                    lookup_with_cursor(snapshot_index, &mut peek_cursor, next_key);
+                if !hit_cursor {
+                    peek_diverged = true;
+                }
+                if peek_diverged {
+                    let start = peek_buf.len();
+                    peek_buf.extend_from_slice(next_key);
+                    peek_entries.push((start, peek_buf.len(), next_loc));
+                }
+                if let Some(next_loc) = next_loc {
+                    push(next_loc)
+                } else {
+                    true
+                }
+            });
+        })?;
+        let mut sub_read =
+            |sub_key: &[u8],
+             sub_upcoming: bool,
+             sub_admit: &mut dyn FnMut(usize) -> io::Result<()>,
+             sub_peek: &mut dyn FnMut(&mut dyn FnMut(&[u8]) -> bool),
+             sub_visit: &mut dyn FnMut(&[u8]) -> io::Result<()>| {
+                visit_ordinary_sub_read(
+                    tx,
+                    snapshot_index,
+                    *deadline,
+                    log,
+                    unique_read_ahead,
+                    used_unique_read_ahead,
+                    read_set,
+                    sub_key,
+                    sub_upcoming,
+                    sub_admit,
+                    sub_peek,
+                    sub_visit,
+                )
+            };
+        visit(&value, &mut sub_read).map(Some)
     }
 }
 
