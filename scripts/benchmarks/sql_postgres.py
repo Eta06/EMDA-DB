@@ -55,6 +55,9 @@ CREATE SEQUENCE new_ids START 1000000;
 # name -> (pgbench script, transactions). Each script is one measured
 # transaction; statements without BEGIN autocommit.
 WORKLOADS = {
+    # Protocol and socket round trip with no table access: the share of every
+    # other PostgreSQL latency that the in-process engines do not pay.
+    "roundtrip": ("SELECT 1;\n", OPS),
     "pk_select": ("\\set id random(0, 9999)\nSELECT id, name, score, active FROM items WHERE id = :id;\n", OPS),
     "insert": ("INSERT INTO items VALUES (nextval('new_ids'), 'new', 1.5, true);\n", OPS),
     "pk_update": ("\\set id random(0, 9999)\nUPDATE items SET score = -1.0 WHERE id = :id;\n", OPS),
@@ -116,7 +119,10 @@ def main():
              "SELECT version(); SHOW fsync; SHOW synchronous_commit; SHOW full_page_writes; "
              "SHOW wal_sync_method; SHOW default_transaction_isolation;"],
             check=True, capture_output=True, text=True).stdout
-        result = {"backend": "postgresql", "settings": settings.strip().splitlines()}
+        pgbench_version = subprocess.run([f"{pg}/pgbench", "--version"], check=True,
+                                         capture_output=True, text=True).stdout.strip()
+        result = {"backend": "postgresql", "settings": settings.strip().splitlines(),
+                  "pgbench": pgbench_version}
         for name, (script, count) in WORKLOADS.items():
             path = work / f"{name}.sql"
             path.write_text(script)

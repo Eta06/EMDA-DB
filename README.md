@@ -122,27 +122,29 @@ dialect-compatible with any of them, and its SQL is a bounded subset. The
 [feature comparison](docs/FEATURE_COMPARISON.md) compares operations and
 deployment models, with sources.
 
-Representative same-session results at `75f07870` on macOS (Apple M6,
-APFS). EMDA and SQLite run in process; PostgreSQL 17 is a local server
-reached over a Unix socket, so its figures include that round trip. All
-three sync every acknowledged write to the drive and run serializable
-transactions. Values are p50 over two runs:
+Representative same-session results at `c7ac663d` on macOS (Apple M6,
+APFS), with PostgreSQL 19.0, the newest stable release on the measurement
+date. EMDA and SQLite run in process; PostgreSQL is a local server reached
+over a Unix socket, whose round trip alone took 9–14 µs. All three sync
+every acknowledged write to the drive and run serializable transactions.
+Values are p50 over two runs:
 
-| Operation | EMDA | SQLite | PostgreSQL 17 |
+| Operation | EMDA | SQLite | PostgreSQL 19.0 |
 | :-- | --: | --: | --: |
-| `COUNT(*)` over 10,000 rows | 33–134 µs | 2.3–4.2 µs | 228–372 µs |
-| Primary-key SELECT | 24–27 µs | 12.5–13.8 µs | 12 µs |
-| One-row UPDATE | 3.94–3.97 ms | 3.05–3.13 ms | 1.01–3.00 ms |
-| Ten-row index range | 46–61 µs | 12.9–13.1 µs | 18–20 µs |
-| Predicate scan of 10,000 rows | 2.50–3.15 ms | 0.95–1.17 ms | 0.68–0.70 ms |
-| `SUM(...) WHERE` over 10,000 rows | 1.92–2.20 ms | 0.22–0.32 ms | 0.33–0.39 ms |
-| Three-table join with `LIMIT` | 94–281 µs | 13–21 µs | 35–36 µs |
+| `COUNT(*)` over 10,000 rows | 34–123 µs | 2.8–4.7 µs | 362–368 µs |
+| Ten point UPDATEs in one transaction | 1.17–3.97 ms | 1.43–3.95 ms | 3.99 ms |
+| Primary-key SELECT | 22.5–25.5 µs | 12.0–13.6 µs | 11–15 µs |
+| One-row UPDATE | 3.97–3.99 ms | 3.05 ms | 3.96–3.97 ms |
+| Ten-row index range | 55–59 µs | 13.0–13.5 µs | 19–20 µs |
+| Predicate scan of 10,000 rows | 2.62–3.08 ms | 0.52–0.80 ms | 0.49–0.69 ms |
+| `SUM(...) WHERE` over 10,000 rows | 1.67–2.19 ms | 0.25–0.46 ms | 0.34 ms |
+| Three-table join with `LIMIT` | 45–252 µs | 8.0–14.7 µs | 36–39 µs |
 
-EMDA parses statements faster than SQLite and counts rows faster than
-PostgreSQL. It is slower than both on the other reads shown, and its
-durable writes are within about 1.3× of SQLite. In a separate durable
-two-key transaction test with eight clients, EMDA's throughput was above
-SQLite's and below PostgreSQL 17's.
+EMDA counts rows faster than PostgreSQL, and in one of the two runs had
+the fastest ten-update transaction. It is slower than the fastest engine on
+the other operations shown. Its durable single-row writes are within about
+1.3× of SQLite. PostgreSQL 17.12 results from the same day remain as a
+historical baseline.
 
 [Performance results](docs/PERFORMANCE.md) has the full SQL table, the
 historical byte-key matrix across ten engines, document operations,

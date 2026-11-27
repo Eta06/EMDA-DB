@@ -11,7 +11,48 @@ Wins and losses are both shown. No result here is a general ranking.
 MySQL and MariaDB have no results in any table on this page. No valid
 measurement of either has been recorded.
 
-## SQL against SQLite and PostgreSQL
+## SQL against SQLite and PostgreSQL 19.0
+
+Same-session run at `c7ac663d` on macOS (Apple M6, APFS), with PostgreSQL
+19.0, the newest stable release on the measurement date. EMDA and SQLite
+run in process; PostgreSQL is a local server reached through `pgbench` 19.0
+with prepared statements over a private Unix socket. Its first row is that
+round trip alone (`SELECT 1`), which is included in every other PostgreSQL
+figure. All three sync every acknowledged write through to the drive
+(`F_FULLFSYNC`, SQLite `fullfsync`, PostgreSQL `fsync_writethrough`) and
+run serializable transactions. p50 ranges over two runs and both EMDA
+backends.
+
+| Workload | EMDA | SQLite | PostgreSQL 19.0 | Fastest p50 |
+| --- | ---: | ---: | ---: | --- |
+| Socket round trip (`SELECT 1`) | — | — | 9–14 µs | PostgreSQL only |
+| Primary-key SELECT | 22.5–25.5 µs | 12.0–13.6 µs | 11.0–15.0 µs | PostgreSQL |
+| One-row INSERT | 3.94 ms–3.95 ms | 3.01 ms–3.02 ms | 3.05 ms–3.14 ms | SQLite |
+| One-row UPDATE | 3.97 ms–3.99 ms | 3.05 ms | 3.96 ms–3.97 ms | SQLite |
+| One-row DELETE | 3.97 ms–3.99 ms | 3.03 ms–3.06 ms | 3.97 ms–3.98 ms | SQLite |
+| Ten point UPDATEs in one transaction | 1.17 ms–3.97 ms | 1.43 ms–3.95 ms | 3.99 ms | EMDA |
+| Predicate scan of 10,000 rows | 2.62 ms–3.08 ms | 520–800 µs | 488–694 µs | PostgreSQL |
+| Indexed equality (EMDA `CheckpointStore`) | 33.8–35.4 µs | 15.5–16.0 µs | 20.0 µs | SQLite |
+| Ten-row index range (EMDA `CheckpointStore`) | 55.3–58.5 µs | 13.0–13.5 µs | 19.0–19.5 µs | SQLite |
+| Insert with one index (EMDA `CheckpointStore`) | 3.89 ms–3.90 ms | 3.94 ms–3.95 ms | 3.02 ms–3.92 ms | PostgreSQL |
+| Insert with three indexes (EMDA `CheckpointStore`) | 3.99 ms | 3.97 ms–3.98 ms | 3.89 ms–3.95 ms | PostgreSQL |
+| `COUNT(*)` | 34.2–123 µs | 2.8–4.7 µs | 362–368 µs | SQLite |
+| `SUM(...) WHERE` | 1.67 ms–2.19 ms | 252–461 µs | 340–341 µs | SQLite |
+| `GROUP BY` over 100 groups | 1.93 ms–2.39 ms | 1.28 ms–1.98 ms | 693–704 µs | PostgreSQL |
+| Point join | 4.6–14.0 µs | 1.4–2.4 µs | 13.0–14.0 µs | SQLite |
+| One-to-many join | 6.0–19.4 µs | 1.8–3.0 µs | 11.0–11.5 µs | SQLite |
+| Join of one team's users, ordered | 44.9–123 µs | 9.9–18.6 µs | 31.5–33.5 µs | SQLite |
+| Three-table join with `LIMIT` | 45.4–252 µs | 8.0–14.7 µs | 36.0–39.0 µs | SQLite |
+
+EMDA beat PostgreSQL on `COUNT(*)` in every sample. In one of the two runs
+EMDA's `Store` had the fastest ten-update transaction (1.17 ms, against
+1.43 ms for SQLite and 3.99 ms for PostgreSQL) and beat PostgreSQL on the
+point and one-to-many joins. Every other workload was slower on EMDA than
+on the fastest engine. The indexed rows ran on EMDA's `CheckpointStore`
+only.
+[Report, per-run detail, workload differences and raw results](../benchmarks/results/2026-11-28-sql-sqlite-postgresql-19/README.md)
+
+### Historical: SQL with PostgreSQL 17.12 at `75f07870`
 
 Same-session run at `75f07870` (engine code identical to `12e6de8f`) on
 macOS (Apple M6, APFS). EMDA and SQLite run in process; PostgreSQL 17.12 is
@@ -46,7 +87,7 @@ one of two `Store` runs, and was slower than both engines on every other
 workload. The indexed rows ran on EMDA's `CheckpointStore` only.
 [Report, workload differences and raw results](../benchmarks/results/2026-11-28-sql-sqlite-postgresql/README.md)
 
-## Embedded SQL against SQLite at `12e6de8f`
+### Historical: SQL against SQLite at `12e6de8f`
 
 Paired run at `12e6de8f` on macOS (Apple M6, APFS). Both engines sync every
 acknowledged write (SQLite WAL with `synchronous=FULL` and `fullfsync`).
