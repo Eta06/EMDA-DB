@@ -129,7 +129,15 @@ pub(crate) struct TableDef {
     pub(crate) foreign_keys: Vec<ForeignKeyDef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) referenced_by: Vec<ForeignKeyRef>,
+    /// `CHECK` expressions as written; bound and enforced by the executor.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) checks: Vec<String>,
 }
+
+/// `CHECK` constraints per table.
+pub(crate) const MAX_SQL_CHECKS: usize = 32;
+/// Bytes of one `CHECK` expression's text.
+pub(crate) const MAX_SQL_CHECK_BYTES: usize = 4_096;
 
 impl TableDef {
     #[cfg_attr(not(test), allow(dead_code))]
@@ -165,6 +173,7 @@ impl TableDef {
             indexes,
             foreign_keys,
             referenced_by,
+            checks: Vec::new(),
         };
         def.validate()?;
         Ok(def)
@@ -175,6 +184,17 @@ impl TableDef {
             return Err(SqlError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "unsupported SQL catalog entry version",
+            )));
+        }
+        if self.checks.len() > MAX_SQL_CHECKS
+            || self
+                .checks
+                .iter()
+                .any(|check| check.is_empty() || check.len() > MAX_SQL_CHECK_BYTES)
+        {
+            return Err(SqlError::Bounds(format!(
+                "a table holds at most {MAX_SQL_CHECKS} CHECK constraints of at most \
+                 {MAX_SQL_CHECK_BYTES} bytes each"
             )));
         }
         if self.name.is_empty() || self.name.len() > MAX_SQL_IDENTIFIER_BYTES {

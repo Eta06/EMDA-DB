@@ -854,7 +854,7 @@ fn unsupported_sql_features_return_unsupported_naming_feature() {
         "INSERT INTO a VALUES (1) RETURNING id",
         "INSERT INTO a VALUES (1) ON CONFLICT DO NOTHING",
         "CREATE TABLE a (id INT PRIMARY KEY, x INT DEFAULT (0))",
-        "CREATE TABLE a (id INT PRIMARY KEY, x INT CHECK (x > 0))",
+        "CREATE TABLE a (id INT PRIMARY KEY, x INT, CONSTRAINT c CHECK (x > 0))",
         "CREATE TABLE a (id INT PRIMARY KEY, p INT REFERENCES b(id) ON DELETE CASCADE)",
         "CREATE TABLE a (id INT PRIMARY KEY, p INT REFERENCES b(id) ON UPDATE SET NULL)",
         "CREATE TABLE a (id INT PRIMARY KEY, p INT REFERENCES b(id) MATCH FULL)",

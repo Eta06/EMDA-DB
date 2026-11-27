@@ -63,6 +63,8 @@ pub(crate) struct CreateTableStmt {
     pub(crate) primary_key_index: usize,
     pub(crate) unique_constraints: Vec<Vec<usize>>,
     pub(crate) foreign_keys: Vec<ForeignKeySpec>,
+    /// `CHECK` expressions, column- and table-level, as written.
+    pub(crate) checks: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -368,6 +370,7 @@ pub(crate) fn parse_statement(sql: &str, limits: &SqlLimits) -> Result<SqlStatem
         });
     }
     let mut parser = Parser {
+        source: sql,
         tokens,
         pos: 0,
         limits,
@@ -382,6 +385,28 @@ pub(crate) fn parse_statement(sql: &str, limits: &SqlLimits) -> Result<SqlStatem
     })
 }
 
+/// Parses a stored `CHECK` expression. It must be one complete expression
+/// without parameters or subqueries, as `CREATE TABLE` accepted it.
+pub(crate) fn parse_check_expression(text: &str, limits: &SqlLimits) -> Result<Expr, SqlError> {
+    let tokens = tokenize(text, limits)?;
+    let mut parser = Parser {
+        source: text,
+        tokens,
+        pos: 0,
+        limits,
+        param_count: 0,
+        subquery_depth: 0,
+    };
+    let expr = parser.parse_expr(0)?;
+    if !matches!(parser.peek().kind, TokenKind::Eof) || parser.param_count != 0 {
+        return Err(SqlError::Syntax {
+            offset: parser.peek().offset,
+            message: "invalid stored CHECK expression".into(),
+        });
+    }
+    Ok(expr)
+}
+
 struct ParsedReferences {
     ref_table: String,
     ref_column: Option<String>,
@@ -390,6 +415,8 @@ struct ParsedReferences {
 }
 
 struct Parser<'a> {
+    /// The statement text, from which `CHECK` expressions are kept verbatim.
+    source: &'a str,
     tokens: Vec<Token>,
     pos: usize,
     limits: &'a SqlLimits,
@@ -769,6 +796,24 @@ impl Parser<'_> {
         })
     }
 
+    /// `"(" expr ")"` after `CHECK`, returned as the expression's text. The
+    /// expression may not use parameters or subqueries.
+    fn parse_check_clause(&mut self) -> Result<String, SqlError> {
+        self.expect_kind(&TokenKind::LParen, "'(' after CHECK")?;
+        let start = self.peek().offset;
+        let params = self.param_count;
+        self.parse_expr(0)?;
+        let end = self.peek().offset;
+        self.expect_kind(&TokenKind::RParen, "')'")?;
+        if self.param_count != params {
+            return Err(SqlError::Unsupported {
+                feature: "parameters in CHECK".into(),
+                offset: Some(start),
+            });
+        }
+        Ok(self.source[start..end].trim().to_owned())
+    }
+
     /// A `DEFAULT` value: a possibly negative number, a string, `TRUE`,
     /// `FALSE` or `NULL`. Expressions and functions are not accepted.
     fn parse_default_literal(&mut self) -> Result<LiteralValue, SqlError> {
@@ -838,6 +883,7 @@ impl Parser<'_> {
         let mut table_uniques: Vec<Vec<(String, usize)>> = Vec::new();
         let mut col_fks: Vec<(usize, ParsedReferences)> = Vec::new();
         let mut table_fks: Vec<(String, usize, ParsedReferences)> = Vec::new();
+        let mut checks: Vec<String> = Vec::new();
 
         if matches!(self.peek().kind, TokenKind::RParen) {
             return Err(SqlError::Syntax {
@@ -929,7 +975,9 @@ impl Parser<'_> {
                 self.expect_kw("references")?;
                 let parsed_ref = self.parse_references_tail()?;
                 table_fks.push((fk_col, fk_offset, parsed_ref));
-            } else if self.at_kw("constraint") || self.at_kw("check") {
+            } else if self.eat_kw("check") {
+                checks.push(self.parse_check_clause()?);
+            } else if self.at_kw("constraint") {
                 let feature = match &self.peek().kind {
                     TokenKind::Ident { text, .. } => {
                         format!("{} constraint", text.to_ascii_uppercase())
@@ -988,8 +1036,9 @@ impl Parser<'_> {
                             });
                         }
                         default = Some((self.parse_default_literal()?, offset));
-                    } else if self.at_kw("check")
-                        || self.at_kw("autoincrement")
+                    } else if self.eat_kw("check") {
+                        checks.push(self.parse_check_clause()?);
+                    } else if self.at_kw("autoincrement")
                         || self.at_kw("generated")
                         || self.at_kw("collate")
                     {
@@ -1150,6 +1199,7 @@ impl Parser<'_> {
             primary_key_index,
             unique_constraints,
             foreign_keys,
+            checks,
         })
     }
 

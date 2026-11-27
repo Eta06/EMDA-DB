@@ -4,6 +4,12 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add SQL `CHECK` constraints, column- and table-level, over the table's
+  own columns without parameters or subqueries. `INSERT` and `UPDATE` fail
+  with a constraint error when a check is `FALSE`; `NULL` passes. Checks are
+  bound at `CREATE TABLE`, kept in the catalog, and limited to 32 per table
+  of 4,096 bytes each. Tests cover both backends, transactions, reopen,
+  invalid checks, and random writes compared with SQLite.
 - Add literal column `DEFAULT` values to SQL `CREATE TABLE`. They are
   checked against the column type, length and `NOT NULL` when the table is
   created and fill omitted columns on `INSERT`; explicit values, including

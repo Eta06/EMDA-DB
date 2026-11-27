@@ -385,7 +385,7 @@ fn exec_create_table(
         &stmt.foreign_keys,
         &cache.tables,
     )?;
-    let def = TableDef::with_foreign_keys(
+    let mut def = TableDef::with_foreign_keys(
         stmt.name.clone(),
         columns,
         stmt.primary_key_index,
@@ -393,6 +393,11 @@ fn exec_create_table(
         prepared_fks.foreign_keys,
         prepared_fks.self_referenced_by,
     )?;
+    def.checks = stmt.checks.clone();
+    def.validate()?;
+    // Binding checks each expression's columns and types now, so a stored
+    // check always binds later.
+    bind_table_checks(&def, limits)?;
     catalog::create_table(tx, &def, stmt.if_not_exists)?;
     for (parent_key, parent_def) in prepared_fks.parent_updates {
         parent_def.validate()?;
@@ -915,6 +920,7 @@ struct BoundInsertPlan {
     target_indices: Vec<usize>,
     /// Omitted columns that take their `DEFAULT`.
     defaulted: Vec<usize>,
+    checks: Arc<Vec<(String, BoundExpr)>>,
 }
 
 fn get_or_build_insert_plan(
@@ -922,6 +928,7 @@ fn get_or_build_insert_plan(
     stmt: &InsertStmt,
     cached_table: &CachedTable,
     cache: &SqlCache,
+    limits: &SqlLimits,
 ) -> Result<Arc<BoundInsertPlan>, SqlError> {
     let key = (stmt_id, cached_table.generation);
     if let Some(plan) = cache.insert_plans.read().get(&key) {
@@ -964,6 +971,7 @@ fn get_or_build_insert_plan(
     let plan = Arc::new(BoundInsertPlan {
         target_indices,
         defaulted,
+        checks: bind_table_checks(table, limits)?,
     });
     let mut guard = cache.insert_plans.write();
     if guard.len() >= MAX_CACHED_PLANS {
@@ -1192,7 +1200,7 @@ fn exec_insert(
         )));
     }
     let cached_table = catalog::load_table_cached(tx, &stmt.table, &cache.tables)?;
-    let plan = get_or_build_insert_plan(stmt_id, stmt, &cached_table, cache)?;
+    let plan = get_or_build_insert_plan(stmt_id, stmt, &cached_table, cache, limits)?;
     let table = &cached_table.def;
     let pk_idx = table.primary_key_index;
     let pk_type = table.columns[pk_idx].col_type;
@@ -1243,6 +1251,7 @@ fn exec_insert(
         let mut i64_buf = [0u8; 18];
         let mut txt_buf = [0u8; 256];
         let doc_id = encode_insert_pk_stack(&pk, pk_type, &mut i64_buf, &mut txt_buf)?;
+        enforce_checks(&plan.checks, table, &obj)?;
         let doc = Value::Object(obj);
         tx.insert(&table.name, doc_id, &doc)
             .map_err(|err| map_write_constraint_error(err, &table.name))?;
@@ -1321,6 +1330,7 @@ fn exec_insert(
                 table.name
             )));
         }
+        enforce_checks(&plan.checks, table, &obj)?;
         prepared_rows.push((doc_id, Value::Object(obj)));
     }
 
@@ -1654,6 +1664,7 @@ struct BoundUpdatePlan {
     extra_param_constraints: Vec<ParamConstraint>,
     subqueries: Vec<SubquerySlot>,
     subquery_checks: Vec<SubqueryTypeCheck>,
+    checks: Arc<Vec<(String, BoundExpr)>>,
 }
 
 struct BoundDeletePlan {
@@ -4666,6 +4677,7 @@ fn get_or_build_update_plan(
     stmt: &UpdateStmt,
     cached_table: &CachedTable,
     cache: &SqlCache,
+    limits: &SqlLimits,
 ) -> Result<Arc<BoundUpdatePlan>, SqlError> {
     let key = (stmt_id, cached_table.generation);
     if let Some(plan) = cache.update_plans.read().get(&key) {
@@ -4743,6 +4755,7 @@ fn get_or_build_update_plan(
         extra_param_constraints,
         subqueries,
         subquery_checks,
+        checks: bind_table_checks(table, limits)?,
     });
     let mut guard = cache.update_plans.write();
     if guard.len() >= MAX_CACHED_PLANS {
@@ -4762,7 +4775,7 @@ fn exec_update(
     force_full_scan: bool,
 ) -> Result<SqlOutcome, SqlError> {
     let cached_table = catalog::load_table_cached(tx, &stmt.table, &cache.tables)?;
-    let plan = get_or_build_update_plan(stmt_id, stmt, &cached_table, cache)?;
+    let plan = get_or_build_update_plan(stmt_id, stmt, &cached_table, cache, limits)?;
     let table = &cached_table.def;
 
     for &(param_idx, expected_ty) in &plan.assign_param_checks {
@@ -4892,6 +4905,7 @@ fn exec_update(
                     obj.insert(col.name.clone(), json_val);
                 }
             }
+            enforce_checks(&plan.checks, table, &obj)?;
             matched.push((doc_id, Value::Object(obj)));
             Ok(ControlFlow::Continue(()))
         },
@@ -5584,6 +5598,57 @@ impl<'r> RowRef<'r> {
             Self::Flat(doc) => decode_flat_col(doc, col),
         }
     }
+}
+
+/// The table's `CHECK` constraints, parsed from their stored text and bound
+/// to its columns. Subqueries are not allowed in a check.
+fn bind_table_checks(
+    table: &TableDef,
+    limits: &SqlLimits,
+) -> Result<Arc<Vec<(String, BoundExpr)>>, SqlError> {
+    let mut bound = Vec::with_capacity(table.checks.len());
+    for text in &table.checks {
+        let expr = super::parser::parse_check_expression(text, limits)?;
+        let mut slots = Vec::new();
+        let mut sub_checks = Vec::new();
+        let mut sub_ctx = SubqueryBindCtx {
+            outer_scopes: &[],
+            slots: &mut slots,
+            checks: &mut sub_checks,
+            context_label: "CHECK",
+        };
+        let filter = bind_where_static(Some(&expr), table, &mut sub_ctx)?;
+        if !slots.is_empty() {
+            return Err(SqlError::Unsupported {
+                feature: "subqueries in CHECK".into(),
+                offset: None,
+            });
+        }
+        if let Some(filter) = filter {
+            bound.push((text.clone(), filter.expr));
+        }
+    }
+    Ok(Arc::new(bound))
+}
+
+/// Fails when any check evaluates to FALSE for the row; TRUE and NULL pass,
+/// as in SQL.
+fn enforce_checks(
+    checks: &[(String, BoundExpr)],
+    table: &TableDef,
+    obj: &Map<String, Value>,
+) -> Result<(), SqlError> {
+    for (text, expr) in checks {
+        if let SqlValueRef::Boolean(false) =
+            eval_expr_ref(expr, EvalContext::Doc { table, obj }, &[])?
+        {
+            return Err(SqlError::Constraint(format!(
+                "CHECK constraint failed on table '{}': {text}",
+                table.name
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Checks a column's `DEFAULT` literal against its type and constraints and
