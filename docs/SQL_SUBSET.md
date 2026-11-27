@@ -65,11 +65,17 @@ insert         := INSERT INTO ident ["(" ident ("," ident)* ")"]
                   VALUES tuple ("," tuple)*
 tuple          := "(" expr ("," expr)* ")"
 
-select         := SELECT ("*" | ident ("," ident)*) FROM ident
+select         := SELECT ("*" | select_item ("," select_item)*) FROM ident
                   [WHERE expr]
+                  [GROUP BY ident ("," ident)*]
+                  [HAVING having_expr]
                   [ORDER BY order_item ("," order_item)*]
                   [LIMIT limit_val [OFFSET limit_val]]
-order_item     := ident [ASC | DESC] [NULLS FIRST | NULLS LAST]
+select_item    := (ident | agg_call) [AS ident]
+agg_call       := COUNT "(" "*" ")"
+                | COUNT "(" [DISTINCT] ident ")"
+                | (SUM | AVG | MIN | MAX) "(" ident ")"
+order_item     := (ident | agg_call) [ASC | DESC] [NULLS FIRST | NULLS LAST]
 limit_val      := non_neg_integer_lit | "?"
 
 update         := UPDATE ident SET assign ("," assign)* [WHERE expr]
@@ -96,8 +102,9 @@ Notes on specific constructs:
 - Updating a `PRIMARY KEY` column in `UPDATE ... SET` is rejected as `SqlError::Unsupported`.
 - `ORDER BY` column positions (`ORDER BY 1`), expressions or qualified names in `ORDER BY`, standalone `OFFSET` without `LIMIT`, and `ORDER BY` / `LIMIT` / `OFFSET` on `UPDATE` or `DELETE` are rejected as `SqlError::Unsupported`.
 - `LIMIT` and `OFFSET` values must be non-negative `INTEGER` literals or `?` parameters (`SqlError::Bounds` for negative `INTEGER` values; `SqlError::Type` for `NULL`, `REAL`, `TEXT`, or `BOOLEAN`; `SqlError::Syntax` for out-of-`i64`-range integer literals).
+- Aggregate and grouping queries follow standard SQL / PostgreSQL strictness: in any query with `GROUP BY`, `HAVING`, or an aggregate call in `SELECT` or `ORDER BY`, every non-aggregated column in `SELECT`, `HAVING`, or `ORDER BY` must appear in `GROUP BY` (rejected as `SqlError::Syntax`, with no SQLite-style "bare column" leniency). `HAVING` may reference grouping columns and aggregates only (not `SELECT` aliases); `ORDER BY` may reference grouping columns, select-item aliases (`AS alias`), or aggregate expressions (`COUNT(*)`, `SUM(col)`, etc.). Arithmetic expressions, nested aggregates, aggregates in `WHERE` or `GROUP BY`, `SUM`/`AVG`/`MIN`/`MAX` with `DISTINCT`, `GROUP BY` column positions/`ROLLUP`/`CUBE`/`GROUPING SETS`, `OVER`, and `FILTER` fail with `SqlError::Unsupported` (or `Syntax` for invalid forms such as `SUM(*)` or `COUNT(DISTINCT *)`).
 - Secondary indexes (`CREATE [UNIQUE] INDEX` and `UNIQUE` constraints) support `INTEGER`, `TEXT`/`VARCHAR(n)`, and `BOOLEAN` columns (1–4 columns per index, up to 16 indexes per table). `DROP INDEX [IF EXISTS] name ON table` drops an explicit secondary index cleanly, and refuses dropping an index that backs a table or column `UNIQUE` constraint with `SqlError::Constraint`. `REAL` columns in indexes/unique constraints, partial `CREATE INDEX ... WHERE ...`, `ASC`/`DESC` index ordering, `USING ...`, `DROP INDEX name` (without `ON table`), `DROP INDEX ... CONCURRENTLY`/`CASCADE`/`RESTRICT`, and `DROP TABLE` fail with `SqlError::Unsupported`.
-- Recognized SQL outside this grammar (`JOIN`, comma joins, `GROUP BY`, `HAVING`, `DISTINCT`, `UNION`/`INTERSECT`/`EXCEPT`, aggregates/function calls, subqueries, `DROP TABLE`, `ALTER`, `BEGIN`/`COMMIT`/`ROLLBACK`, `RETURNING`, `ON CONFLICT`, `DEFAULT`, `CHECK`, `FOREIGN KEY`/`REFERENCES`, `IN`, `BETWEEN`, `LIKE`, `CASE`, `CAST`, arithmetic operators, qualified `table.column`, aliases `AS`) fails with `SqlError::Unsupported` naming the feature.
+- Recognized SQL outside this grammar (`JOIN`, comma joins, `SELECT DISTINCT`, `UNION`/`INTERSECT`/`EXCEPT`, scalar/non-aggregate function calls, subqueries, `DROP TABLE`, `ALTER`, `BEGIN`/`COMMIT`/`ROLLBACK`, `RETURNING`, `ON CONFLICT`, `DEFAULT`, `CHECK`, `FOREIGN KEY`/`REFERENCES`, `IN`, `BETWEEN`, `LIKE`, `CASE`, `CAST`, arithmetic operators, qualified `table.column`, table aliases) fails with `SqlError::Unsupported` naming the feature.
 
 ## Types, coercion, and NULL semantics
 
@@ -166,6 +173,32 @@ Type rules:
   - **Descending PK path**: `ORDER BY pk DESC` uses a bounded `VecDeque` ring buffer of `OFFSET + LIMIT` rows when `LIMIT` is present, or collects within `max_select_rows` / `max_sort_rows` and reverses when `LIMIT` is absent.
   - **General `ORDER BY` path**: Non-PK sorts use a bounded top-K max-heap (`BinaryHeap`) retaining at most `OFFSET + LIMIT` rows (bounded by `max_sort_rows`) when `LIMIT` is present, or a full bounded sort (under `max_select_rows` and `max_sort_rows`) when `LIMIT` is absent. Exceeding `max_sort_rows` or `max_select_rows` fails with `SqlError::Bounds` and never silently truncates.
 
+## Aggregates and `GROUP BY` semantics and execution
+
+- **`NULL` and empty-input handling**:
+  - `COUNT(*)` counts all rows in a group, including rows with `NULL`s; on zero rows it returns `0`.
+  - `COUNT(col)`, `COUNT(DISTINCT col)`, `SUM(col)`, `AVG(col)`, `MIN(col)`, and `MAX(col)` ignore `NULL` values (`-0.0` and `0.0` in `REAL` are treated as equal for `COUNT(DISTINCT)` and `MIN`/`MAX`).
+  - On zero non-`NULL` inputs, `COUNT(col)` and `COUNT(DISTINCT col)` return `0`, while `SUM`, `AVG`, `MIN`, and `MAX` return `NULL`.
+  - An aggregate query without `GROUP BY` over zero matching rows (empty table or `WHERE` matching zero rows) produces exactly one group row (then filtered by `HAVING` if present, and subject to `LIMIT 0`). A query with `GROUP BY` over zero matching rows produces zero rows.
+- **Aggregate types and overflow**:
+  - `COUNT(*)`, `COUNT(col)`, and `COUNT(DISTINCT col)` return `INTEGER` (`i64`).
+  - `SUM(INTEGER)` accumulates in `i128` (scan-order independent) and returns `INTEGER` (`i64`), failing with `SqlError::Bounds` if the final sum falls outside `[i64::MIN, i64::MAX]` (no wraparound and no silent `REAL` promotion). `SUM(REAL)` returns `REAL` (`f64`), failing with `SqlError::Bounds` if the sum overflows to non-finite.
+  - `AVG(INTEGER)` sums in `i128` before dividing and returns `REAL` (`f64`); `AVG(REAL)` returns `REAL` (`f64`, failing with `SqlError::Bounds` on non-finite overflow).
+  - `SUM` and `AVG` on `TEXT` or `BOOLEAN` columns fail with `SqlError::Type` at bind time (even on an empty table).
+  - `MIN` and `MAX` preserve the column's type (`INTEGER`, `REAL`, `TEXT` by UTF-8 byte order, `BOOLEAN` with `FALSE < TRUE`).
+- **`GROUP BY`, `HAVING`, and ordering**:
+  - `NULL` values in grouping columns form one group per distinct combination of grouping values (with `-0.0 == 0.0` for `REAL`).
+  - When no `ORDER BY` is given, `GROUP BY` outputs groups deterministically in ascending order of the grouping columns left-to-right with `NULLS FIRST` (matching the `ORDER BY` default). Explicit `ORDER BY` ties break deterministically by the same ascending `NULLS FIRST` grouping-key order.
+  - `HAVING` filters groups after aggregation using 3VL (`TRUE` keeps the group; `FALSE` and `UNKNOWN` drop it). `LIMIT` and `OFFSET` apply after grouping, `HAVING`, and sorting.
+  - Unaliased output column names are the canonical column name for plain columns and lowercase `<fn>(...)` (e.g. `count(*)`, `count(distinct col)`, `sum(col)`) for aggregates; `AS alias` overrides the output column name.
+- **Execution and optimizations**:
+  - Rows stream from the existing PK/secondary-index/full-scan `WHERE` access path (counting against `max_visited_rows` and verifying row PK integrity) into bounded group and distinct-value tables (`max_groups` and `max_distinct_values`); exceeding any bound fails with `SqlError::Bounds` and never truncates.
+  - **First-entry `MIN` optimization**: When an ungrouped query computes only `MIN(col)` and the chosen access path yields rows in ascending `col` order (`MIN(pk)` on PK-ordered scans/points, or `MIN(col)` on a `Ready` secondary index where `col` is the leading unfixed column and all trailing index columns are proven non-`NULL`), execution stops on the first matching row (`scan_documents(..., 1)` / `query_index(..., limit: 1)` when `WHERE` is absent).
+- **Differences from PostgreSQL and SQLite**:
+  - Unlike SQLite (which allows ungrouped bare columns and `SELECT` aliases in `HAVING`, and rejects `HAVING` without `GROUP BY`), EMDA-DB follows standard SQL / PostgreSQL by requiring every non-aggregated column in `SELECT`/`HAVING`/`ORDER BY` to be in `GROUP BY`, disallowing `SELECT` aliases in `HAVING`, and allowing `HAVING` without `GROUP BY` on aggregate queries.
+  - Unlike PostgreSQL (`SUM(bigint)` -> `numeric`) and SQLite (`SUM(integer)` promotes to `REAL` on `i64` overflow), EMDA-DB returns `INTEGER` for `SUM(INTEGER)` and fails with `SqlError::Bounds` on `i64` overflow.
+  - `COUNT` returns `INTEGER` (`i64`, matching SQLite; PostgreSQL uses `bigint`), `AVG` returns `REAL` (`f64`, matching SQLite; PostgreSQL uses `numeric` for integers), `NULL` defaults to `NULLS FIRST` for `ASC` / `NULLS LAST` for `DESC` (matching SQLite; opposite of PostgreSQL), and `GROUP BY` without `ORDER BY` guarantees deterministic ascending `NULLS FIRST` group order (neither PostgreSQL nor SQLite guarantees group order).
+
 ## Statement and catalog caching
 
 `SqlDatabase` maintains bounded in-memory caches for parsed statements (in `execute`), decoded `TableDef` catalog entries, and table-bound execution plans:
@@ -198,6 +231,8 @@ All bounds live in `SqlLimits` (implementing `Default`), configurable via `SqlDa
 | `max_mutation_rows` | 1,024 | 1,024 | Rows modified per `UPDATE` or `DELETE` |
 | `max_select_rows` | 10,000 | 10,000 | Rows returned per `SELECT` |
 | `max_sort_rows` | 32,768 | 131,072 | Rows buffered in `ORDER BY` sort / top-K heap |
+| `max_groups` | 32,768 | 131,072 | Distinct groups tracked in one `GROUP BY` statement |
+| `max_distinct_values` | 32,768 | 131,072 | Total distinct non-`NULL` values tracked across `COUNT(DISTINCT ...)` in one statement |
 | `max_visited_rows` | 32,768 | 131,072 | Rows visited while scanning in one statement |
 | `max_params` | 1,024 | 1,024 | Positional `?` parameters |
 | `max_text_bytes` | 262,144 (256 KiB) | 262,144 | UTF-8 bytes of a `TEXT` literal/param/value |
@@ -239,5 +274,5 @@ Every DML statement (`INSERT`, `UPDATE`, `DELETE`, `SELECT`) and small DDL state
 
 ## Implemented vs planned
 
-- **Implemented**: `CREATE TABLE [IF NOT EXISTS]` (including column-level `UNIQUE` and table-level `UNIQUE (col, ...)`), `CREATE [UNIQUE] INDEX [IF NOT EXISTS]` (single-tx for small tables and bounded resumable online build for large populated tables), `DROP INDEX [IF EXISTS] name ON table`, `INSERT`, `SELECT` (`*` or column list, `WHERE`, `ORDER BY` with `ASC`/`DESC`/`NULLS FIRST`/`NULLS LAST`, `LIMIT`/`OFFSET`), `UPDATE`, `DELETE`, `SqlValue`/`SqlLimits`/`SqlError`/`SqlStatement` prepared reuse, per-`SqlDatabase` catalog/statement/plan caching, compiled index templates, 3VL expressions, exact numeric comparisons, ascending PK order guarantee and streaming `ORDER BY pk ASC`, index-order `ORDER BY ... LIMIT` streaming, bounded `ORDER BY pk DESC` and top-K / full sort, primary-key point (`=`) and range (`>`, `>=`, `<`, `<=`) access paths, single and compound secondary index equality/range access via `DocumentTransaction::query_index`, bounded full-collection scan fallback via `DocumentTransaction::scan_documents`, `ReadSet` optimistic concurrency, and row PK/document-ID integrity verification.
-- **Planned (later slices)**: `JOIN`, `GROUP BY` / aggregates, subqueries, multi-statement explicit SQL transactions (`BEGIN` / `COMMIT` / `ROLLBACK`), schema migrations (`ALTER TABLE` / `DROP TABLE`), and `EXPLAIN` / SQL diagnostics.
+- **Implemented**: `CREATE TABLE [IF NOT EXISTS]` (including column-level `UNIQUE` and table-level `UNIQUE (col, ...)`), `CREATE [UNIQUE] INDEX [IF NOT EXISTS]` (single-tx for small tables and bounded resumable online build for large populated tables), `DROP INDEX [IF EXISTS] name ON table`, `INSERT`, `SELECT` (`*`, column list, `COUNT(*)` / `COUNT(col)` / `COUNT(DISTINCT col)` / `SUM(col)` / `AVG(col)` / `MIN(col)` / `MAX(col)`, `AS` aliases, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY` with `ASC`/`DESC`/`NULLS FIRST`/`NULLS LAST` over columns/aliases/aggregates, `LIMIT`/`OFFSET`), `UPDATE`, `DELETE`, `SqlValue`/`SqlLimits`/`SqlError`/`SqlStatement` prepared reuse, per-`SqlDatabase` catalog/statement/plan caching, compiled index templates, 3VL expressions, exact numeric comparisons, ascending PK order guarantee and streaming `ORDER BY pk ASC`, index-order `ORDER BY ... LIMIT` streaming, first-entry `MIN(pk)`/`MIN(index_leading_col)` optimization, bounded `ORDER BY pk DESC` and top-K / full sort, bounded `GROUP BY` and `COUNT(DISTINCT)`, primary-key point (`=`) and range (`>`, `>=`, `<`, `<=`) access paths, single and compound secondary index equality/range access via `DocumentTransaction::query_index`, bounded full-collection scan fallback via `DocumentTransaction::scan_documents`, `ReadSet` optimistic concurrency, and row PK/document-ID integrity verification.
+- **Planned (later slices)**: `JOIN`, subqueries, multi-statement explicit SQL transactions (`BEGIN` / `COMMIT` / `ROLLBACK`), schema migrations (`ALTER TABLE` / `DROP TABLE`), and `EXPLAIN` / SQL diagnostics.
