@@ -451,8 +451,29 @@ fn init_backend(dir: &Path, kind: BackendKind) {
     }
 }
 
+/// After a kill, the log can end inside a record whose append was cut
+/// short, which `open` refuses. The explicit repair removes exactly that
+/// unacknowledged record; the verification that follows still requires
+/// every acknowledged statement.
+fn repair_torn_tail(sp: &Path) {
+    let open = retry_lock(|| Store::open(sp)).map(drop);
+    if let Err(error) = open {
+        if error.to_string().contains("incomplete log record") {
+            let removed = retry_lock(|| Store::discard_incomplete_tail(sp)).unwrap();
+            assert!(
+                removed.is_some(),
+                "an incomplete record was reported but not found"
+            );
+            eprintln!("[sql_crash] removed a torn final record of {removed:?} bytes");
+        }
+    }
+}
+
 fn open_backend(dir: &Path, kind: BackendKind) -> OpenBackend {
     let sp = store_path(dir);
+    if matches!(kind, BackendKind::Ordinary) {
+        repair_torn_tail(&sp);
+    }
     match kind {
         BackendKind::Ordinary => OpenBackend::Ordinary(retry_lock(|| Store::open(&sp)).unwrap()),
         BackendKind::Checkpoint => {

@@ -1937,6 +1937,61 @@ fn log_identity(file: &dyn LogIo) -> io::Result<(Option<LogId>, bool)> {
     Ok((Some(id), metadata))
 }
 
+/// Truncates an incomplete final record that starts at or after the
+/// witnessed commit boundary, and returns the number of bytes removed, or
+/// `None` when the log does not end inside such a record.
+///
+/// Every acknowledged write is covered by the witness, so bytes at or after
+/// its boundary were never acknowledged and removing them loses nothing
+/// acknowledged. Complete records after the boundary are kept for the next
+/// open to verify and adopt. The walk trusts only checksummed record
+/// headers; an invalid header is an error and nothing is changed. Logs
+/// without a witness have no trustworthy boundary and are refused. The
+/// caller must hold the store lock.
+pub(crate) fn discard_incomplete_tail(path: &Path) -> io::Result<Option<u64>> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path.join("records.log"))?;
+    let (id, metadata) = log_identity(&file)?;
+    let Some(id) = id else {
+        return Err(record::invalid_data(
+            "log has no commit witness, so its committed boundary is unknown; nothing was changed",
+        ));
+    };
+    let boundary = if metadata {
+        metadata_witness::open(file.try_clone()?, id)?.1
+    } else {
+        Witness::open_readonly(path, id)?.1
+    };
+    let total = file.len()?;
+    if boundary > total {
+        return Err(record::invalid_data(
+            "commit witness is beyond the end of the log; nothing was changed",
+        ));
+    }
+    let mut offset = boundary;
+    while offset < total {
+        let remaining = total - offset;
+        if remaining < HEADER_SIZE as u64 {
+            break;
+        }
+        let mut header = [0_u8; HEADER_SIZE];
+        file.read_exact_at(&mut header, offset)?;
+        let record_len = Header::parse(&header)?.record_len();
+        if remaining < record_len {
+            break;
+        }
+        offset += record_len;
+    }
+    if offset == total {
+        return Ok(None);
+    }
+    file.set_len(offset)?;
+    file.sync_all()?;
+    Ok(Some(total - offset))
+}
+
 fn incomplete_record(offset: u64) -> io::Error {
     record::invalid_data(&format!(
         "incomplete log record at byte {offset}; store was not modified"

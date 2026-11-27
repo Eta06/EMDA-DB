@@ -162,6 +162,29 @@ impl Store {
         Self::open_using(path.as_ref(), Log::open)
     }
 
+    /// Removes an incomplete final log record left by a process that stopped
+    /// during an append, so the store can be opened again. Returns the number
+    /// of bytes removed, or `None` if the log does not end with one.
+    ///
+    /// `open` refuses such a log instead of truncating it. This explicit
+    /// repair removes only a record that starts at or after the witnessed
+    /// commit boundary. Every acknowledged write lies before that boundary,
+    /// so no acknowledged write is lost; complete records after it are kept
+    /// for `open` to verify and adopt. A log whose final bytes are anything
+    /// else, such as a corrupt record header, is left unchanged with an
+    /// error, as is a log without a commit witness. The store must not be
+    /// open: the store lock is taken for the repair.
+    pub fn discard_incomplete_tail(path: impl AsRef<Path>) -> io::Result<Option<u64>> {
+        let path = path.as_ref();
+        let lock_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.join("store.lock"))?;
+        fs2::FileExt::try_lock_exclusive(&lock_file)?;
+        let _lock = crate::store_lock::StoreLock::acquired(lock_file);
+        crate::log::discard_incomplete_tail(path)
+    }
+
     /// Opens using an explicit verified index checkpoint and replays its tail.
     ///
     /// The caller must supply the digest returned when the checkpoint was

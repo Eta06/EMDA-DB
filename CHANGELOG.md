@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add `Store::discard_incomplete_tail`, an explicit repair for a log that ends
+  inside a record whose append was cut short, which `Store::open` refuses. It
+  removes only such a record at or after the witnessed commit boundary, so no
+  acknowledged write is lost.
 - Reduce checkpoint-backed point/indexed read latency and full-scan overhead
   without weakening verification, isolation, or durability guarantees:
   - Store packed first-key prefixes up to 256 bytes per checkpoint block in
