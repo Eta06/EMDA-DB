@@ -907,16 +907,35 @@ fn retry_lock<T>(mut open: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     }
 }
 
+/// Opens a store after a kill. A kill during an append can leave an
+/// incomplete, unacknowledged final record, which open refuses; the drill
+/// then applies the explicit repair and opens again.
+fn open_repairing<T>(sp: &Path, mut open: impl FnMut() -> io::Result<T>) -> T {
+    match retry_lock(&mut open) {
+        Ok(v) => v,
+        Err(error) if error.to_string().contains("incomplete log record") => {
+            let removed = retry_lock(|| Store::discard_incomplete_tail(sp)).unwrap();
+            assert!(
+                removed.is_some(),
+                "an incomplete record was reported but not found"
+            );
+            eprintln!("[sql_transaction] removed a torn final record of {removed:?} bytes");
+            retry_lock(open).unwrap()
+        }
+        Err(error) => panic!("open after kill failed: {error}"),
+    }
+}
+
 fn open_crash_backend(dir: &Path, kind: BackendKind) -> OpenBackend {
     let sp = dir.join("store");
     match kind {
-        BackendKind::Ordinary => OpenBackend::Ordinary(retry_lock(|| Store::open(&sp)).unwrap()),
+        BackendKind::Ordinary => OpenBackend::Ordinary(open_repairing(&sp, || Store::open(&sp))),
         BackendKind::Checkpoint => {
             let cp = dir.join("checkpoint");
             let digest: [u8; 32] = fs::read(dir.join("digest")).unwrap().try_into().unwrap();
-            OpenBackend::Checkpoint(
-                retry_lock(|| CheckpointStore::open(&sp, &cp, &digest)).unwrap(),
-            )
+            OpenBackend::Checkpoint(open_repairing(&sp, || {
+                CheckpointStore::open(&sp, &cp, &digest)
+            }))
         }
     }
 }

@@ -479,9 +479,23 @@ fn open_backend(dir: &Path, kind: BackendKind) -> OpenBackend {
         BackendKind::Checkpoint => {
             let cp = checkpoint_path(dir);
             let digest: [u8; 32] = fs::read(digest_path(dir)).unwrap().try_into().unwrap();
-            OpenBackend::Checkpoint(
-                retry_lock(|| CheckpointStore::open(&sp, &cp, &digest)).unwrap(),
-            )
+            let open = || CheckpointStore::open(&sp, &cp, &digest);
+            let store = match retry_lock(open) {
+                Ok(store) => store,
+                // A kill during an append can leave an incomplete,
+                // unacknowledged final record; apply the explicit repair.
+                Err(error) if error.to_string().contains("incomplete log record") => {
+                    let removed = retry_lock(|| Store::discard_incomplete_tail(&sp)).unwrap();
+                    assert!(
+                        removed.is_some(),
+                        "an incomplete record was reported but not found"
+                    );
+                    eprintln!("[sql_crash] removed a torn final record of {removed:?} bytes");
+                    retry_lock(open).unwrap()
+                }
+                Err(error) => panic!("open after kill failed: {error}"),
+            };
+            OpenBackend::Checkpoint(store)
         }
     }
 }

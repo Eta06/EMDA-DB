@@ -121,3 +121,41 @@ fn anything_other_than_an_incomplete_record_is_refused_unchanged() {
     // A path that is not a store is an error.
     assert!(Store::discard_incomplete_tail(dir.path().join("missing")).is_err());
 }
+
+/// The same repair applies to the log behind a `CheckpointStore`: after a
+/// torn final record, open refuses, the repair removes it, and the store
+/// reopens with every acknowledged write.
+#[test]
+fn the_repair_applies_to_a_checkpoint_store_log() {
+    use database_engine::CheckpointStore;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let record = store_and_record(&path);
+    let initial = Store::open(&path).unwrap();
+    let digest = initial.checkpoint_to(dir.path().join("cp")).unwrap();
+    drop(initial);
+    {
+        let checkpoint = CheckpointStore::open(&path, dir.path().join("cp"), &digest).unwrap();
+        checkpoint.put(b"after", b"checkpoint").unwrap();
+    }
+    append(&path, &record[..40]);
+    let error = CheckpointStore::open(&path, dir.path().join("cp"), &digest)
+        .err()
+        .expect("a torn tail is refused");
+    assert!(
+        error.to_string().contains("incomplete log record"),
+        "{error}"
+    );
+    assert_eq!(Store::discard_incomplete_tail(&path).unwrap(), Some(40));
+    let checkpoint = CheckpointStore::open(&path, dir.path().join("cp"), &digest).unwrap();
+    for index in 0..10 {
+        assert_eq!(
+            checkpoint.get(format!("a{index}").as_bytes()).unwrap(),
+            Some(vec![index as u8; 300])
+        );
+    }
+    assert_eq!(
+        checkpoint.get(b"after").unwrap(),
+        Some(b"checkpoint".to_vec())
+    );
+}
