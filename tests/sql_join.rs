@@ -532,3 +532,63 @@ fn compound_index_with_nullable_trailing_column_is_not_used_for_lookups() {
         );
     });
 }
+
+/// Scanned rows decode the same whether they take the flat reader or, for
+/// text with escapes or non-ASCII characters, the full decoder.
+#[test]
+fn scanned_rows_with_escaped_text_join_like_plain_rows() {
+    for_both(|db, backend| {
+        db.execute(
+            "CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER, label TEXT, score REAL, ok BOOLEAN)",
+            &[],
+        )
+        .unwrap();
+        db.execute("CREATE TABLE b (id INTEGER PRIMARY KEY, a_id INTEGER)", &[])
+            .unwrap();
+        let labels = [
+            "plain",
+            "quote \" inside",
+            "line\nbreak",
+            "back\\slash",
+            "tab\there",
+            "é unicode",
+            "\u{1} control",
+        ];
+        for (id, label) in labels.iter().enumerate() {
+            let id = id as i64;
+            db.execute(
+                "INSERT INTO a VALUES (?, ?, ?, ?, ?)",
+                &[
+                    int(id),
+                    int(id),
+                    text(label),
+                    SqlValue::Real(id as f64 * 0.5),
+                    SqlValue::Boolean(id % 2 == 0),
+                ],
+            )
+            .unwrap();
+            db.execute("INSERT INTO b VALUES (?, ?)", &[int(100 + id), int(id)])
+                .unwrap();
+        }
+        // The join is on a column of a that is neither its key nor indexed,
+        // so every row of a is read by a table scan.
+        let got = rows(
+            db,
+            "SELECT b.id, a.label, a.score, a.ok FROM b JOIN a ON a.k = b.a_id ORDER BY b.id",
+            &[],
+        );
+        let expected: Vec<Vec<SqlValue>> = labels
+            .iter()
+            .enumerate()
+            .map(|(id, label)| {
+                vec![
+                    int(100 + id as i64),
+                    text(label),
+                    SqlValue::Real(id as f64 * 0.5),
+                    SqlValue::Boolean(id % 2 == 0),
+                ]
+            })
+            .collect();
+        assert_eq!(got, expected, "{backend}");
+    });
+}

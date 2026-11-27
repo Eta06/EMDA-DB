@@ -224,8 +224,30 @@ impl Transaction<'_> {
         after: Option<&[u8]>,
         before: Option<&[u8]>,
         limit: usize,
-        mut admit: impl FnMut(&[u8], usize) -> bool,
+        admit: impl FnMut(&[u8], usize) -> bool,
     ) -> io::Result<Vec<Entry>> {
+        let mut result = Vec::new();
+        self.visit_admitted(after, before, limit, admit, |key, value| {
+            result.push((key.to_vec(), value.to_vec()));
+            true
+        })?;
+        Ok(result)
+    }
+
+    /// Visits the entries `scan_admitted` would return, in order, lending
+    /// each key and verified value instead of copying them. The page ends
+    /// when `visit` returns false, as it does when `admit` declines an entry.
+    /// `visit` runs while the snapshot is borrowed and must not call back
+    /// into this transaction.
+    /// Read-set and validation behavior are those of `scan_admitted`.
+    pub(crate) fn visit_admitted(
+        &self,
+        after: Option<&[u8]>,
+        before: Option<&[u8]>,
+        limit: usize,
+        mut admit: impl FnMut(&[u8], usize) -> bool,
+        mut visit: impl FnMut(&[u8], &[u8]) -> bool,
+    ) -> io::Result<()> {
         crate::cancellation::check(self.cancellation.as_ref())?;
         for key in [after, before].into_iter().flatten() {
             record::validate_key(key)?;
@@ -238,7 +260,7 @@ impl Transaction<'_> {
         }
         let snapshot = self.snapshot.read_index()?;
         if matches!((after, before), (Some(a), Some(b)) if a >= b) {
-            return Ok(Vec::new());
+            return Ok(());
         }
         if let Some(read_set) = &self.read_set {
             read_set
@@ -257,9 +279,9 @@ impl Transaction<'_> {
         let mut read_ahead = crate::log::LogReadAhead::new(log);
         let mut base = snapshot.index.range::<[u8], _>(bounds).peekable();
         let mut pending = self.staged.range::<[u8], _>(bounds).peekable();
-        let mut result = Vec::new();
+        let mut count = 0_usize;
         let mut bytes = 0_usize;
-        while result.len() < limit {
+        while count < limit {
             if self.snapshot.borrowed_store().commits.failed() {
                 return Err(uncertain_error());
             }
@@ -278,8 +300,8 @@ impl Transaction<'_> {
                 if !admit(key, location.length) {
                     break;
                 }
-                let remaining = limit - result.len() - 1;
-                let value = read_ahead.read_with_peek(*location, |push| {
+                let remaining = limit - count - 1;
+                let value = read_ahead.read_slice_with_peek(*location, |push| {
                     for (_, next_loc) in base.clone().take(remaining) {
                         if !push(*next_loc) {
                             break;
@@ -287,7 +309,10 @@ impl Transaction<'_> {
                     }
                 })?;
                 bytes += size;
-                result.push((key.clone(), value));
+                count += 1;
+                if !visit(key, &value) {
+                    break;
+                }
             } else {
                 if choice == std::cmp::Ordering::Equal {
                     base.next();
@@ -302,11 +327,14 @@ impl Transaction<'_> {
                         break;
                     }
                     bytes += size;
-                    result.push((key.clone(), value.clone()));
+                    count += 1;
+                    if !visit(key, value) {
+                        break;
+                    }
                 }
             }
         }
-        Ok(result)
+        Ok(())
     }
 
     /// Counts live keys in the exclusive range, merging staged writes, and

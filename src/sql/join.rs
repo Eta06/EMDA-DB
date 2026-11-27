@@ -18,7 +18,10 @@ use super::value::{
     encode_i64_pk,
 };
 use crate::MAX_SCAN_ENTRIES;
-use crate::document::{DocumentDatabase, DocumentTransaction, IndexQuery, IndexValue};
+use crate::document::flat::FlatScalar;
+use crate::document::{
+    DocumentDatabase, DocumentTransaction, IndexQuery, IndexValue, StoredDocument,
+};
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -1019,16 +1022,94 @@ fn pk_id(value: &SqlValue) -> Option<String> {
     }
 }
 
+/// A stored member as a row decoder sees it: a JSON value, or a borrowed
+/// flat scalar, which answers each question as the JSON value would.
+trait Member {
+    fn is_null(&self) -> bool;
+    fn as_i64(&self) -> Option<i64>;
+    fn as_f64(&self) -> Option<f64>;
+    fn as_str(&self) -> Option<&str>;
+    fn as_bool(&self) -> Option<bool>;
+}
+
+impl Member for &Value {
+    fn is_null(&self) -> bool {
+        Value::is_null(self)
+    }
+    fn as_i64(&self) -> Option<i64> {
+        Value::as_i64(self)
+    }
+    fn as_f64(&self) -> Option<f64> {
+        Value::as_f64(self)
+    }
+    fn as_str(&self) -> Option<&str> {
+        Value::as_str(self)
+    }
+    fn as_bool(&self) -> Option<bool> {
+        Value::as_bool(self)
+    }
+}
+
+impl Member for FlatScalar<'_> {
+    fn is_null(&self) -> bool {
+        matches!(self, FlatScalar::Null)
+    }
+    fn as_i64(&self) -> Option<i64> {
+        FlatScalar::as_i64(self)
+    }
+    fn as_f64(&self) -> Option<f64> {
+        FlatScalar::as_f64(self)
+    }
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            FlatScalar::Str(text) => Some(text),
+            _ => None,
+        }
+    }
+    fn as_bool(&self) -> Option<bool> {
+        match self {
+            FlatScalar::Bool(value) => Some(*value),
+            _ => None,
+        }
+    }
+}
+
+fn corrupt(message: String) -> SqlError {
+    SqlError::Io(io::Error::new(io::ErrorKind::InvalidData, message))
+}
+
 fn decode(def: &TableDef, id: &str, document: &Value) -> Result<Vec<SqlValue>, SqlError> {
-    let corrupt =
-        |message: String| SqlError::Io(io::Error::new(io::ErrorKind::InvalidData, message));
     let object = document
         .as_object()
         .ok_or_else(|| corrupt(format!("stored row in '{}' is not an object", def.name)))?;
+    decode_members(def, id, |name| object.get(name))
+}
+
+fn decode_stored(
+    def: &TableDef,
+    id: &str,
+    stored: StoredDocument<'_>,
+) -> Result<Vec<SqlValue>, SqlError> {
+    match stored {
+        StoredDocument::Flat(document) => decode_members(def, id, |name| document.get(name)),
+        StoredDocument::Full(document) => decode(def, id, &document),
+    }
+}
+
+fn decode_members<M: Member>(
+    def: &TableDef,
+    id: &str,
+    get: impl Fn(&str) -> Option<M>,
+) -> Result<Vec<SqlValue>, SqlError> {
     let mut row = Vec::with_capacity(def.columns.len());
     for column in &def.columns {
-        let value = match object.get(&column.name) {
-            None | Some(Value::Null) => {
+        let value = match get(&column.name) {
+            None => None,
+            Some(value) if value.is_null() => None,
+            Some(value) => Some(value),
+        };
+        let value = match value {
+            None => {
                 if column.not_null {
                     return Err(corrupt(format!(
                         "stored NOT NULL column '{}.{}' is null",
@@ -1071,18 +1152,45 @@ fn scan_table(
     // Pages grow from 64 rows so a scan that stops early under LIMIT reads
     // little, while long scans still use full pages.
     let mut page_size = 64;
+    let mut rows = Vec::new();
     loop {
-        let page = tx
-            .scan_documents(&def.name, after.as_deref(), page_size)
+        // Rows are decoded in place from the page, then handed out after
+        // it, since `each` may read through `tx`.
+        let mut failure = None;
+        let (count, last) = tx
+            .visit_stored_documents(
+                &def.name,
+                after.as_deref(),
+                page_size,
+                |schema, id, bytes| {
+                    let row = DocumentTransaction::decode_stored(bytes, schema)
+                        .map_err(exec::classify_io_error)
+                        .and_then(|stored| decode_stored(def, id, stored));
+                    match row {
+                        Ok(row) => {
+                            rows.push(row);
+                            true
+                        }
+                        Err(error) => {
+                            failure = Some(error);
+                            false
+                        }
+                    }
+                },
+            )
             .map_err(exec::classify_io_error)?;
         page_size = (page_size * 2).min(MAX_SCAN_ENTRIES);
-        let Some(last) = page.last() else {
+        if count == 0 {
             return Ok(());
-        };
-        after = Some(last.id.clone());
-        budget.visit(page.len())?;
-        for entry in page {
-            let row = decode(def, &entry.id, &entry.document)?;
+        }
+        // A stored row that fails to decode is reported before the visit
+        // bound, as when the page was decoded while it was read.
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        budget.visit(count)?;
+        after = last;
+        for row in rows.drain(..) {
             if !each(row, budget)? {
                 return Ok(());
             }

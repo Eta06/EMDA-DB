@@ -167,6 +167,28 @@ impl CheckpointTransaction<'_> {
         limit: usize,
         admit: impl FnMut(&[u8], usize) -> bool,
     ) -> io::Result<Vec<Entry>> {
+        let mut result = Vec::new();
+        self.visit_admitted(after, before, limit, admit, |key, value| {
+            result.push((key.to_vec(), value.to_vec()));
+            true
+        })?;
+        Ok(result)
+    }
+
+    /// Visits the entries `scan_admitted` would return, in order, lending
+    /// each key and verified value instead of copying them. The page ends
+    /// when `visit` returns false, as it does when `admit` declines an entry.
+    /// `visit` runs while the snapshot is borrowed and must not call back
+    /// into this transaction.
+    /// Read-set and block verification are those of `scan_admitted`.
+    pub(crate) fn visit_admitted(
+        &self,
+        after: Option<&[u8]>,
+        before: Option<&[u8]>,
+        limit: usize,
+        admit: impl FnMut(&[u8], usize) -> bool,
+        visit: impl FnMut(&[u8], &[u8]) -> bool,
+    ) -> io::Result<()> {
         for key in [after, before].into_iter().flatten() {
             record::validate_key(key)?;
         }
@@ -178,7 +200,7 @@ impl CheckpointTransaction<'_> {
         }
         let state = self.state()?;
         if matches!((after, before), (Some(a), Some(b)) if a >= b) {
-            return Ok(Vec::new());
+            return Ok(());
         }
         let bounds = (
             after.map_or(Unbounded, Excluded),
@@ -187,10 +209,11 @@ impl CheckpointTransaction<'_> {
         let mut pending = self.staged.range::<[u8], _>(bounds).peekable();
         let mut page = ScanPage {
             read_ahead: crate::log::LogReadAhead::new(&state.view.base.log),
-            entries: Vec::new(),
+            count: 0,
             bytes: 0,
             limit,
             admit,
+            visit,
         };
         let mut stopped = false;
         let merge = |key: &[u8], location, peek: crate::log::LocationPeek<'_>| {
@@ -250,7 +273,7 @@ impl CheckpointTransaction<'_> {
                 }
             }
         }
-        Ok(page.entries)
+        Ok(())
     }
 
     /// Counts live keys in the exclusive range, merging staged writes, and
@@ -408,17 +431,18 @@ impl CheckpointTransaction<'_> {
     }
 }
 
-struct ScanPage<'a, A> {
+struct ScanPage<'a, A, V> {
     read_ahead: crate::log::LogReadAhead<'a>,
-    entries: Vec<Entry>,
+    count: usize,
     bytes: usize,
     limit: usize,
     admit: A,
+    visit: V,
 }
 
-impl<A: FnMut(&[u8], usize) -> bool> ScanPage<'_, A> {
+impl<A: FnMut(&[u8], usize) -> bool, V: FnMut(&[u8], &[u8]) -> bool> ScanPage<'_, A, V> {
     fn has_room(&self, key: &[u8], value_len: usize) -> bool {
-        self.entries.len() < self.limit && self.bytes + key.len() + value_len <= MAX_SCAN_BYTES
+        self.count < self.limit && self.bytes + key.len() + value_len <= MAX_SCAN_BYTES
     }
 
     fn push_value(&mut self, key: &[u8], value: &[u8]) -> bool {
@@ -426,8 +450,8 @@ impl<A: FnMut(&[u8], usize) -> bool> ScanPage<'_, A> {
             return false;
         }
         self.bytes += key.len() + value.len();
-        self.entries.push((key.to_vec(), value.to_vec()));
-        true
+        self.count += 1;
+        (self.visit)(key, value)
     }
 
     fn push_location(
@@ -439,8 +463,8 @@ impl<A: FnMut(&[u8], usize) -> bool> ScanPage<'_, A> {
         if !self.has_room(key, location.length) || !(self.admit)(key, location.length) {
             return Ok(false);
         }
-        let remaining = self.limit - self.entries.len() - 1;
-        let value = self.read_ahead.read_with_peek(location, |push| {
+        let remaining = self.limit - self.count - 1;
+        let value = self.read_ahead.read_slice_with_peek(location, |push| {
             let mut count = 0;
             peek(&mut |next| {
                 if count >= remaining {
@@ -451,8 +475,8 @@ impl<A: FnMut(&[u8], usize) -> bool> ScanPage<'_, A> {
             });
         })?;
         self.bytes += key.len() + value.len();
-        self.entries.push((key.to_vec(), value));
-        Ok(true)
+        self.count += 1;
+        Ok((self.visit)(key, &value))
     }
 }
 

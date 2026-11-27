@@ -4151,7 +4151,7 @@ fn visit_access_rows_ref(
     params: &[SqlValue],
     limits: &SqlLimits,
     stream_cap: Option<usize>,
-    mut on_row: impl FnMut(String, Option<i64>, RowRef<'_>) -> Result<ControlFlow<()>, SqlError>,
+    mut on_row: impl FnMut(&str, Option<i64>, RowRef<'_>) -> Result<ControlFlow<()>, SqlError>,
 ) -> Result<(), SqlError> {
     match plan {
         AccessPlan::PkRange {
@@ -4191,7 +4191,7 @@ fn visit_access_rows_ref(
             limits,
             None,
             stream_cap,
-            |id, verified_pk, obj| on_row(id, verified_pk, RowRef::Map(&obj)),
+            |id, verified_pk, obj| on_row(&id, verified_pk, RowRef::Map(&obj)),
         ),
     }
 }
@@ -4276,6 +4276,9 @@ fn visit_index_rows(
     }
 }
 
+/// Reads rows of a primary-key range in place, page by page. `on_match` runs
+/// while the page is read from the store, so it must not use `tx`; callers
+/// collect what they need and act after the scan.
 #[allow(clippy::too_many_arguments)]
 fn scan_range_rows_ref(
     tx: &DocumentTransaction<'_, '_>,
@@ -4287,7 +4290,7 @@ fn scan_range_rows_ref(
     upper: &UpperBound,
     max_exact_rows: Option<usize>,
     mut stream_cap: Option<usize>,
-    mut on_match: impl FnMut(String, Option<i64>, RowRef<'_>) -> Result<ControlFlow<()>, SqlError>,
+    mut on_match: impl FnMut(&str, Option<i64>, RowRef<'_>) -> Result<ControlFlow<()>, SqlError>,
 ) -> Result<(), SqlError> {
     let mut visited = 0usize;
 
@@ -4303,64 +4306,88 @@ fn scan_range_rows_ref(
             }
             page_limit = page_limit.min(cap);
         }
-        let (page, schema) = tx
-            .scan_stored_documents(&table.name, after_id.as_deref(), page_limit)
+        // Rows are read in place from the page; the visitor records why it
+        // stopped, and an error, since it can only return whether to go on.
+        let mut outcome: Result<bool, SqlError> = Ok(false);
+        let mut row = |schema: &crate::CollectionSchema, id: &str, bytes: &[u8]| {
+            outcome = scan_row(
+                table,
+                filter,
+                params,
+                limits,
+                upper,
+                &mut visited,
+                &mut stream_cap,
+                &mut on_match,
+                (schema, id, bytes),
+            );
+            matches!(outcome, Ok(false))
+        };
+        let (count, last_id) = tx
+            .visit_stored_documents(&table.name, after_id.as_deref(), page_limit, &mut row)
             .map_err(classify_io_error)?;
-        if page.is_empty() {
+        if outcome? || count == 0 {
             return Ok(());
         }
-        after_id = page.last().map(|(id, _)| id.clone());
+        after_id = last_id;
+    }
+}
 
-        for (id, bytes) in page {
-            if upper.is_past(&id) {
-                return Ok(());
-            }
-            visited += 1;
-            if visited > limits.max_visited_rows {
-                return Err(SqlError::Bounds(format!(
-                    "visited row count exceeds max_visited_rows ({})",
-                    limits.max_visited_rows
-                )));
-            }
-            let at_inclusive_end = upper.is_at_inclusive(&id);
-            // A flat row is checked and filtered from borrowed members; only
-            // a matching row is turned into an owned object.
-            let decoded =
-                DocumentTransaction::decode_stored(&bytes, &schema).map_err(classify_io_error)?;
-            let flow = match decoded {
-                StoredDocument::Flat(doc) => {
-                    let pk_col = &table.columns[table.primary_key_index];
-                    let verified_pk = verify_pk_value(table, &id, decode_flat_col(&doc, pk_col)?)?;
-                    if eval_where_flat(filter, table, &doc, params)? {
-                        if let Some(cap) = &mut stream_cap {
-                            *cap = cap.saturating_sub(1);
-                        }
-                        Some(on_match(id, verified_pk, RowRef::Flat(&doc))?)
-                    } else {
-                        None
-                    }
+/// Checks and filters one stored row of a range scan and passes a match to
+/// `on_match`. Returns whether the scan ends with this row.
+#[allow(clippy::too_many_arguments)]
+fn scan_row(
+    table: &TableDef,
+    filter: Option<&BoundExpr>,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    upper: &UpperBound,
+    visited: &mut usize,
+    stream_cap: &mut Option<usize>,
+    on_match: &mut impl FnMut(&str, Option<i64>, RowRef<'_>) -> Result<ControlFlow<()>, SqlError>,
+    (schema, id, bytes): (&crate::CollectionSchema, &str, &[u8]),
+) -> Result<bool, SqlError> {
+    if upper.is_past(id) {
+        return Ok(true);
+    }
+    *visited += 1;
+    if *visited > limits.max_visited_rows {
+        return Err(SqlError::Bounds(format!(
+            "visited row count exceeds max_visited_rows ({})",
+            limits.max_visited_rows
+        )));
+    }
+    let at_inclusive_end = upper.is_at_inclusive(id);
+    // A flat row is checked and filtered from borrowed members; only a
+    // matching row is turned into an owned object.
+    let decoded = DocumentTransaction::decode_stored(bytes, schema).map_err(classify_io_error)?;
+    let flow = match decoded {
+        StoredDocument::Flat(doc) => {
+            let pk_col = &table.columns[table.primary_key_index];
+            let verified_pk = verify_pk_value(table, id, decode_flat_col(&doc, pk_col)?)?;
+            if eval_where_flat(filter, table, &doc, params)? {
+                if let Some(cap) = stream_cap {
+                    *cap = cap.saturating_sub(1);
                 }
-                StoredDocument::Full(document) => {
-                    let obj = doc_into_object(document)?;
-                    let verified_pk = verify_doc_pk_id(table, &id, &obj)?;
-                    if eval_where_doc(filter, table, &obj, params)? {
-                        if let Some(cap) = &mut stream_cap {
-                            *cap = cap.saturating_sub(1);
-                        }
-                        Some(on_match(id, verified_pk, RowRef::Map(&obj))?)
-                    } else {
-                        None
-                    }
-                }
-            };
-            if flow.is_some_and(|flow| flow.is_break()) {
-                return Ok(());
-            }
-            if at_inclusive_end {
-                return Ok(());
+                Some(on_match(id, verified_pk, RowRef::Flat(&doc))?)
+            } else {
+                None
             }
         }
-    }
+        StoredDocument::Full(document) => {
+            let obj = doc_into_object(document)?;
+            let verified_pk = verify_doc_pk_id(table, id, &obj)?;
+            if eval_where_doc(filter, table, &obj, params)? {
+                if let Some(cap) = stream_cap {
+                    *cap = cap.saturating_sub(1);
+                }
+                Some(on_match(id, verified_pk, RowRef::Map(&obj))?)
+            } else {
+                None
+            }
+        }
+    };
+    Ok(flow.is_some_and(|flow| flow.is_break()) || at_inclusive_end)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4403,7 +4430,7 @@ fn scan_range_rows(
                 },
                 RowRef::Map(obj) => obj.clone(),
             };
-            on_match(id, verified_pk, obj)
+            on_match(id.to_owned(), verified_pk, obj)
         },
     )
 }

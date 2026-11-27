@@ -51,15 +51,27 @@ impl<'a> LogReadAhead<'a> {
         location: ValueLocation,
         peek_next: impl FnOnce(&mut dyn FnMut(ValueLocation) -> bool),
     ) -> io::Result<Vec<u8>> {
+        self.read_slice_with_peek(location, peek_next)
+            .map(std::borrow::Cow::into_owned)
+    }
+
+    /// As `read_with_peek`, but borrows the verified value from the
+    /// read-ahead window instead of copying it when it lies there.
+    pub(crate) fn read_slice_with_peek(
+        &mut self,
+        location: ValueLocation,
+        peek_next: impl FnOnce(&mut dyn FnMut(ValueLocation) -> bool),
+    ) -> io::Result<std::borrow::Cow<'_, [u8]>> {
+        use std::borrow::Cow;
         if location.length == 0 || location.length > SCAN_READ_AHEAD_BYTES {
-            return self.log.read(location);
+            return self.log.read(location).map(Cow::Owned);
         }
         let loc_end = location
             .offset
             .checked_add(location.length as u64)
             .ok_or_else(|| record::invalid_data("stored value offset overflow"))?;
         if self.start < self.end && location.offset >= self.start && loc_end <= self.end {
-            return self.slice_verified(location, loc_end);
+            return self.slice_verified(location, loc_end).map(Cow::Borrowed);
         }
         let active_start = self.start;
         let active_end = self.end;
@@ -107,7 +119,7 @@ impl<'a> LogReadAhead<'a> {
         if count < 2 {
             // An isolated outlier reads directly without evicting a live
             // sequential read-ahead window.
-            return self.log.read(location);
+            return self.log.read(location).map(Cow::Owned);
         }
         let span_len = (span_end - span_start) as usize;
         // Clear valid bounds before resizing/reading so an I/O error never
@@ -126,23 +138,23 @@ impl<'a> LogReadAhead<'a> {
                     .len()
                     .is_ok_and(|len| loc_end <= len && span_end > len)
             {
-                return self.log.read(location);
+                return self.log.read(location).map(Cow::Owned);
             }
             return Err(error);
         }
         self.start = span_start;
         self.end = span_end;
-        self.slice_verified(location, loc_end)
+        self.slice_verified(location, loc_end).map(Cow::Borrowed)
     }
 
-    fn slice_verified(&self, location: ValueLocation, loc_end: u64) -> io::Result<Vec<u8>> {
+    fn slice_verified(&self, location: ValueLocation, loc_end: u64) -> io::Result<&[u8]> {
         let from = (location.offset - self.start) as usize;
         let to = (loc_end - self.start) as usize;
         let bytes = &self.buf[from..to];
         if crc32fast::hash(bytes) != location.checksum {
             return Err(record::invalid_data("stored value checksum mismatch"));
         }
-        Ok(bytes.to_vec())
+        Ok(bytes)
     }
 }
 

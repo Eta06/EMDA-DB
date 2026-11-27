@@ -22,9 +22,6 @@ const MAX_INDEX_BUILD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_INDEX_DROP_KEYS: usize = 768;
 const MAX_INDEX_DROP_BYTES: usize = 32 * 1024 * 1024;
 
-/// Document IDs with their undecoded stored bytes, in ID order.
-pub(crate) type StoredPage = Vec<(String, Vec<u8>)>;
-
 /// A stored document decoded by `DocumentTransaction::decode_stored`.
 // The flat variant holds its members inline so that decoding a row does not
 // allocate; values of this type live briefly on the stack, one row at a time.
@@ -477,6 +474,51 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         budget_error.map_or(Ok(page), Err)
     }
 
+    /// Visits one bounded page as `scan_admitted` returns it, lending each
+    /// entry. The ordinary and checkpoint backends read values in place;
+    /// the others copy a page first. Budget charging and `admit` are those
+    /// of `scan_admitted`.
+    fn visit_admitted(
+        &self,
+        after: &[u8],
+        before: &[u8],
+        limit: usize,
+        mut admit: impl FnMut(&[u8], usize) -> bool,
+        mut visit: impl FnMut(&[u8], &[u8]) -> bool,
+    ) -> io::Result<()> {
+        let direct = matches!(
+            &self.backend,
+            BackendTransaction::Ordinary(_) | BackendTransaction::Checkpoint(_)
+        );
+        if !direct {
+            for (key, value) in self.scan_admitted(after, before, limit, admit)? {
+                if !visit(&key, &value) {
+                    break;
+                }
+            }
+            return Ok(());
+        }
+        self.charge_read(1, 0)?;
+        let mut budget_error = None;
+        let admit = |key: &[u8], bytes| {
+            if !admit(key, bytes) {
+                return false;
+            }
+            budget_error = self.charge_read(1, key.len() + bytes).err();
+            budget_error.is_none()
+        };
+        match &self.backend {
+            BackendTransaction::Ordinary(tx) => {
+                tx.visit_admitted(Some(after), Some(before), limit, admit, visit)
+            }
+            BackendTransaction::Checkpoint(tx) => {
+                tx.visit_admitted(Some(after), Some(before), limit, admit, visit)
+            }
+            _ => unreachable!("checked above"),
+        }?;
+        budget_error.map_or(Ok(()), Err)
+    }
+
     pub(super) fn scan_document_page(
         &self,
         after: &[u8],
@@ -636,17 +678,21 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         Self::decode_document(bytes, schema).map(StoredDocument::Full)
     }
 
-    /// Scans one bounded page of a collection's stored documents in ID order,
-    /// returning each ID with its undecoded bytes and the collection schema to
-    /// decode them with through `decode_stored`. Keys, IDs, size limits,
-    /// value checksums and read-set ranges are handled as `scan_documents`
-    /// handles them.
-    pub(crate) fn scan_stored_documents(
+    /// Visits one bounded page of a collection's stored documents in ID
+    /// order, lending each ID and its undecoded bytes, with the checks of
+    /// `scan_stored_documents`. `visit` gets the collection schema to decode
+    /// with through `decode_stored` and returns false to end the page early.
+    /// It runs while the backend snapshot is borrowed and must not call back
+    /// into this transaction; collect what it needs and act after the page.
+    /// Returns the number of documents visited and the last one's ID, from
+    /// which the next page continues.
+    pub(crate) fn visit_stored_documents(
         &self,
         collection: &str,
         after_id: Option<&str>,
         limit: usize,
-    ) -> io::Result<(StoredPage, CollectionSchema)> {
+        mut visit: impl FnMut(&CollectionSchema, &str, &[u8]) -> bool,
+    ) -> io::Result<(usize, Option<String>)> {
         if limit == 0 || limit > crate::MAX_SCAN_ENTRIES {
             return Err(key::invalid("scan limit must be between 1 and 1024"));
         }
@@ -657,19 +703,44 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             Some(id) => key::document(collection, id)?,
             None => prefix.clone(),
         };
-        let page = self.scan_document_page(&after, &end, limit)?;
-        let mut documents = Vec::with_capacity(page.len());
-        for (entry_key, value) in page {
-            let id = std::str::from_utf8(
-                entry_key
-                    .strip_prefix(prefix.as_slice())
-                    .ok_or_else(|| invalid_data("invalid document key"))?,
-            )
-            .map_err(|_| invalid_data("invalid document ID"))?;
-            key::id(id).map_err(|_| invalid_data("invalid document ID"))?;
-            documents.push((id.to_owned(), value));
+        let mut oversized = false;
+        let mut error = None;
+        let mut count = 0;
+        let mut last_id = Vec::new();
+        self.visit_admitted(
+            &after,
+            &end,
+            limit,
+            |_, len| {
+                oversized = len > MAX_DOCUMENT_BYTES;
+                !oversized
+            },
+            |entry_key, value| {
+                let Some(id) = entry_key.strip_prefix(prefix.as_slice()) else {
+                    error = Some(invalid_data("invalid document key"));
+                    return false;
+                };
+                let Some(id) = std::str::from_utf8(id)
+                    .ok()
+                    .filter(|id| key::id(id).is_ok())
+                else {
+                    error = Some(invalid_data("invalid document ID"));
+                    return false;
+                };
+                count += 1;
+                last_id.clear();
+                last_id.extend_from_slice(id.as_bytes());
+                visit(&metadata.schema, id, value)
+            },
+        )?;
+        if oversized {
+            return Err(invalid_data("stored document exceeds size limit"));
         }
-        Ok((documents, metadata.schema))
+        if let Some(error) = error {
+            return Err(error);
+        }
+        let last_id = (count > 0).then(|| String::from_utf8(last_id).expect("checked as UTF-8"));
+        Ok((count, last_id))
     }
 
     pub(super) fn decode_document(bytes: &[u8], schema: &CollectionSchema) -> io::Result<Value> {
