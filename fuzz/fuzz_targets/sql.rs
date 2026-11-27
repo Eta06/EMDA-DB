@@ -1704,10 +1704,7 @@ fn exec_create_unique_n_op(
         return;
     }
     let mut seen = HashSet::new();
-    let has_dup = model
-        .values()
-        .filter_map(|r| r.n)
-        .any(|n| !seen.insert(n));
+    let has_dup = model.values().filter_map(|r| r.n).any(|n| !seen.insert(n));
     let res = db.execute(sql, &[]);
     if has_dup {
         assert!(matches!(res, Err(SqlError::Constraint(_))));
