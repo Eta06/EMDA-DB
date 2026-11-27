@@ -239,6 +239,15 @@ impl TableDef {
     }
 }
 
+/// Removes a table's catalog entry in the caller's transaction.
+pub(crate) fn remove_table(
+    tx: &mut DocumentTransaction<'_, '_>,
+    table_name: &str,
+) -> Result<(), SqlError> {
+    let key = catalog_key(table_name)?;
+    tx.delete_raw(&key).map_err(classify_io_error)
+}
+
 fn catalog_key(table_name: &str) -> Result<Vec<u8>, SqlError> {
     if table_name.is_empty() || table_name.len() > MAX_SQL_IDENTIFIER_BYTES {
         return Err(SqlError::Bounds(format!(

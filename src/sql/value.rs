@@ -233,6 +233,7 @@ pub enum SqlOutcome {
     TableCreated,
     IndexCreated,
     IndexDropped,
+    TableDropped,
     Inserted {
         rows: usize,
     },

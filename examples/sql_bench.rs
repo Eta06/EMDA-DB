@@ -52,7 +52,10 @@ impl Backend for SqlDatabase<'_> {
             SqlOutcome::Inserted { rows }
             | SqlOutcome::Updated { rows }
             | SqlOutcome::Deleted { rows } => rows,
-            SqlOutcome::TableCreated | SqlOutcome::IndexCreated | SqlOutcome::IndexDropped => 0,
+            SqlOutcome::TableCreated
+            | SqlOutcome::IndexCreated
+            | SqlOutcome::IndexDropped
+            | SqlOutcome::TableDropped => 0,
         })
     }
     fn prepare_only(&self, sql: &str) -> Result<()> {

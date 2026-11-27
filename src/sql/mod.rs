@@ -6,6 +6,7 @@
 //! exact grammar, bounds, ordering guarantee, and backend behavior.
 
 mod catalog;
+mod ddl;
 mod exec;
 mod join;
 mod lexer;

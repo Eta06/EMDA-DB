@@ -130,12 +130,16 @@ pub(crate) fn execute_statement(
         Statement::CreateIndex(create_idx) => return exec_create_index(db, create_idx, cache),
         Statement::DropIndex(drop_idx) => return exec_drop_index(db, drop_idx, cache),
         Statement::Join(join) => return super::join::execute(db, join, params, limits, cache),
+        Statement::DropTable(drop) => return super::ddl::execute(db, drop, cache),
         _ => {}
     }
 
     run_tx(db, |tx| match &stmt.inner {
         Statement::CreateTable(create) => exec_create_table(tx, create, limits),
-        Statement::CreateIndex(_) | Statement::DropIndex(_) | Statement::Join(_) => {
+        Statement::CreateIndex(_)
+        | Statement::DropIndex(_)
+        | Statement::Join(_)
+        | Statement::DropTable(_) => {
             unreachable!()
         }
         Statement::Insert(insert) => exec_insert(tx, stmt.stmt_id, insert, params, limits, cache),
