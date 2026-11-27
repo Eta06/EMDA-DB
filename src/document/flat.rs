@@ -63,15 +63,53 @@ impl FlatScalar<'_> {
     }
 }
 
+/// Documents with at most this many members keep them inline, without
+/// allocating; larger ones move them to a vector.
+const INLINE_FIELDS: usize = 8;
+
+type Field<'a> = (&'a str, FlatScalar<'a>);
+
 /// The members of an accepted flat document, in encoded order.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct FlatDocument<'a> {
-    fields: Vec<(&'a str, FlatScalar<'a>)>,
+    inline: [Field<'a>; INLINE_FIELDS],
+    len: usize,
+    spill: Vec<Field<'a>>,
+}
+
+impl Default for FlatDocument<'_> {
+    fn default() -> Self {
+        Self {
+            inline: [("", FlatScalar::Null); INLINE_FIELDS],
+            len: 0,
+            spill: Vec::new(),
+        }
+    }
 }
 
 impl<'a> FlatDocument<'a> {
+    fn fields(&self) -> &[Field<'a>] {
+        if self.len <= INLINE_FIELDS {
+            &self.inline[..self.len]
+        } else {
+            &self.spill
+        }
+    }
+
+    fn push(&mut self, field: Field<'a>) {
+        if self.len < INLINE_FIELDS {
+            self.inline[self.len] = field;
+        } else {
+            if self.len == INLINE_FIELDS {
+                self.spill.extend_from_slice(&self.inline);
+            }
+            self.spill.push(field);
+        }
+        self.len += 1;
+    }
+
     pub(crate) fn get(&self, name: &str) -> Option<FlatScalar<'a>> {
-        self.fields
+        self.fields()
             .iter()
             .find(|(field, _)| *field == name)
             .map(|(_, value)| *value)
@@ -79,7 +117,7 @@ impl<'a> FlatDocument<'a> {
 
     /// The members `keep` selects, as `serde_json` would decode them.
     pub(crate) fn to_map_where(&self, keep: impl Fn(&str) -> bool) -> Map<String, Value> {
-        self.fields
+        self.fields()
             .iter()
             .filter(|(name, _)| keep(name))
             .map(|(name, value)| ((*name).to_owned(), value.to_value()))
@@ -88,14 +126,17 @@ impl<'a> FlatDocument<'a> {
 
     /// The `serde_json` object this document decodes to.
     pub(crate) fn to_map(&self) -> Map<String, Value> {
-        self.fields
+        self.fields()
             .iter()
             .map(|(name, value)| ((*name).to_owned(), value.to_value()))
             .collect()
     }
 }
 
+/// The input was checked to be UTF-8 once, so every slice between ASCII
+/// delimiters is a valid `str`.
 struct Cursor<'a> {
+    text: &'a str,
     bytes: &'a [u8],
     pos: usize,
 }
@@ -122,17 +163,12 @@ impl<'a> Cursor<'a> {
     fn string(&mut self) -> Option<&'a str> {
         self.eat(b'"')?;
         let start = self.pos;
-        loop {
-            match *self.bytes.get(self.pos)? {
-                b'"' => break,
-                b'\\' => return None,
-                byte if byte < 0x20 => return None,
-                _ => self.pos += 1,
-            }
-        }
-        let text = std::str::from_utf8(&self.bytes[start..self.pos]).ok()?;
-        self.pos += 1;
-        Some(text)
+        let length = self.bytes[start..]
+            .iter()
+            .position(|&byte| byte == b'"' || byte == b'\\' || byte < 0x20)?;
+        self.pos += length;
+        self.eat(b'"')?;
+        Some(&self.text[start..start + length])
     }
 
     fn digits(&mut self) -> usize {
@@ -171,11 +207,23 @@ impl<'a> Cursor<'a> {
                 return None;
             }
         }
-        let text = std::str::from_utf8(&self.bytes[start..self.pos]).ok()?;
+        let text = &self.text[start..self.pos];
         if integer {
             // serde_json reads "-0" as the float -0.0, not the integer 0.
             if text == "-0" {
                 return Some(FlatScalar::Float(-0.0));
+            }
+            // At most 18 digits always fit i64; sum them directly.
+            let digits = text.strip_prefix('-').unwrap_or(text);
+            if digits.len() <= 18 {
+                let magnitude = digits
+                    .bytes()
+                    .fold(0_i64, |sum, digit| sum * 10 + i64::from(digit - b'0'));
+                return Some(FlatScalar::Int(if text.len() == digits.len() {
+                    magnitude
+                } else {
+                    -magnitude
+                }));
             }
             if let Ok(n) = text.parse::<i64>() {
                 return Some(FlatScalar::Int(n));
@@ -274,7 +322,12 @@ pub(crate) fn parse(bytes: &[u8]) -> Option<FlatDocument<'_>> {
     if bytes.len() > MAX_FLAT_BYTES {
         return None;
     }
-    let mut cursor = Cursor { bytes, pos: 0 };
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut cursor = Cursor {
+        text,
+        bytes,
+        pos: 0,
+    };
     let mut document = FlatDocument::default();
     cursor.skip_ws();
     cursor.eat(b'{')?;
@@ -291,7 +344,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Option<FlatDocument<'_>> {
                 // serde_json keeps the last duplicate; leave that to it.
                 return None;
             }
-            document.fields.push((name, value));
+            document.push((name, value));
             cursor.skip_ws();
             if cursor.eat(b',').is_some() {
                 continue;
@@ -358,6 +411,41 @@ mod tests {
         }
     }
 
+    /// Documents past the inline capacity keep every member, in order.
+    #[test]
+    fn documents_with_many_members_are_read_whole() {
+        for members in [7, 8, 9, 16, 40] {
+            let text = format!(
+                "{{{}}}",
+                (0..members)
+                    .map(|i| format!(
+                        "\"m{i}\":{}",
+                        match i % 4 {
+                            0 => format!("{}", i * 1_000_003),
+                            1 => format!("\"s{i}\""),
+                            2 => "-1.5".to_owned(),
+                            _ => "null".to_owned(),
+                        }
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            let document = parse(text.as_bytes()).expect("flat");
+            let expected: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(Value::Object(document.to_map()), expected, "{members}");
+            assert_eq!(document.fields().len(), members);
+            let names: Vec<_> = document.fields().iter().map(|(name, _)| *name).collect();
+            assert_eq!(
+                names,
+                (0..members).map(|i| format!("m{i}")).collect::<Vec<_>>()
+            );
+            assert!(document.get(&format!("m{}", members - 1)).is_some());
+            // A duplicate past the inline members still sends the caller away.
+            let duplicate = format!("{},\"m0\":1}}", &text[..text.len() - 1]);
+            assert!(parse(duplicate.as_bytes()).is_none(), "{members}");
+        }
+    }
+
     #[test]
     fn random_flat_documents_match_serde_json() {
         let mut state = 0x9e37_79b9_7f4a_7c15_u64;
@@ -394,16 +482,24 @@ mod tests {
             "1.",
             "-",
             "\"\\u0041\"",
+            "999999999999999999",
+            "-999999999999999999",
+            "1000000000000000000",
+            "9223372036854775807",
+            "-9223372036854775808",
+            "18446744073709551615",
+            "18446744073709551616",
         ];
-        for _ in 0..20_000 {
-            let members = next() % 6;
+        // Up to 14 members, beyond the inline capacity of 8.
+        for _ in 0..40_000 {
+            let members = next() % 15;
             let mut text = String::from("{");
             for index in 0..members {
                 if index > 0 {
                     text.push(',');
                 }
                 let name = ["a", "b", "c", "a"][(next() % 4) as usize];
-                text.push_str(&format!("\"{name}{}\":", next() % 3));
+                text.push_str(&format!("\"{name}{}\":", next() % 8));
                 text.push_str(pieces[(next() % pieces.len() as u64) as usize]);
             }
             text.push('}');

@@ -26,6 +26,9 @@ const MAX_INDEX_DROP_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) type StoredPage = Vec<(String, Vec<u8>)>;
 
 /// A stored document decoded by `DocumentTransaction::decode_stored`.
+// The flat variant holds its members inline so that decoding a row does not
+// allocate; values of this type live briefly on the stack, one row at a time.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum StoredDocument<'a> {
     /// Borrowed members of a flat document.
     Flat(super::flat::FlatDocument<'a>),
