@@ -20,7 +20,9 @@ jobs:
   check:
     name: Rust ${{ matrix.toolchain }} / Linux
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Debug and optimized test runs plus benchmark smoke tests take about
+    # 14 minutes on a cold runner.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
