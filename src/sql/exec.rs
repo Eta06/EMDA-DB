@@ -1406,8 +1406,6 @@ struct BoundGroupOrderBy {
 }
 
 struct BoundAggregatePlan {
-    /// Columns a row needs after filtering: groups, aggregates and key.
-    wanted_columns: Vec<bool>,
     col_names: Vec<String>,
     outputs: Vec<BoundSelectOutput>,
     group_cols: Vec<usize>,
@@ -2327,21 +2325,7 @@ fn build_aggregate_select_plan(
         None
     };
 
-    let mut wanted_columns = vec![false; table.columns.len()];
-    wanted_columns[table.primary_key_index] = true;
-    for &index in &group_cols {
-        wanted_columns[index] = true;
-    }
-    for aggregate in &aggregates {
-        if let Some(index) = aggregate.col_idx {
-            wanted_columns[index] = true;
-        }
-    }
-    if let Some(index) = ungrouped_min_col {
-        wanted_columns[index] = true;
-    }
     Ok(Arc::new(SelectPlan::Aggregate(BoundAggregatePlan {
-        wanted_columns,
         col_names,
         outputs,
         group_cols,
@@ -3279,7 +3263,7 @@ fn compare_final_groups(a: &FinalGroup, b: &FinalGroup, specs: &[BoundGroupOrder
 }
 
 fn decode_col_with_pk<'a>(
-    obj: &'a Map<String, Value>,
+    obj: RowRef<'a>,
     table: &TableDef,
     col_idx: usize,
     verified_pk: Option<i64>,
@@ -3289,7 +3273,7 @@ fn decode_col_with_pk<'a>(
             return Ok(SqlValueRef::Integer(n));
         }
     }
-    decode_col_ref(obj, &table.columns[col_idx])
+    obj.col(&table.columns[col_idx])
 }
 
 struct DistinctBudget<'a> {
@@ -3301,7 +3285,7 @@ struct DistinctBudget<'a> {
 fn update_group_accs(
     accs: &mut [AggAcc],
     agg_specs: &[BoundAggregate],
-    obj: &Map<String, Value>,
+    obj: RowRef<'_>,
     table: &TableDef,
     verified_pk: Option<i64>,
     distinct: &mut DistinctBudget<'_>,
@@ -3449,20 +3433,19 @@ fn exec_aggregate_select(
     let raw_groups: Vec<GroupEntry> = if plan.group_cols.is_empty() {
         let mut accs: Vec<AggAcc> = plan.aggregates.iter().map(AggAcc::new).collect();
         if !matches!(access, AccessPlan::Empty) {
-            visit_access_rows(
+            visit_access_rows_ref(
                 tx,
                 table,
                 access,
                 bound_filter,
                 params,
                 limits,
-                Some(&plan.wanted_columns),
                 stream_cap,
                 |_doc_id, verified_pk, obj| {
                     update_group_accs(
                         &mut accs,
                         &plan.aggregates,
-                        &obj,
+                        obj,
                         table,
                         verified_pk,
                         &mut distinct,
@@ -3482,30 +3465,29 @@ fn exec_aggregate_select(
     } else {
         let mut table_groups = GroupTable::new(limits.max_groups, hash_builder.clone());
         if !matches!(access, AccessPlan::Empty) {
-            visit_access_rows(
+            visit_access_rows_ref(
                 tx,
                 table,
                 access,
                 bound_filter,
                 params,
                 limits,
-                Some(&plan.wanted_columns),
                 None,
                 |_doc_id, verified_pk, obj| {
                     let accs = if plan.group_cols.len() == 1 {
-                        let key = decode_col_with_pk(&obj, table, plan.group_cols[0], verified_pk)?;
+                        let key = decode_col_with_pk(obj, table, plan.group_cols[0], verified_pk)?;
                         table_groups.get_or_insert(&[key], &plan.aggregates)?
                     } else {
                         let mut keys = Vec::with_capacity(plan.group_cols.len());
                         for &col_idx in &plan.group_cols {
-                            keys.push(decode_col_with_pk(&obj, table, col_idx, verified_pk)?);
+                            keys.push(decode_col_with_pk(obj, table, col_idx, verified_pk)?);
                         }
                         table_groups.get_or_insert(&keys, &plan.aggregates)?
                     };
                     update_group_accs(
                         accs,
                         &plan.aggregates,
-                        &obj,
+                        obj,
                         table,
                         verified_pk,
                         &mut distinct,
@@ -4158,6 +4140,62 @@ fn visit_access_rows(
     }
 }
 
+/// `visit_access_rows`, passing borrowed rows: flat rows from range and
+/// full scans are never turned into owned objects.
+#[allow(clippy::too_many_arguments)]
+fn visit_access_rows_ref(
+    tx: &DocumentTransaction<'_, '_>,
+    table: &TableDef,
+    plan: AccessPlan,
+    filter: Option<&BoundExpr>,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    stream_cap: Option<usize>,
+    mut on_row: impl FnMut(String, Option<i64>, RowRef<'_>) -> Result<ControlFlow<()>, SqlError>,
+) -> Result<(), SqlError> {
+    match plan {
+        AccessPlan::PkRange {
+            after_id,
+            upper,
+            max_exact_rows,
+        } => scan_range_rows_ref(
+            tx,
+            table,
+            filter,
+            params,
+            limits,
+            after_id,
+            &upper,
+            max_exact_rows,
+            stream_cap,
+            on_row,
+        ),
+        AccessPlan::FullScan => scan_range_rows_ref(
+            tx,
+            table,
+            filter,
+            params,
+            limits,
+            None,
+            &UpperBound::Unbounded,
+            None,
+            stream_cap,
+            on_row,
+        ),
+        other => visit_access_rows(
+            tx,
+            table,
+            other,
+            filter,
+            params,
+            limits,
+            None,
+            stream_cap,
+            |id, verified_pk, obj| on_row(id, verified_pk, RowRef::Map(&obj)),
+        ),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn visit_index_rows(
     tx: &DocumentTransaction<'_, '_>,
@@ -4239,22 +4277,17 @@ fn visit_index_rows(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn scan_range_rows(
+fn scan_range_rows_ref(
     tx: &DocumentTransaction<'_, '_>,
     table: &TableDef,
     filter: Option<&BoundExpr>,
     params: &[SqlValue],
     limits: &SqlLimits,
-    wanted: Option<&[bool]>,
     mut after_id: Option<String>,
     upper: &UpperBound,
     max_exact_rows: Option<usize>,
     mut stream_cap: Option<usize>,
-    mut on_match: impl FnMut(
-        String,
-        Option<i64>,
-        Map<String, Value>,
-    ) -> Result<ControlFlow<()>, SqlError>,
+    mut on_match: impl FnMut(String, Option<i64>, RowRef<'_>) -> Result<ControlFlow<()>, SqlError>,
 ) -> Result<(), SqlError> {
     let mut visited = 0usize;
 
@@ -4294,18 +4327,15 @@ fn scan_range_rows(
             // a matching row is turned into an owned object.
             let decoded =
                 DocumentTransaction::decode_stored(&bytes, &schema).map_err(classify_io_error)?;
-            let matched = match decoded {
+            let flow = match decoded {
                 StoredDocument::Flat(doc) => {
                     let pk_col = &table.columns[table.primary_key_index];
                     let verified_pk = verify_pk_value(table, &id, decode_flat_col(&doc, pk_col)?)?;
                     if eval_where_flat(filter, table, &doc, params)? {
-                        let map = match wanted {
-                            Some(wanted) => doc.to_map_where(|name| {
-                                table.column_index(name).is_some_and(|index| wanted[index])
-                            }),
-                            None => doc.to_map(),
-                        };
-                        Some((verified_pk, map))
+                        if let Some(cap) = &mut stream_cap {
+                            *cap = cap.saturating_sub(1);
+                        }
+                        Some(on_match(id, verified_pk, RowRef::Flat(&doc))?)
                     } else {
                         None
                     }
@@ -4313,20 +4343,84 @@ fn scan_range_rows(
                 StoredDocument::Full(document) => {
                     let obj = doc_into_object(document)?;
                     let verified_pk = verify_doc_pk_id(table, &id, &obj)?;
-                    eval_where_doc(filter, table, &obj, params)?.then_some((verified_pk, obj))
+                    if eval_where_doc(filter, table, &obj, params)? {
+                        if let Some(cap) = &mut stream_cap {
+                            *cap = cap.saturating_sub(1);
+                        }
+                        Some(on_match(id, verified_pk, RowRef::Map(&obj))?)
+                    } else {
+                        None
+                    }
                 }
             };
-            if let Some((verified_pk, obj)) = matched {
-                if let Some(cap) = &mut stream_cap {
-                    *cap = cap.saturating_sub(1);
-                }
-                if on_match(id, verified_pk, obj)?.is_break() {
-                    return Ok(());
-                }
+            if flow.is_some_and(|flow| flow.is_break()) {
+                return Ok(());
             }
             if at_inclusive_end {
                 return Ok(());
             }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_range_rows(
+    tx: &DocumentTransaction<'_, '_>,
+    table: &TableDef,
+    filter: Option<&BoundExpr>,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    wanted: Option<&[bool]>,
+    after_id: Option<String>,
+    upper: &UpperBound,
+    max_exact_rows: Option<usize>,
+    stream_cap: Option<usize>,
+    mut on_match: impl FnMut(
+        String,
+        Option<i64>,
+        Map<String, Value>,
+    ) -> Result<ControlFlow<()>, SqlError>,
+) -> Result<(), SqlError> {
+    scan_range_rows_ref(
+        tx,
+        table,
+        filter,
+        params,
+        limits,
+        after_id,
+        upper,
+        max_exact_rows,
+        stream_cap,
+        |id, verified_pk, row| {
+            // Only rows that matched WHERE become owned objects, holding the
+            // columns the statement still needs.
+            let obj = match row {
+                RowRef::Flat(doc) => match wanted {
+                    Some(wanted) => doc.to_map_where(|name| {
+                        table.column_index(name).is_some_and(|index| wanted[index])
+                    }),
+                    None => doc.to_map(),
+                },
+                RowRef::Map(obj) => obj.clone(),
+            };
+            on_match(id, verified_pk, obj)
+        },
+    )
+}
+
+/// A row being read: an owned object, or the borrowed members of a flat
+/// stored document. Both decode columns with the same rules and errors.
+#[derive(Clone, Copy)]
+enum RowRef<'r> {
+    Map(&'r Map<String, Value>),
+    Flat(&'r FlatDocument<'r>),
+}
+
+impl<'r> RowRef<'r> {
+    fn col(self, col: &ColumnDef) -> Result<SqlValueRef<'r>, SqlError> {
+        match self {
+            Self::Map(obj) => decode_col_ref(obj, col),
+            Self::Flat(doc) => decode_flat_col(doc, col),
         }
     }
 }
