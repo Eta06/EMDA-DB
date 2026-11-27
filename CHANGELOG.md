@@ -4,6 +4,22 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reduce macOS V2 (`EMDALOG2`) durable commit latency without changing the
+  on-disk format or weakening durability guarantees: on local macOS APFS and
+  HFS+ volumes (`fstatfs` `MNT_LOCAL`) reporting `VOL_CAP_INT_BARRIERFSYNC` via
+  `fgetattrlist` where `records.log` and `commit.state` share the same device
+  (`st_dev`), synchronize `records.log` with `fcntl(F_BARRIERFSYNC)` (retrying
+  `EINTR`, falling back strictly to `F_FULLFSYNC` on
+  `ENOTSUP`/`EOPNOTSUPP`/`EINVAL`/`ENOTTY`, and propagating all other errors
+  such as `EIO` without updating `commit.state`) followed by mandatory strict
+  `fcntl(F_FULLFSYNC)` on `commit.state` (retrying `EINTR` only, never silently
+  degrading to plain `fsync(2)`). Unwitnessed legacy logs, cross-device V2
+  stores, and other volumes retain full syncs. Enabling V3 (`EMDALOG3`) on
+  macOS was considered and deferred because Apple does not explicitly document
+  APFS xattr persistence under `F_FULLFSYNC` across power loss and APFS
+  profiling showed nearly identical latency to V2 barrier-ordered sync; macOS
+  continues creating V2 stores and rejecting V3 opens as unsupported.
+
 - Advance the experimental Rust package version to `0.2.0`.
 
 - Add `begin_rotation`, `RetainedRotationJob::prepare` and
