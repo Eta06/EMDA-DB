@@ -1747,13 +1747,25 @@ fn ordered_barrier_sync_is_disabled_for_cross_device_missing_dev_legacy_and_v3()
     }
 }
 
+/// Whether this volume reports barrier-ordered sync for files at `path`.
+/// Hosted macOS runners can report local APFS without the capability, so
+/// tests compare the selected path with the probe instead of assuming it.
+#[cfg(target_os = "macos")]
+fn volume_supports_barrier(path: &std::path::Path) -> bool {
+    let file = std::fs::File::open(path.join("records.log")).unwrap();
+    crate::log_io::macos_sync::supports_barrier_fsync(&file).unwrap()
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_new_store_creates_v2_with_ordered_barrier_sync() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store");
     let store = crate::Store::open(&path).unwrap();
-    assert!(store.uses_ordered_barrier_sync_for_test());
+    assert_eq!(
+        store.uses_ordered_barrier_sync_for_test(),
+        volume_supports_barrier(&path)
+    );
     store.put(b"k1", b"v1").unwrap();
     let len_after_k1 = std::fs::metadata(path.join("records.log")).unwrap().len();
     store.put(b"k2", b"v2").unwrap();
@@ -1768,12 +1780,18 @@ fn macos_new_store_creates_v2_with_ordered_barrier_sync() {
     assert_eq!(witness_bytes.len(), witness::WITNESS_SIZE);
 
     let checkpoint_store = crate::CheckpointStore::open(&path, &checkpoint_path, &digest).unwrap();
-    assert!(checkpoint_store.uses_ordered_barrier_sync_for_test());
+    assert_eq!(
+        checkpoint_store.uses_ordered_barrier_sync_for_test(),
+        volume_supports_barrier(&path)
+    );
     checkpoint_store.put(b"k3", b"v3").unwrap();
     drop(checkpoint_store);
 
     let reopened = crate::Store::open(&path).unwrap();
-    assert!(reopened.uses_ordered_barrier_sync_for_test());
+    assert_eq!(
+        reopened.uses_ordered_barrier_sync_for_test(),
+        volume_supports_barrier(&path)
+    );
     assert_eq!(reopened.get(b"k1").unwrap().as_deref(), Some(&b"v1"[..]));
     assert_eq!(reopened.get(b"k2").unwrap().as_deref(), Some(&b"v2"[..]));
     assert_eq!(reopened.get(b"k3").unwrap().as_deref(), Some(&b"v3"[..]));
@@ -1833,11 +1851,17 @@ fn macos_v2_fixture_uses_ordered_barrier_preserves_format_and_detects_truncation
     .unwrap();
     let (log, _) = Log::open(path, false).unwrap();
     assert!(!log.metadata);
-    assert!(log.uses_ordered_barrier_sync());
+    assert_eq!(
+        log.uses_ordered_barrier_sync(),
+        volume_supports_barrier(path)
+    );
     drop(log);
 
     let store = crate::Store::open(path).unwrap();
-    assert!(store.uses_ordered_barrier_sync_for_test());
+    assert_eq!(
+        store.uses_ordered_barrier_sync_for_test(),
+        volume_supports_barrier(path)
+    );
     store.put(b"k1", b"v1").unwrap();
     let len_after_k1 = std::fs::metadata(path.join("records.log")).unwrap().len();
     store.put(b"k2", b"v2").unwrap();

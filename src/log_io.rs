@@ -357,9 +357,12 @@ pub(crate) mod macos_sync {
             // either way fullfsync and barrier_fsync_or_fullfsync must succeed.
             barrier_fsync_or_fullfsync(&file).unwrap();
             fullfsync(&file).unwrap();
+            // Barrier capability is reported per volume: local APFS on some
+            // virtual machines (such as hosted CI runners) does not report
+            // VOL_CAP_INT_BARRIERFSYNC. It must never be reported elsewhere.
             let stat = rustix::fs::fstatfs(&file).unwrap();
-            if is_supported_local_fs(stat.f_flags, &stat.f_fstypename) {
-                assert!(barrier);
+            if !is_supported_local_fs(stat.f_flags, &stat.f_fstypename) {
+                assert!(!barrier);
             }
         }
 
