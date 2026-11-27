@@ -222,7 +222,7 @@ impl DocumentTransaction<'_, '_> {
     ) -> io::Result<()> {
         self.mutate(|this| {
             definition.validate()?;
-            let mut metadata = this.metadata(collection)?;
+            let mut metadata = (*this.metadata(collection)?).clone();
             if metadata
                 .indexes
                 .iter()
@@ -271,7 +271,7 @@ impl DocumentTransaction<'_, '_> {
         maintenance_key: &MaintenanceKey,
     ) -> io::Result<()> {
         self.mutate(|this| {
-            let mut metadata = this.metadata(collection)?;
+            let mut metadata = (*this.metadata(collection)?).clone();
             let position = job_position(&metadata, &expected.name)?;
             let IndexJob::Building {
                 definition,
@@ -357,7 +357,7 @@ impl DocumentTransaction<'_, '_> {
     ) -> io::Result<(IndexStep, Option<MaintenanceProgress>)> {
         self.mutate(|this| {
             validate_step(limit)?;
-            let mut metadata = this.metadata(collection)?;
+            let mut metadata = (*this.metadata(collection)?).clone();
             let position = job_position(&metadata, name)?;
             let (definition, after) = match &metadata.jobs[position] {
                 IndexJob::Building {
@@ -458,7 +458,7 @@ impl DocumentTransaction<'_, '_> {
     /// Cancels a build and changes its job into an incremental cleanup.
     pub fn cancel_index_build(&mut self, collection: &str, name: &str) -> io::Result<()> {
         self.mutate(|this| {
-            let mut metadata = this.metadata(collection)?;
+            let mut metadata = (*this.metadata(collection)?).clone();
             let position = job_position(&metadata, name)?;
             if !matches!(metadata.jobs[position], IndexJob::Building { .. }) {
                 return Err(key::invalid("index job is not a build"));
@@ -475,7 +475,7 @@ impl DocumentTransaction<'_, '_> {
     /// Makes an active index unavailable and starts durable incremental removal.
     pub fn start_index_drop(&mut self, collection: &str, name: &str) -> io::Result<()> {
         self.mutate(|this| {
-            let mut metadata = this.metadata(collection)?;
+            let mut metadata = (*this.metadata(collection)?).clone();
             let position = metadata
                 .indexes
                 .iter()
@@ -507,7 +507,7 @@ impl DocumentTransaction<'_, '_> {
     ) -> io::Result<IndexStep> {
         self.mutate(|this| {
             validate_step(limit)?;
-            let mut metadata = this.metadata(collection)?;
+            let mut metadata = (*this.metadata(collection)?).clone();
             let position = job_position(&metadata, name)?;
             let (phase, after) = match &metadata.jobs[position] {
                 IndexJob::Dropping { phase, after, .. } => (*phase, after.clone()),

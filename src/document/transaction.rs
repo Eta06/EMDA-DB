@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::io;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 pub(super) const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 const MAX_INDEX_BUILD_DOCUMENTS: usize = 256;
@@ -33,7 +33,7 @@ pub(crate) enum StoredDocument<'a> {
     Full(Value),
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Metadata {
     pub version: u32,
@@ -45,6 +45,20 @@ pub(super) struct Metadata {
     pub schema_job: Option<SchemaJob>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub dropping: bool,
+}
+
+/// Collections whose decoded metadata each thread remembers.
+const METADATA_MEMO_ENTRIES: usize = 8;
+/// Larger metadata is decoded every time instead of being remembered.
+const METADATA_MEMO_MAX_BYTES: usize = 64 * 1024;
+
+type MetadataMemo = Vec<(String, Vec<u8>, Arc<Metadata>)>;
+
+thread_local! {
+    /// Recently decoded metadata, most recent first, keyed by collection
+    /// name and exact stored bytes.
+    static METADATA_MEMO: std::cell::RefCell<MetadataMemo> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 enum BackendTransaction<'a, 'store> {
@@ -558,13 +572,13 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         })
     }
 
-    pub(super) fn metadata(&self, collection: &str) -> io::Result<Metadata> {
+    pub(super) fn metadata(&self, collection: &str) -> io::Result<Arc<Metadata>> {
         let key = key::collection(b'M', collection)?;
         let bytes = self.read(&key)?;
         Self::decode_metadata(collection, bytes)
     }
 
-    pub(super) fn metadata_including_drop(&self, collection: &str) -> io::Result<Metadata> {
+    pub(super) fn metadata_including_drop(&self, collection: &str) -> io::Result<Arc<Metadata>> {
         let bytes = self.read(&key::collection(b'M', collection)?)?;
         Self::decode_metadata_including_drop(collection, bytes)
     }
@@ -572,7 +586,7 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
     pub(super) fn decode_metadata(
         collection: &str,
         bytes: Option<Vec<u8>>,
-    ) -> io::Result<Metadata> {
+    ) -> io::Result<Arc<Metadata>> {
         let metadata = Self::decode_metadata_including_drop(collection, bytes)?;
         if metadata.dropping {
             return Err(io::Error::new(
@@ -583,14 +597,44 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         Ok(metadata)
     }
 
+    /// Decodes and checks collection metadata. Decoding is a function of the
+    /// collection name and the exact stored bytes alone, so each thread
+    /// remembers its last few results and reuses one when both match; the
+    /// bytes are still read, with their read-set and budget effects, by
+    /// every caller.
     fn decode_metadata_including_drop(
         collection: &str,
         bytes: Option<Vec<u8>>,
-    ) -> io::Result<Metadata> {
+    ) -> io::Result<Arc<Metadata>> {
         let bytes = bytes
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "collection does not exist"))?;
-        let metadata: Metadata = serde_json::from_slice(&bytes)
-            .map_err(|_| invalid_data("invalid document metadata"))?;
+        let found = METADATA_MEMO.with(|memo| {
+            let mut memo = memo.borrow_mut();
+            let at = memo
+                .iter()
+                .position(|(name, stored, _)| name == collection && *stored == bytes)?;
+            let entry = memo.remove(at);
+            let metadata = Arc::clone(&entry.2);
+            memo.insert(0, entry);
+            Some(metadata)
+        });
+        if let Some(metadata) = found {
+            return Ok(metadata);
+        }
+        let metadata = Arc::new(Self::decode_metadata_uncached(collection, &bytes)?);
+        if bytes.len() <= METADATA_MEMO_MAX_BYTES {
+            METADATA_MEMO.with(|memo| {
+                let mut memo = memo.borrow_mut();
+                memo.truncate(METADATA_MEMO_ENTRIES - 1);
+                memo.insert(0, (collection.to_owned(), bytes, Arc::clone(&metadata)));
+            });
+        }
+        Ok(metadata)
+    }
+
+    fn decode_metadata_uncached(collection: &str, bytes: &[u8]) -> io::Result<Metadata> {
+        let metadata: Metadata =
+            serde_json::from_slice(bytes).map_err(|_| invalid_data("invalid document metadata"))?;
         let mut names = BTreeSet::new();
         if !matches!(metadata.version, 1..=4)
             || (matches!(metadata.version, 3 | 4) != metadata.dropping)
@@ -1145,7 +1189,7 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
     ) -> io::Result<()> {
         self.mutate(|this| {
             definition.validate()?;
-            let mut metadata = this.metadata(collection)?;
+            let mut metadata = (*this.metadata(collection)?).clone();
             if metadata
                 .indexes
                 .iter()
@@ -1205,7 +1249,7 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
     /// documented limit on the number of index keys removed at once.
     pub fn drop_index(&mut self, collection: &str, name: &str) -> io::Result<()> {
         self.mutate(|this| {
-            let mut metadata = this.metadata(collection)?;
+            let mut metadata = (*this.metadata(collection)?).clone();
             let position = metadata
                 .indexes
                 .iter()
@@ -1245,7 +1289,7 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
 
     /// Lists index definitions stored with the collection.
     pub fn indexes(&self, collection: &str) -> io::Result<Vec<IndexDefinition>> {
-        Ok(self.metadata(collection)?.indexes)
+        Ok(self.metadata(collection)?.indexes.clone())
     }
 }
 
@@ -1340,4 +1384,67 @@ impl PointReader<'_, '_, '_, '_> {
 
 fn invalid_data(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+#[cfg(test)]
+mod metadata_memo_tests {
+    use super::*;
+
+    fn bytes(fields: &str) -> Vec<u8> {
+        format!(r#"{{"version":1,"schema":{{"fields":[{fields}]}},"indexes":[]}}"#).into_bytes()
+    }
+
+    /// Remembered metadata is reused only for the same collection and the
+    /// same bytes; any other bytes, valid or not, are decoded afresh.
+    #[test]
+    fn remembered_metadata_matches_name_and_exact_bytes() {
+        let plain = bytes("");
+        let first = DocumentTransaction::decode_metadata("a", Some(plain.clone())).unwrap();
+        let again = DocumentTransaction::decode_metadata("a", Some(plain.clone())).unwrap();
+        assert!(Arc::ptr_eq(&first, &again));
+        let other = DocumentTransaction::decode_metadata("b", Some(plain.clone())).unwrap();
+        assert!(!Arc::ptr_eq(&first, &other));
+
+        let typed =
+            bytes(r#"{"path":["n"],"field_type":"Integer","required":true,"nullable":false}"#);
+        let changed = DocumentTransaction::decode_metadata("a", Some(typed)).unwrap();
+        assert_eq!(changed.schema.fields.len(), 1);
+        assert!(first.schema.fields.is_empty());
+
+        let mut corrupt = plain.clone();
+        corrupt.push(b'x');
+        assert!(DocumentTransaction::decode_metadata("a", Some(corrupt)).is_err());
+        assert!(DocumentTransaction::decode_metadata("a", None).is_err());
+        // A dropping collection is refused even when its bytes are remembered.
+        let dropping =
+            br#"{"version":3,"schema":{"fields":[]},"indexes":[],"dropping":true}"#.to_vec();
+        for _ in 0..2 {
+            assert_eq!(
+                DocumentTransaction::decode_metadata("a", Some(dropping.clone()))
+                    .err()
+                    .map(|error| error.kind()),
+                Some(io::ErrorKind::WouldBlock)
+            );
+            assert!(
+                DocumentTransaction::decode_metadata_including_drop("a", Some(dropping.clone()))
+                    .is_ok()
+            );
+        }
+    }
+
+    #[test]
+    fn the_memo_keeps_a_bounded_number_of_entries() {
+        for index in 0..3 * METADATA_MEMO_ENTRIES {
+            DocumentTransaction::decode_metadata(&format!("c{index}"), Some(bytes(""))).unwrap();
+        }
+        METADATA_MEMO.with(|memo| assert_eq!(memo.borrow().len(), METADATA_MEMO_ENTRIES));
+        let large = format!(
+            r#"{{"version":1,"schema":{{"fields":[]}},"indexes":[]}}{}"#,
+            " ".repeat(METADATA_MEMO_MAX_BYTES)
+        );
+        let first =
+            DocumentTransaction::decode_metadata("big", Some(large.clone().into_bytes())).unwrap();
+        let again = DocumentTransaction::decode_metadata("big", Some(large.into_bytes())).unwrap();
+        assert!(!Arc::ptr_eq(&first, &again));
+    }
 }

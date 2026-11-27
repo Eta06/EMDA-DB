@@ -96,7 +96,7 @@ impl DocumentTransaction<'_, '_> {
     ) -> io::Result<()> {
         self.mutate(|this| {
             schema.validate_definition()?;
-            let mut metadata = this.metadata(collection)?;
+            let mut metadata = (*this.metadata(collection)?).clone();
             if metadata.schema_job.is_some() {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
@@ -128,7 +128,7 @@ impl DocumentTransaction<'_, '_> {
         maintenance_key: &MaintenanceKey,
     ) -> io::Result<()> {
         self.mutate(|this| {
-            let mut metadata = this.metadata(collection)?;
+            let mut metadata = (*this.metadata(collection)?).clone();
             let job = metadata.schema_job.as_mut().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::NotFound, "schema migration does not exist")
             })?;
@@ -204,7 +204,7 @@ impl DocumentTransaction<'_, '_> {
                     "schema migration step must be between 1 and 128",
                 ));
             }
-            let mut metadata = this.metadata(collection)?;
+            let mut metadata = (*this.metadata(collection)?).clone();
             let job = metadata.schema_job.clone().ok_or_else(|| {
                 io::Error::new(io::ErrorKind::NotFound, "schema migration does not exist")
             })?;
@@ -271,7 +271,7 @@ impl DocumentTransaction<'_, '_> {
     /// Cancels a migration and keeps the existing active schema.
     pub fn cancel_schema_migration(&mut self, collection: &str) -> io::Result<()> {
         self.mutate(|this| {
-            let mut metadata = this.metadata(collection)?;
+            let mut metadata = (*this.metadata(collection)?).clone();
             if metadata.schema_job.take().is_none() {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
@@ -287,9 +287,10 @@ impl DocumentTransaction<'_, '_> {
         Ok(self
             .metadata(collection)?
             .schema_job
+            .as_ref()
             .map(|job| SchemaMigrationStatus {
-                schema: job.schema,
-                after: job.after,
+                schema: job.schema.clone(),
+                after: job.after.clone(),
             }))
     }
 }

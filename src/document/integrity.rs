@@ -113,8 +113,9 @@ impl DocumentTransaction<'_, '_> {
             let definition = this
                 .metadata(collection)?
                 .indexes
-                .into_iter()
+                .iter()
                 .find(|index| index.name == name)
+                .cloned()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "index does not exist"))?;
             this.drop_index(collection, name)?;
             this.create_index(collection, definition)

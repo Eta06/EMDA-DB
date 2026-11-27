@@ -33,7 +33,7 @@ impl DocumentTransaction<'_, '_> {
     pub fn set_schema(&mut self, collection: &str, schema: CollectionSchema) -> io::Result<()> {
         self.mutate(|this| {
             schema.validate_definition()?;
-            let mut metadata = this.metadata(collection)?;
+            let mut metadata = (*this.metadata(collection)?).clone();
             if metadata.schema_job.is_some() {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
@@ -97,7 +97,7 @@ impl DocumentTransaction<'_, '_> {
     /// Older readers cannot open the marked collection's metadata.
     pub fn start_collection_drop(&mut self, collection: &str) -> io::Result<()> {
         self.mutate(|this| {
-            let mut metadata = this.metadata_including_drop(collection)?;
+            let mut metadata = (*this.metadata_including_drop(collection)?).clone();
             if metadata.dropping {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
@@ -142,7 +142,7 @@ impl DocumentTransaction<'_, '_> {
                     "collection drop step must be between 1 and 128",
                 ));
             }
-            let mut metadata = this.metadata_including_drop(collection)?;
+            let mut metadata = (*this.metadata_including_drop(collection)?).clone();
             if !metadata.dropping {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,

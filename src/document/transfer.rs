@@ -108,7 +108,7 @@ impl DocumentTransaction<'_, '_> {
     /// Exports a bounded logical archive from this transaction's view.
     /// A pending index or schema job must finish or be cancelled first.
     pub fn export_collection(&self, collection: &str) -> io::Result<Vec<u8>> {
-        let metadata = self.metadata(collection)?;
+        let metadata = (*self.metadata(collection)?).clone();
         if !metadata.jobs.is_empty() || metadata.schema_job.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
