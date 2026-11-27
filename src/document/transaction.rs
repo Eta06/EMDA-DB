@@ -836,6 +836,56 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         })
     }
 
+    /// Counts a collection's documents without reading them. Returns at
+    /// most `max + 1`; a result above `max` means the count stopped there.
+    ///
+    /// The count records the collection's document range in the read set, as
+    /// a full scan would, so a concurrent insert or delete still conflicts.
+    /// On an ordinary `Store` it reads only the in-memory snapshot index; on
+    /// a `CheckpointStore` it visits the verified checkpoint blocks and
+    /// suffix overlay. No stored document is read, so no value checksum or
+    /// schema is checked, because nothing stored is returned. Other backends
+    /// page through the
+    /// documents, reading and checksum-verifying each stored value without
+    /// decoding it. Logical read limits are
+    /// charged per counted key.
+    pub fn count_documents(&self, collection: &str, max: usize) -> io::Result<usize> {
+        self.metadata(collection)?;
+        let prefix = key::collection(b'D', collection)?;
+        let end = key::end(&prefix);
+        if let BackendTransaction::Ordinary(tx) = &self.backend {
+            self.charge_read(1, 0)?;
+            let mut budget_error = None;
+            let count = tx.count_keys(Some(&prefix), Some(&end), max, |key| {
+                budget_error = self.charge_read(1, key.len()).err();
+                budget_error.is_none()
+            })?;
+            return budget_error.map_or(Ok(count), Err);
+        }
+        if let BackendTransaction::Checkpoint(tx) = &self.backend {
+            self.charge_read(1, 0)?;
+            let mut budget_error = None;
+            let count = tx.count_keys(Some(&prefix), Some(&end), max, |key| {
+                budget_error = self.charge_read(1, key.len()).err();
+                budget_error.is_none()
+            })?;
+            return budget_error.map_or(Ok(count), Err);
+        }
+        let mut after = prefix;
+        let mut count = 0_usize;
+        loop {
+            let page = self.scan_document_page(&after, &end, crate::MAX_SCAN_ENTRIES)?;
+            let Some((last, _)) = page.last() else {
+                return Ok(count);
+            };
+            after = last.clone();
+            count += page.len();
+            if count > max {
+                return Ok(max + 1);
+            }
+        }
+    }
+
     /// Scans one bounded page of documents in ascending ID byte order.
     ///
     /// Pass `after_id: None` for the first page, then

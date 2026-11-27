@@ -316,6 +316,10 @@ WHERE o.total > ? ORDER BY o.total DESC LIMIT 10
 
 The output is text for people and tests, not a stable format; it reports access paths, not cost estimates or row counts.
 
+## `COUNT(*)` without `WHERE`
+
+An ungrouped query whose aggregates are all `COUNT(*)`, with no `WHERE` or `HAVING`, counts the table's row keys instead of reading rows: from the in-memory snapshot index on a `Store`, and from the verified checkpoint blocks and suffix overlay on a `CheckpointStore`. It merges the transaction's staged writes and records the same read-set range as a scan, so a concurrent insert or delete still conflicts. No stored row is read, so no row checksum or schema is checked, because no row value is returned. The count is still bounded by `max_visited_rows`, and `EXPLAIN` reports it as a count of row keys.
+
 ## Statement and catalog caching
 
 `SqlDatabase` maintains bounded in-memory caches for parsed statements (in `execute`), decoded `TableDef` catalog entries, and table-bound execution plans:

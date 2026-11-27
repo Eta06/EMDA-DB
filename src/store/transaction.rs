@@ -309,6 +309,69 @@ impl Transaction<'_> {
         Ok(result)
     }
 
+    /// Counts live keys in the exclusive range, merging staged writes, and
+    /// stops once more than `max` are found. It records the same read-set
+    /// range dependency as a scan, so a later write into the range conflicts
+    /// as it would for a scan, but reads no values: no value checksum is
+    /// checked because none is returned. `admit` is called for every counted
+    /// key and can stop the count by returning `false`.
+    pub(crate) fn count_keys(
+        &self,
+        after: Option<&[u8]>,
+        before: Option<&[u8]>,
+        max: usize,
+        mut admit: impl FnMut(&[u8]) -> bool,
+    ) -> io::Result<usize> {
+        crate::cancellation::check(self.cancellation.as_ref())?;
+        for key in [after, before].into_iter().flatten() {
+            record::validate_key(key)?;
+        }
+        let snapshot = self.snapshot.read_index()?;
+        if matches!((after, before), (Some(a), Some(b)) if a >= b) {
+            return Ok(0);
+        }
+        if let Some(read_set) = &self.read_set {
+            read_set
+                .lock()
+                .map_err(|_| io::Error::other("transaction read set poisoned"))?
+                .range(after, before)?;
+        }
+        if self.snapshot.borrowed_store().commits.failed() {
+            return Err(uncertain_error());
+        }
+        let bounds = (
+            after.map_or(Unbounded, Excluded),
+            before.map_or(Unbounded, Excluded),
+        );
+        let mut base = snapshot.index.range::<[u8], _>(bounds).peekable();
+        let mut pending = self.staged.range::<[u8], _>(bounds).peekable();
+        let mut count = 0_usize;
+        loop {
+            let choice = match (base.peek(), pending.peek()) {
+                (None, None) => break,
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (Some((base_key, _)), Some((pending_key, _))) => base_key.cmp(pending_key),
+            };
+            let live_key = if choice == std::cmp::Ordering::Less {
+                Some(base.next().expect("peeked base entry").0)
+            } else {
+                if choice == std::cmp::Ordering::Equal {
+                    base.next();
+                }
+                let (key, value) = pending.next().expect("peeked staged entry");
+                value.as_ref().map(|_| key)
+            };
+            if let Some(key) = live_key {
+                if count == max || !admit(key) {
+                    return Ok(count + 1);
+                }
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
     pub(crate) fn with_point_session<T>(
         &self,
         action: impl FnOnce(&mut OrdinaryPointSession<'_>) -> io::Result<T>,

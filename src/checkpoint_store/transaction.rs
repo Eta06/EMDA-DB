@@ -253,6 +253,92 @@ impl CheckpointTransaction<'_> {
         Ok(page.entries)
     }
 
+    /// Counts live keys in the exclusive range, merging staged writes, and
+    /// stops once more than `max` are found. It records the same read-set
+    /// scan as `scan_admitted` and visits the same verified checkpoint blocks
+    /// and suffix overlay, but reads no log values: no value checksum is
+    /// checked because none is returned. `admit` sees every counted key and
+    /// can stop the count by returning `false`.
+    pub(crate) fn count_keys(
+        &self,
+        after: Option<&[u8]>,
+        before: Option<&[u8]>,
+        max: usize,
+        mut admit: impl FnMut(&[u8]) -> bool,
+    ) -> io::Result<usize> {
+        for key in [after, before].into_iter().flatten() {
+            record::validate_key(key)?;
+        }
+        let state = self.state()?;
+        if matches!((after, before), (Some(a), Some(b)) if a >= b) {
+            return Ok(0);
+        }
+        let bounds = (
+            after.map_or(Unbounded, Excluded),
+            before.map_or(Unbounded, Excluded),
+        );
+        let mut pending = self.staged.range::<[u8], _>(bounds).peekable();
+        let mut count = 0_usize;
+        let mut stopped = false;
+        let mut take = |key: &[u8], count: &mut usize| {
+            if *count == max || !admit(key) {
+                return false;
+            }
+            *count += 1;
+            true
+        };
+        let merge = |key: &[u8], _location, _peek: crate::log::LocationPeek<'_>| {
+            while pending
+                .peek()
+                .is_some_and(|(pending_key, _)| pending_key.as_slice() < key)
+            {
+                let (pending_key, value) = pending.next().expect("peeked staged entry");
+                if value.is_some() && !take(pending_key, &mut count) {
+                    stopped = true;
+                    return Ok(ControlFlow::Break(()));
+                }
+            }
+            let live = if pending
+                .peek()
+                .is_some_and(|(pending_key, _)| pending_key.as_slice() == key)
+            {
+                pending.next().expect("peeked staged entry").1.is_some()
+            } else {
+                true
+            };
+            if live && !take(key, &mut count) {
+                stopped = true;
+                return Ok(ControlFlow::Break(()));
+            }
+            Ok(ControlFlow::Continue(()))
+        };
+        let recorded = self
+            .read_set
+            .as_ref()
+            .map(|read_set| {
+                read_set
+                    .lock()
+                    .map_err(|_| io::Error::other("checkpoint transaction read set poisoned"))?
+                    .record_scan(self.store, &state, after, before)
+            })
+            .transpose()?
+            .flatten();
+        if let Some(range) = recorded {
+            range.visit_entries_with_peek(merge)?;
+        } else {
+            state.view.visit_entries_with_peek(after, before, merge)?;
+        }
+        if stopped {
+            return Ok(count + 1);
+        }
+        for (key, value) in pending {
+            if value.is_some() && !take(key, &mut count) {
+                return Ok(count + 1);
+            }
+        }
+        Ok(count)
+    }
+
     pub(crate) fn with_point_session<T>(
         &self,
         action: impl FnOnce(&mut CheckpointPointSession<'_>) -> io::Result<T>,

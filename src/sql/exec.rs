@@ -3312,6 +3312,35 @@ fn exec_aggregate_select(
         });
     }
 
+    // Ungrouped COUNT(*) over the whole table counts document keys without
+    // reading rows, under the same visit bound a scan would have.
+    if !force_full_scan
+        && plan.filter.is_none()
+        && plan.having.is_none()
+        && plan.group_cols.is_empty()
+        && !plan.aggregates.is_empty()
+        && plan
+            .aggregates
+            .iter()
+            .all(|aggregate| matches!(aggregate.kind, AggregateKind::CountStar))
+    {
+        let count = tx
+            .count_documents(&table.name, limits.max_visited_rows)
+            .map_err(classify_io_error)?;
+        if count > limits.max_visited_rows {
+            return Err(SqlError::Bounds(format!(
+                "visited row count exceeds max_visited_rows ({})",
+                limits.max_visited_rows
+            )));
+        }
+        let count = SqlValue::Integer(count as i64);
+        let row: Vec<SqlValue> = plan.outputs.iter().map(|_| count.clone()).collect();
+        return Ok(SqlOutcome::Rows {
+            columns: plan.col_names.clone(),
+            rows: if offset == 0 { vec![row] } else { Vec::new() },
+        });
+    }
+
     let bound_filter = plan.filter.as_ref().map(|f| &f.expr);
     let mut access = if force_full_scan {
         AccessPlan::FullScan
@@ -4931,11 +4960,24 @@ fn explain(
                     } else {
                         ""
                     };
+                    let counts_keys = aggregate.filter.is_none()
+                        && aggregate.having.is_none()
+                        && aggregate.group_cols.is_empty()
+                        && !aggregate.aggregates.is_empty()
+                        && aggregate
+                            .aggregates
+                            .iter()
+                            .all(|a| matches!(a.kind, AggregateKind::CountStar));
+                    let access_text = if counts_keys {
+                        "count of row keys without reading rows".to_owned()
+                    } else {
+                        describe_access(&access, table)
+                    };
                     vec![
                         explain_row(
                             "scan",
                             &table.name,
-                            describe_access(&access, table),
+                            access_text,
                             if aggregate.filter.is_some() {
                                 "WHERE checked on each row read".into()
                             } else {
