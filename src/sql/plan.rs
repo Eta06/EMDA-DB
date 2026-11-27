@@ -217,13 +217,10 @@ pub(crate) fn compile_select_access(
         }
     }
 
+    type IndexTemplateRank = (bool, bool, bool, usize, bool, bool, bool, bool);
     // Only specialize when all predicates belong to a single winning Ready index
     // (no competing indexes on other unconstrained combinations).
-    let mut best_idx: Option<(
-        usize,
-        CompiledIndexTemplate,
-        (bool, bool, bool, usize, bool, bool, bool, bool),
-    )> = None;
+    let mut best_idx: Option<(usize, CompiledIndexTemplate, IndexTemplateRank)> = None;
     let mut eligible_count = 0usize;
     for (index_idx, idx_def) in table.indexes.iter().enumerate() {
         if idx_def.state != IndexState::Ready {
