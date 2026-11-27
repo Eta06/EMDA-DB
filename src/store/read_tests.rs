@@ -649,3 +649,144 @@ fn two_point_read_retains_captured_log_across_replacement() {
         })
         .unwrap();
 }
+
+#[test]
+fn scan_and_bulk_read_ahead_detect_single_bit_corruption_and_handle_outliers() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let keys = (0_u32..400)
+        .map(|i| format!("k-{i:04}").into_bytes())
+        .collect::<Vec<_>>();
+    let mut expected = Vec::new();
+    for (i, key) in keys.iter().enumerate() {
+        let value = if i == 150 {
+            vec![0x77; crate::log::SCAN_READ_AHEAD_BYTES + 1024]
+        } else if i == 200 {
+            Vec::new()
+        } else {
+            format!("val-{i:04}-payload-padding-0123456789").into_bytes()
+        };
+        expected.push((key.clone(), value));
+    }
+    for chunk in expected.chunks(50) {
+        let ops = chunk
+            .iter()
+            .map(|(k, v)| crate::BatchOperation::Put { key: k, value: v })
+            .collect::<Vec<_>>();
+        store.write_batch(&ops).unwrap();
+    }
+    // Create an out-of-order updated outlier at the tail of the log so a
+    // sequential scan encounters a jump mid-window.
+    expected[50].1 = b"updated-tail-outlier-payload-0123456789".to_vec();
+    store.put(&expected[50].0, &expected[50].1).unwrap();
+
+    // Verify Store::scan, Store::get_many, Transaction::scan and Snapshot::scan.
+    assert_eq!(store.scan(None, None, 1024).unwrap(), expected);
+    let key_refs = keys.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let bulk = store.get_many(&key_refs).unwrap();
+    assert_eq!(
+        bulk,
+        expected
+            .iter()
+            .map(|(_, v)| Some(v.clone()))
+            .collect::<Vec<_>>()
+    );
+    let tx_rows = store
+        .transaction_with_read_set(|tx| tx.scan(None, None, 1024))
+        .unwrap();
+    assert_eq!(tx_rows, expected);
+    let snapshot = store.snapshot(1024, 64 * 1024).unwrap();
+    assert_eq!(snapshot.scan(None, None, 1024).unwrap(), expected);
+
+    // Flip a single bit in the first, middle, and last value of the coalesced
+    // read-ahead window and verify every scan/bulk-read path fails closed.
+    let log_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(dir.path().join("records.log"))
+        .unwrap();
+    for target_idx in [0_usize, 10, 120] {
+        let loc = *store
+            .inner
+            .read()
+            .unwrap()
+            .index
+            .get(&keys[target_idx])
+            .unwrap();
+        let mut original = [0_u8; 1];
+        FileExt::read_exact_at(&log_file, &mut original, loc.offset).unwrap();
+        log_file
+            .write_all_at(&[original[0] ^ 0x01], loc.offset)
+            .unwrap();
+
+        assert_eq!(
+            store.scan(None, None, 1024).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            store.get_many(&key_refs).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            store
+                .transaction_with_read_set(|tx| tx.scan(None, None, 1024))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            snapshot.scan(None, None, 1024).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+
+        log_file.write_all_at(&original, loc.offset).unwrap();
+    }
+    assert_eq!(store.scan(None, None, 1024).unwrap(), expected);
+}
+
+#[test]
+fn scan_read_ahead_does_not_fail_admitted_prefix_when_unadmitted_tail_is_truncated() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    for i in 0_u32..20 {
+        store
+            .put(
+                format!("k-{i:04}").as_bytes(),
+                format!("value-{i:04}-0123456789abcdef").as_bytes(),
+            )
+            .unwrap();
+    }
+    let cutoff = store
+        .inner
+        .read()
+        .unwrap()
+        .index
+        .get(b"k-0005".as_slice())
+        .unwrap()
+        .offset;
+    let log_file = OpenOptions::new()
+        .write(true)
+        .open(dir.path().join("records.log"))
+        .unwrap();
+    // Truncate records starting at k-0005 while keeping k-0000..k-0004 intact.
+    log_file.set_len(cutoff).unwrap();
+
+    // Admitting only the first 4 entries must succeed even though k-0005.. are
+    // within the 64 KiB peek window and now lie past EOF.
+    let prefix = store
+        .transaction(|tx| {
+            let mut count = 0;
+            tx.scan_admitted(None, None, 20, |_, _| {
+                if count < 4 {
+                    count += 1;
+                    true
+                } else {
+                    false
+                }
+            })
+        })
+        .unwrap();
+    assert_eq!(prefix.len(), 4);
+    // Actually reading the truncated entry still fails.
+    assert!(store.scan(None, None, 20).is_err());
+}

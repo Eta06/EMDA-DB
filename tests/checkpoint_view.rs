@@ -315,11 +315,14 @@ fn ambiguous_prefix_search_checks_block_integrity_before_branching() {
     let path = dir.path().join("store");
     let checkpoint = dir.path().join("index");
     let store = Store::open(&path).unwrap();
-    let prefix = [b'x'; 16];
-    let keys = (0..5000_u32)
+    // Exceed the 256-byte directory prefix cap so binary-search probes must
+    // fall back to reading and verifying the full candidate block.
+    let prefix = [b'x'; 256];
+    let key_len = prefix.len() + 4;
+    let keys = (0..650_u32)
         .map(|number| [prefix.as_slice(), &number.to_be_bytes()].concat())
         .collect::<Vec<_>>();
-    for chunk in keys.chunks(500) {
+    for chunk in keys.chunks(250) {
         let operations = chunk
             .iter()
             .map(|key| Op::Put { key, value: b"v" })
@@ -330,16 +333,17 @@ fn ambiguous_prefix_search_checks_block_integrity_before_branching() {
     drop(store);
     let view = CheckpointView::open(&path, &checkpoint, &token).unwrap();
     assert_eq!(view.block_count(), 6);
-    let entries_per_block = database_engine::MAX_CHECKPOINT_VIEW_BLOCK_BYTES / (18 + 20);
+    let entry_bytes = 18 + key_len;
+    let entries_per_block = database_engine::MAX_CHECKPOINT_VIEW_BLOCK_BYTES / entry_bytes;
     let mut cp = OpenOptions::new().write(true).open(&checkpoint).unwrap();
     cp.seek(SeekFrom::Start(
-        (68 + 3 * entries_per_block * (18 + 20) + 2) as u64,
+        (68 + 3 * entries_per_block * entry_bytes + 2) as u64,
     ))
     .unwrap();
     cp.write_all(b"z").unwrap();
     cp.sync_all().unwrap();
     assert_eq!(
-        view.get(&keys[4000]).unwrap_err().kind(),
+        view.get(&keys[500]).unwrap_err().kind(),
         std::io::ErrorKind::InvalidData
     );
 }

@@ -186,14 +186,14 @@ impl CheckpointTransaction<'_> {
         );
         let mut pending = self.staged.range::<[u8], _>(bounds).peekable();
         let mut page = ScanPage {
-            log: &state.view.base.log,
+            read_ahead: crate::log::LogReadAhead::new(&state.view.base.log),
             entries: Vec::new(),
             bytes: 0,
             limit,
             admit,
         };
         let mut stopped = false;
-        let merge = |key: &[u8], location| {
+        let merge = |key: &[u8], location, peek: crate::log::LocationPeek<'_>| {
             while pending
                 .peek()
                 .is_some_and(|(pending_key, _)| pending_key.as_slice() < key)
@@ -215,7 +215,7 @@ impl CheckpointTransaction<'_> {
                     .as_ref()
                     .is_none_or(|value| page.push_value(pending_key, value))
             } else {
-                page.push_location(key, location)?
+                page.push_location(key, location, peek)?
             };
             if !admitted {
                 stopped = true;
@@ -235,11 +235,11 @@ impl CheckpointTransaction<'_> {
             .transpose()?
             .flatten();
         if let Some(range) = recorded {
-            range.visit_entries(merge)?;
+            range.visit_entries_with_peek(merge)?;
         } else {
             // A range covered by a prior observation still needs fresh
             // block checks for the entries read by this page.
-            state.view.visit_entries(after, before, merge)?;
+            state.view.visit_entries_with_peek(after, before, merge)?;
         }
         if !stopped {
             for (key, value) in pending {
@@ -251,6 +251,31 @@ impl CheckpointTransaction<'_> {
             }
         }
         Ok(page.entries)
+    }
+
+    pub(crate) fn with_point_session<T>(
+        &self,
+        action: impl FnOnce(&mut CheckpointPointSession<'_>) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let state = self.state()?;
+        let read_set = self
+            .read_set
+            .as_ref()
+            .map(|read_set| {
+                read_set
+                    .lock()
+                    .map_err(|_| io::Error::other("checkpoint transaction read set poisoned"))
+            })
+            .transpose()?;
+        let mut session = CheckpointPointSession {
+            tx: self,
+            view: &state.view,
+            log_generation: state.log_generation,
+            lookup: state.view.base.lookup(),
+            read_ahead: crate::log::LogReadAhead::new(&state.view.base.log),
+            read_set,
+        };
+        action(&mut session)
     }
 
     fn stage(&mut self, operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
@@ -298,7 +323,7 @@ impl CheckpointTransaction<'_> {
 }
 
 struct ScanPage<'a, A> {
-    log: &'a Log,
+    read_ahead: crate::log::LogReadAhead<'a>,
     entries: Vec<Entry>,
     bytes: usize,
     limit: usize,
@@ -319,14 +344,94 @@ impl<A: FnMut(&[u8], usize) -> bool> ScanPage<'_, A> {
         true
     }
 
-    fn push_location(&mut self, key: &[u8], location: ValueLocation) -> io::Result<bool> {
+    fn push_location(
+        &mut self,
+        key: &[u8],
+        location: ValueLocation,
+        peek: crate::log::LocationPeek<'_>,
+    ) -> io::Result<bool> {
         if !self.has_room(key, location.length) || !(self.admit)(key, location.length) {
             return Ok(false);
         }
-        let value = self.log.read(location)?;
+        let remaining = self.limit - self.entries.len() - 1;
+        let value = self.read_ahead.read_with_peek(location, |push| {
+            let mut count = 0;
+            peek(&mut |next| {
+                if count >= remaining {
+                    return false;
+                }
+                count += 1;
+                push(next)
+            });
+        })?;
         self.bytes += key.len() + value.len();
         self.entries.push((key.to_vec(), value));
         Ok(true)
+    }
+}
+
+pub(crate) struct CheckpointPointSession<'a> {
+    tx: &'a CheckpointTransaction<'a>,
+    view: &'a RecoveredCheckpointView,
+    log_generation: Option<crate::log::GenerationId>,
+    lookup: crate::checkpoint_view::CheckpointLookup<'a>,
+    read_ahead: crate::log::LogReadAhead<'a>,
+    read_set: Option<std::sync::MutexGuard<'a, super::read_set::ReadSet>>,
+}
+
+impl CheckpointPointSession<'_> {
+    pub(crate) fn get_admitted_with_peek(
+        &mut self,
+        key: &[u8],
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+        peek_keys: impl FnOnce(&mut dyn FnMut(&[u8]) -> bool),
+    ) -> io::Result<Option<Vec<u8>>> {
+        record::validate_key(key)?;
+        crate::cancellation::check(self.tx.cancellation.as_ref())?;
+        if self
+            .tx
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "transaction deadline exceeded",
+            ));
+        }
+        if let Some(value) = self.tx.staged.get(key) {
+            if let Some(value) = value {
+                admit(value.len())?;
+            }
+            return Ok(value.clone());
+        }
+        let location = match self.view.overlay.get(key) {
+            Some(location) => *location,
+            None => self.lookup.location(key)?,
+        };
+        if let Some(read_set) = &mut self.read_set {
+            read_set.record_point(self.tx.store, key, location, self.log_generation)?;
+        }
+        let Some(location) = location else {
+            return Ok(None);
+        };
+        admit(location.length)?;
+        let value = self.read_ahead.read_with_peek(location, |push| {
+            peek_keys(&mut |next_key| {
+                if self.tx.staged.contains_key(next_key) {
+                    return true;
+                }
+                let next_loc = match self.view.overlay.get(next_key) {
+                    Some(loc) => *loc,
+                    None => self.lookup.location_if_loaded(next_key),
+                };
+                if let Some(next_loc) = next_loc {
+                    push(next_loc)
+                } else {
+                    true
+                }
+            });
+        })?;
+        Ok(Some(value))
     }
 }
 

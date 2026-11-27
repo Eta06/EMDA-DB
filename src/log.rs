@@ -17,6 +17,134 @@ use std::path::Path;
 use std::sync::Arc;
 
 pub(crate) const INLINE_VALUE_COMPARE_BYTES: usize = 256;
+pub(crate) const SCAN_READ_AHEAD_BYTES: usize = 64 * 1024;
+pub(crate) const SCAN_READ_AHEAD_MAX_GAP: u64 = 4 * 1024;
+const SCAN_READ_AHEAD_MAX_SKIPPED: usize = 8;
+const SCAN_READ_AHEAD_MAX_PEEK: usize = 512;
+
+pub(crate) type LocationPeek<'a> = &'a mut dyn FnMut(&mut dyn FnMut(ValueLocation) -> bool);
+
+/// Bounded, ephemeral read-ahead buffer for sequential and batched log reads.
+///
+/// Coalesces nearby `pread` calls into a single read of at most 64 KiB spanning
+/// only live locations from the current scan or batch. Every returned value is
+/// still CRC-32 verified against its own `ValueLocation::checksum`.
+pub(crate) struct LogReadAhead<'a> {
+    log: &'a Log,
+    buf: Vec<u8>,
+    start: u64,
+    end: u64,
+}
+
+impl<'a> LogReadAhead<'a> {
+    pub(crate) fn new(log: &'a Log) -> Self {
+        Self {
+            log,
+            buf: Vec::new(),
+            start: 0,
+            end: 0,
+        }
+    }
+
+    pub(crate) fn read_with_peek(
+        &mut self,
+        location: ValueLocation,
+        peek_next: impl FnOnce(&mut dyn FnMut(ValueLocation) -> bool),
+    ) -> io::Result<Vec<u8>> {
+        if location.length == 0 || location.length > SCAN_READ_AHEAD_BYTES {
+            return self.log.read(location);
+        }
+        let loc_end = location
+            .offset
+            .checked_add(location.length as u64)
+            .ok_or_else(|| record::invalid_data("stored value offset overflow"))?;
+        if self.start < self.end && location.offset >= self.start && loc_end <= self.end {
+            return self.slice_verified(location, loc_end);
+        }
+        let active_start = self.start;
+        let active_end = self.end;
+        let mut span_start = location.offset;
+        let mut span_end = loc_end;
+        let mut count = 1_usize;
+        let mut skipped = 0_usize;
+        let mut peeked = 0_usize;
+        peek_next(&mut |next| {
+            peeked += 1;
+            if peeked > SCAN_READ_AHEAD_MAX_PEEK {
+                return false;
+            }
+            if next.length == 0 || next.length > SCAN_READ_AHEAD_BYTES {
+                skipped += 1;
+                return skipped <= SCAN_READ_AHEAD_MAX_SKIPPED;
+            }
+            let Some(next_end) = next.offset.checked_add(next.length as u64) else {
+                return false;
+            };
+            // If an upcoming entry is already inside our active window, keep
+            // the window intact and read this outlier directly.
+            if active_start < active_end && next.offset >= active_start && next_end <= active_end {
+                return false;
+            }
+            let gap = if next.offset >= span_end {
+                next.offset - span_end
+            } else {
+                span_start.saturating_sub(next_end)
+            };
+            if gap > SCAN_READ_AHEAD_MAX_GAP {
+                skipped += 1;
+                return skipped <= SCAN_READ_AHEAD_MAX_SKIPPED;
+            }
+            let new_start = span_start.min(next.offset);
+            let new_end = span_end.max(next_end);
+            if new_end.saturating_sub(new_start) > SCAN_READ_AHEAD_BYTES as u64 {
+                return false;
+            }
+            span_start = new_start;
+            span_end = new_end;
+            count += 1;
+            true
+        });
+        if count < 2 {
+            // An isolated outlier reads directly without evicting a live
+            // sequential read-ahead window.
+            return self.log.read(location);
+        }
+        let span_len = (span_end - span_start) as usize;
+        // Clear valid bounds before resizing/reading so an I/O error never
+        // leaves partial or stale bytes visible as a valid window.
+        self.start = 0;
+        self.end = 0;
+        self.buf.resize(span_len, 0);
+        if let Err(error) = self.log.file.read_exact_at(&mut self.buf, span_start) {
+            // Only fall back to an exact read of `location` when the file was
+            // truncated inside the speculatively peeked tail beyond `loc_end`.
+            // Real I/O errors and short reads covering `location` propagate.
+            if error.kind() == io::ErrorKind::UnexpectedEof
+                && self
+                    .log
+                    .file
+                    .len()
+                    .is_ok_and(|len| loc_end <= len && span_end > len)
+            {
+                return self.log.read(location);
+            }
+            return Err(error);
+        }
+        self.start = span_start;
+        self.end = span_end;
+        self.slice_verified(location, loc_end)
+    }
+
+    fn slice_verified(&self, location: ValueLocation, loc_end: u64) -> io::Result<Vec<u8>> {
+        let from = (location.offset - self.start) as usize;
+        let to = (loc_end - self.start) as usize;
+        let bytes = &self.buf[from..to];
+        if crc32fast::hash(bytes) != location.checksum {
+            return Err(record::invalid_data("stored value checksum mismatch"));
+        }
+        Ok(bytes.to_vec())
+    }
+}
 
 /// Optional logical limits for a full-log ordinary store open.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -776,6 +904,106 @@ impl Log {
             return Err(record::invalid_data("stored value checksum mismatch"));
         }
         Ok(())
+    }
+
+    /// Reads multiple already-admitted optional value locations, coalescing
+    /// nearby small values into bounded 64 KiB `pread` windows while preserving
+    /// input order and per-value CRC-32 verification.
+    pub(crate) fn read_many_locations(
+        &self,
+        locations: &[Option<ValueLocation>],
+    ) -> io::Result<Vec<Option<Vec<u8>>>> {
+        self.read_locations_indexed(
+            locations.len(),
+            locations
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, loc)| loc.map(|loc| (idx, loc))),
+        )
+    }
+
+    /// Reads values for already-admitted `(key, location)` entries, coalescing
+    /// nearby small values into bounded 64 KiB `pread` windows while preserving
+    /// entry order and per-value CRC-32 verification.
+    pub(crate) fn read_entries(
+        &self,
+        entries: Vec<(Vec<u8>, ValueLocation)>,
+    ) -> io::Result<Vec<crate::Entry>> {
+        let values = self.read_locations_indexed(
+            entries.len(),
+            entries
+                .iter()
+                .enumerate()
+                .map(|(idx, (_, loc))| (idx, *loc)),
+        )?;
+        Ok(entries
+            .into_iter()
+            .zip(values)
+            .map(|((key, _), value)| (key, value.expect("admitted entry value present")))
+            .collect())
+    }
+
+    fn read_locations_indexed(
+        &self,
+        count: usize,
+        entries: impl Iterator<Item = (usize, ValueLocation)>,
+    ) -> io::Result<Vec<Option<Vec<u8>>>> {
+        let mut results: Vec<Option<Vec<u8>>> = vec![None; count];
+        let mut small = Vec::new();
+        let mut direct = Vec::new();
+        for (idx, location) in entries {
+            if location.length == 0 || location.length > SCAN_READ_AHEAD_BYTES {
+                direct.push((idx, location));
+            } else {
+                let end = location
+                    .offset
+                    .checked_add(location.length as u64)
+                    .ok_or_else(|| record::invalid_data("stored value offset overflow"))?;
+                small.push((location.offset, end, idx, location));
+            }
+        }
+        small.sort_unstable_by_key(|&(offset, end, idx, _)| (offset, end, idx));
+        let mut buf = Vec::new();
+        let mut span_idx = 0;
+        while span_idx < small.len() {
+            let span_start = small[span_idx].0;
+            let mut span_end = small[span_idx].1;
+            let mut end_idx = span_idx + 1;
+            while end_idx < small.len() {
+                let (next_offset, next_end, _, _) = small[end_idx];
+                let gap = next_offset.saturating_sub(span_end);
+                let combined_end = span_end.max(next_end);
+                if gap > SCAN_READ_AHEAD_MAX_GAP
+                    || combined_end - span_start > SCAN_READ_AHEAD_BYTES as u64
+                {
+                    break;
+                }
+                span_end = combined_end;
+                end_idx += 1;
+            }
+            let span = &small[span_idx..end_idx];
+            if span.len() >= 2 {
+                buf.resize((span_end - span_start) as usize, 0);
+                self.file.read_exact_at(&mut buf, span_start)?;
+                for &(offset, end, orig_idx, location) in span {
+                    let from = (offset - span_start) as usize;
+                    let to = (end - span_start) as usize;
+                    let slice = &buf[from..to];
+                    if crc32fast::hash(slice) != location.checksum {
+                        return Err(record::invalid_data("stored value checksum mismatch"));
+                    }
+                    results[orig_idx] = Some(slice.to_vec());
+                }
+            } else {
+                let (_, _, orig_idx, location) = span[0];
+                results[orig_idx] = Some(self.read(location)?);
+            }
+            span_idx = end_idx;
+        }
+        for (orig_idx, location) in direct {
+            results[orig_idx] = Some(self.read(location)?);
+        }
+        Ok(results)
     }
 
     pub(crate) fn value_matches(

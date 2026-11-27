@@ -308,6 +308,60 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         })
     }
 
+    pub(super) fn with_point_reader<T>(
+        &self,
+        action: impl FnOnce(&mut PointReader<'_, '_, 'a, 'store>) -> io::Result<T>,
+    ) -> io::Result<T> {
+        match &self.backend {
+            BackendTransaction::Ordinary(tx) => tx.with_point_session(|session| {
+                let mut reader = PointReader {
+                    tx: self,
+                    backend: PointReaderBackend::Ordinary(session),
+                };
+                action(&mut reader)
+            }),
+            BackendTransaction::Checkpoint(tx) => tx.with_point_session(|session| {
+                let mut reader = PointReader {
+                    tx: self,
+                    backend: PointReaderBackend::Checkpoint(session),
+                };
+                action(&mut reader)
+            }),
+            BackendTransaction::OrdinarySnapshot(snapshot) => {
+                snapshot.with_point_session(|session| {
+                    let mut reader = PointReader {
+                        tx: self,
+                        backend: PointReaderBackend::OrdinarySnapshot(session),
+                    };
+                    action(&mut reader)
+                })
+            }
+            BackendTransaction::CheckpointSnapshot(snapshot) => {
+                snapshot.with_point_session(|session| {
+                    let mut reader = PointReader {
+                        tx: self,
+                        backend: PointReaderBackend::CheckpointSnapshot(session),
+                    };
+                    action(&mut reader)
+                })
+            }
+            BackendTransaction::HistoricalCheckpoint(view) => view.with_point_session(|session| {
+                let mut reader = PointReader {
+                    tx: self,
+                    backend: PointReaderBackend::HistoricalCheckpoint(session),
+                };
+                action(&mut reader)
+            }),
+            BackendTransaction::Retained(_) | BackendTransaction::RetainedSnapshot(_) => {
+                let mut reader = PointReader {
+                    tx: self,
+                    backend: PointReaderBackend::Direct,
+                };
+                action(&mut reader)
+            }
+        }
+    }
+
     pub(super) fn has_index_entry(&self, key: &[u8]) -> io::Result<bool> {
         Ok(self
             .read_admitted(key, |len| {
@@ -555,7 +609,7 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         let document: Value =
             serde_json::from_slice(bytes).map_err(|_| invalid_data("invalid stored document"))?;
         schema
-            .validate_document(&document)
+            .validate_stored_document(&document, bytes.len())
             .map_err(|_| invalid_data("stored document violates its schema"))?;
         Ok(document)
     }
@@ -1001,6 +1055,95 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
     /// Lists index definitions stored with the collection.
     pub fn indexes(&self, collection: &str) -> io::Result<Vec<IndexDefinition>> {
         Ok(self.metadata(collection)?.indexes)
+    }
+}
+
+enum PointReaderBackend<'r, 's> {
+    Ordinary(&'r mut crate::store::OrdinaryPointSession<'s>),
+    Checkpoint(&'r mut crate::checkpoint_store::CheckpointPointSession<'s>),
+    OrdinarySnapshot(&'r mut crate::store::SnapshotPointSession<'s>),
+    CheckpointSnapshot(&'r mut crate::checkpoint_store::CheckpointSnapshotPointSession<'s>),
+    HistoricalCheckpoint(&'r mut crate::checkpoint_view::CheckpointViewPointSession<'s>),
+    Direct,
+}
+
+pub(super) struct PointReader<'r, 's, 'a, 'store> {
+    tx: &'r DocumentTransaction<'a, 'store>,
+    backend: PointReaderBackend<'r, 's>,
+}
+
+impl PointReader<'_, '_, '_, '_> {
+    fn read_admitted_with_peek(
+        &mut self,
+        key: &[u8],
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+        peek_keys: impl FnOnce(&mut dyn FnMut(&[u8]) -> bool),
+    ) -> io::Result<Option<Vec<u8>>> {
+        self.tx.charge_read(1, key.len())?;
+        let admit = |bytes| {
+            admit(bytes)?;
+            self.tx.charge_read(0, bytes)
+        };
+        match &mut self.backend {
+            PointReaderBackend::Ordinary(session) => {
+                session.get_admitted_with_peek(key, admit, peek_keys)
+            }
+            PointReaderBackend::Checkpoint(session) => {
+                session.get_admitted_with_peek(key, admit, peek_keys)
+            }
+            PointReaderBackend::OrdinarySnapshot(session) => {
+                session.get_admitted_with_peek(key, admit, peek_keys)
+            }
+            PointReaderBackend::CheckpointSnapshot(session) => {
+                session.get_admitted_with_peek(key, admit, peek_keys)
+            }
+            PointReaderBackend::HistoricalCheckpoint(session) => {
+                session.get_admitted_with_peek(key, admit, peek_keys)
+            }
+            PointReaderBackend::Direct => match &self.tx.backend {
+                BackendTransaction::Retained(tx) => tx.get_admitted(key, admit),
+                BackendTransaction::RetainedSnapshot(view) => view.get_admitted(key, admit),
+                _ => unreachable!("direct point reader is only used for retained backends"),
+            },
+        }
+    }
+
+    pub(super) fn read_document_bytes_with_peek(
+        &mut self,
+        key: &[u8],
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+        peek_keys: impl FnOnce(&mut dyn FnMut(&[u8]) -> bool),
+    ) -> io::Result<Option<Vec<u8>>> {
+        self.read_admitted_with_peek(
+            key,
+            |len| {
+                if len > MAX_DOCUMENT_BYTES {
+                    return Err(invalid_data("stored document exceeds size limit"));
+                }
+                admit(len)
+            },
+            peek_keys,
+        )
+    }
+
+    pub(super) fn read_unique_owner(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        let owner = self.read_admitted_with_peek(
+            key,
+            |len| {
+                if !(1..=key::MAX_ID_BYTES).contains(&len) {
+                    return Err(invalid_data("invalid unique index owner length"));
+                }
+                Ok(())
+            },
+            |_| {},
+        )?;
+        if owner
+            .as_deref()
+            .is_some_and(|bytes| std::str::from_utf8(bytes).is_err())
+        {
+            return Err(invalid_data("invalid unique index owner"));
+        }
+        Ok(owner)
     }
 }
 

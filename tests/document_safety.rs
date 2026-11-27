@@ -350,3 +350,194 @@ fn maintenance_admits_stored_document_and_index_sizes_on_both_backends() {
         || store.scan(None, None, 16).unwrap(),
     );
 }
+
+#[test]
+fn indexed_range_reuses_verified_checkpoint_block_even_without_block_cache() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let base_ckpt = root.path().join("base");
+    let initial = Store::open(&path).unwrap();
+    let digest = initial.checkpoint_to(&base_ckpt).unwrap();
+    drop(initial);
+    let store = retry_lock(|| CheckpointStore::open(&path, &base_ckpt, &digest)).unwrap();
+    let db = DocumentDatabase::with_checkpoint_store(&store);
+    db.create_collection("items", CollectionSchema::default())
+        .unwrap();
+    db.create_index(
+        "items",
+        IndexDefinition {
+            name: "by_code".into(),
+            fields: vec![vec!["code".into()]],
+            unique: false,
+            partial: None,
+        },
+    )
+    .unwrap();
+    for chunk in (0_i64..300).collect::<Vec<_>>().chunks(50) {
+        db.transaction(|tx| {
+            for &i in chunk {
+                tx.insert(
+                    "items",
+                    &format!("{i:08}"),
+                    &json!({"code": i, "label": format!("row-{i:04}")}),
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+    store.rollover_managed(root.path().join("rolled")).unwrap();
+    // Limit=1 counts every checkpoint block read without caching any block.
+    store.set_checkpoint_block_cache_limit(1).unwrap();
+    let before = store.checkpoint_memory_status().unwrap().block_cache.misses;
+    let page = db
+        .query_index(
+            "items",
+            "by_code",
+            &IndexQuery {
+                equal: vec![],
+                lower: Some(database_engine::IndexBound {
+                    value: database_engine::IndexValue::Integer(50),
+                    inclusive: true,
+                }),
+                upper: Some(database_engine::IndexBound {
+                    value: database_engine::IndexValue::Integer(70),
+                    inclusive: false,
+                }),
+                after: None,
+                limit: 20,
+            },
+        )
+        .unwrap();
+    assert_eq!(page.documents.len(), 20);
+    let misses = store.checkpoint_memory_status().unwrap().block_cache.misses - before;
+    // Metadata + index range + reused document block(s): far fewer than 20
+    // unbatched document block reads.
+    assert!(
+        misses <= 6,
+        "batched index-to-document reads should reuse verified blocks even uncached, got {misses} misses"
+    );
+}
+
+#[test]
+fn document_stored_validation_matches_full_validation_on_boundaries() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::open(root.path()).unwrap();
+    let db = DocumentDatabase::new(&store);
+    let schema = CollectionSchema {
+        fields: vec![
+            FieldRule {
+                path: vec!["age".into()],
+                field_type: FieldType::IntegerRange { min: 0, max: 150 },
+                required: true,
+                nullable: false,
+            },
+            FieldRule {
+                path: vec!["nested".into(), "tag".into()],
+                field_type: FieldType::StringBytes { min: 1, max: 16 },
+                required: false,
+                nullable: false,
+            },
+        ],
+    };
+    db.create_collection("users", schema).unwrap();
+    db.insert("users", "ok", &json!({"age": 30})).unwrap();
+
+    // Construct the document prefix from an existing valid key.
+    let doc_key = store
+        .scan(None, None, 16)
+        .unwrap()
+        .into_iter()
+        .find(|(k, _)| k.starts_with(b"\0emda-document\x01D"))
+        .unwrap()
+        .0;
+    let doc_prefix = &doc_key[..doc_key.len() - 2];
+    let make_key = |id: &str| {
+        let mut key = doc_prefix.to_vec();
+        key.extend_from_slice(id.as_bytes());
+        key
+    };
+
+    // 1. Non-object JSON values (well under 128 bytes) must fail with InvalidData.
+    for (id, raw) in [
+        ("arr", b"[1,2,3]".as_slice()),
+        ("num", b"42".as_slice()),
+        ("str", b"\"hello\"".as_slice()),
+    ] {
+        store.put(&make_key(id), raw).unwrap();
+        assert_eq!(
+            db.get("users", id).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        store.delete(&make_key(id)).unwrap();
+    }
+
+    // 2. Small (<= 128 B) and medium (> 128 B) schema violations must always fail.
+    let small_bad_type = br#"{"age":"nope"}"#;
+    let small_missing = br#"{"other":1}"#;
+    let small_range = br#"{"age":200}"#;
+    let medium_nested_null = format!(
+        r#"{{"age":25,"pad":"{}","nested":{{"tag":null}}}}"#,
+        "x".repeat(160)
+    );
+    for (id, raw) in [
+        ("bad1", small_bad_type.as_slice()),
+        ("bad2", small_missing.as_slice()),
+        ("bad3", small_range.as_slice()),
+        ("bad4", medium_nested_null.as_bytes()),
+    ] {
+        store.put(&make_key(id), raw).unwrap();
+        assert_eq!(
+            db.get("users", id).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            db.transaction(|tx| tx.scan_documents("users", None, 10))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
+        store.delete(&make_key(id)).unwrap();
+    }
+
+    // 3. Exact nesting depth boundaries: depth 64 succeeds; depth 65 (134+ bytes) fails.
+    let depth_64_raw = format!(
+        r#"{{"age":1,"d":{}{}}}"#,
+        "[".repeat(63),
+        "0".to_string() + &"]".repeat(63)
+    );
+    assert!(depth_64_raw.len() > 128);
+    store
+        .put(&make_key("d64"), depth_64_raw.as_bytes())
+        .unwrap();
+    assert!(db.get("users", "d64").unwrap().is_some());
+    store.delete(&make_key("d64")).unwrap();
+
+    // Minimal depth-65 object with empty schema on a second collection: exact 134 bytes!
+    db.create_collection("raw", CollectionSchema::default())
+        .unwrap();
+    db.insert("raw", "seed", &json!({})).unwrap();
+    let raw_key = store
+        .scan(None, None, 16)
+        .unwrap()
+        .into_iter()
+        .find(|(k, _)| k.starts_with(b"\0emda-document\x01D") && k.ends_with(b"seed"))
+        .unwrap()
+        .0;
+    let raw_prefix = &raw_key[..raw_key.len() - 4];
+    let mut d65_key = raw_prefix.to_vec();
+    d65_key.extend_from_slice(b"d65");
+    let depth_65_min = format!("{{\"\":{}0{}}}", "[".repeat(64), "]".repeat(64));
+    assert_eq!(depth_65_min.len(), 134);
+    store.put(&d65_key, depth_65_min.as_bytes()).unwrap();
+    assert_eq!(
+        db.get("raw", "d65").unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(
+        db.transaction(|tx| tx.scan_documents("raw", None, 10))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+}

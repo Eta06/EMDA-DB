@@ -202,7 +202,7 @@ pub(super) struct SnapshotData {
     reserved_keys: usize,
     reserved_key_bytes: usize,
     status: SnapshotStatus,
-    deadline: Option<Instant>,
+    pub(super) deadline: Option<Instant>,
 }
 
 impl SnapshotData {
@@ -578,23 +578,92 @@ impl Snapshot<'_> {
             after.map_or(Unbounded, Excluded),
             before.map_or(Unbounded, Excluded),
         );
+        let log = data.log.as_ref().expect("active snapshot retains its log");
+        let mut read_ahead = crate::log::LogReadAhead::new(log);
+        let mut iter = data.index.range::<[u8], _>(bounds);
         let mut result = Vec::new();
         let mut bytes = 0_usize;
-        for (key, &location) in data.index.range::<[u8], _>(bounds).take(limit) {
+        while result.len() < limit {
+            let Some((key, &location)) = iter.next() else {
+                break;
+            };
             let size = key.len() + location.length;
             if bytes + size > MAX_SCAN_BYTES || !admit(key, location.length) {
                 break;
             }
+            let remaining = limit - result.len() - 1;
+            let value = read_ahead.read_with_peek(location, |push| {
+                for (_, &next_loc) in iter.clone().take(remaining) {
+                    if !push(next_loc) {
+                        break;
+                    }
+                }
+            })?;
             bytes += size;
-            result.push((
-                key.clone(),
-                data.log
-                    .as_ref()
-                    .expect("active snapshot retains its log")
-                    .read(location)?,
-            ));
+            result.push((key.clone(), value));
         }
         Ok(result)
+    }
+
+    pub(crate) fn with_point_session<T>(
+        &self,
+        action: impl FnOnce(&mut SnapshotPointSession<'_>) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let _admission = self.store.direct_reads().acquire_snapshot()?;
+        let data = self.read_index()?;
+        let log = data.log.as_ref().expect("active snapshot retains its log");
+        let mut session = SnapshotPointSession {
+            snapshot: self,
+            data: &data,
+            read_ahead: crate::log::LogReadAhead::new(log),
+        };
+        action(&mut session)
+    }
+}
+
+pub(crate) struct SnapshotPointSession<'a> {
+    snapshot: &'a Snapshot<'a>,
+    data: &'a SnapshotData,
+    read_ahead: crate::log::LogReadAhead<'a>,
+}
+
+impl SnapshotPointSession<'_> {
+    pub(crate) fn get_admitted_with_peek(
+        &mut self,
+        key: &[u8],
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+        peek_keys: impl FnOnce(&mut dyn FnMut(&[u8]) -> bool),
+    ) -> io::Result<Option<Vec<u8>>> {
+        record::validate_key(key)?;
+        if self
+            .data
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "snapshot expired"));
+        }
+        if self
+            .data
+            .store(self.snapshot.store.borrowed())
+            .commits
+            .failed()
+        {
+            return Err(uncertain_error());
+        }
+        let Some(&location) = self.data.index.get(key) else {
+            return Ok(None);
+        };
+        admit(location.length)?;
+        let value = self.read_ahead.read_with_peek(location, |push| {
+            peek_keys(&mut |next_key| {
+                if let Some(&next_loc) = self.data.index.get(next_key) {
+                    push(next_loc)
+                } else {
+                    true
+                }
+            });
+        })?;
+        Ok(Some(value))
     }
 }
 

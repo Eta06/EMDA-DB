@@ -205,6 +205,10 @@ impl CheckpointStore {
         candidate.set_active_direct_write_limit(self.direct_write_status().limit)?;
         candidate.set_automatic_checkpoint_slot_protection(protect_pinned_slots)?;
         candidate.set_automatic_checkpoint_log_scan_limit(automatic_scan_limit)?;
+        candidate.set_checkpoint_block_cache_limit(
+            self.block_cache_limit
+                .load(std::sync::atomic::Ordering::Acquire),
+        )?;
         self.direct_reads
             .copy_configuration_to(&mut candidate.direct_reads);
         if original_selection.is_some() {
@@ -247,6 +251,9 @@ impl CheckpointStore {
         })?;
         sync_parent(&parent).map_err(|error|io::Error::new(error.kind(),format!("checkpoint-store exchange may have occurred; directory synchronization failed: {error}")))?;
         candidate.path = source;
+        if let Ok(retired) = self.read() {
+            let _ = retired.view.base.set_block_cache_limit(0);
+        }
         drop(original_lock);
         drop(self);
         drop(candidate_lock);

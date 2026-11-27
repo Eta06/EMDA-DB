@@ -1172,6 +1172,9 @@ impl OnlineCheckpointStore {
             current.suffix_operation_limit(),
             crate::log::Log::open_checkpoint_writer,
         )?;
+        // Keep the staged candidate uncached during catch-up and verification;
+        // the live cache limit is transferred immediately before handoff.
+        candidate.set_checkpoint_block_cache_limit(0)?;
         if budget.is_some() {
             candidate.max_log_bytes = Some(
                 candidate

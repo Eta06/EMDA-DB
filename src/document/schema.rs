@@ -147,6 +147,56 @@ pub(super) fn validate_tree(document: &Value) -> io::Result<()> {
     Ok(())
 }
 
+// Encoded JSON byte thresholds below which `validate_tree`'s bounds are
+// mathematically guaranteed for any valid JSON object:
+// - Depth 65 inside a root JSON object requires at least `{"":` (4) + 64×`[`
+//   (64) + `0` (1) + 64×`]` (64) + `}` (1) = 134 bytes.
+// - Exceeding 131,072 nodes inside a root JSON object requires at least 262,148
+//   bytes (each additional scalar element needs `,0`).
+// - Decoded UTF-8 string bytes are strictly less than the encoded JSON byte
+//   length, so any document within `MAX_DOCUMENT_BYTES` (1 MiB) is within the
+//   1 MiB string-data limit.
+const TREE_SAFE_ENCODED_BYTES: usize = 128;
+const NODE_SAFE_ENCODED_BYTES: usize = 262_000;
+
+fn validate_depth_only(root: &serde_json::Map<String, Value>) -> io::Result<()> {
+    let mut pending = Vec::new();
+    for child in root.values() {
+        if matches!(child, Value::Array(_) | Value::Object(_)) {
+            pending.push((child, 1_usize));
+        }
+    }
+    while let Some((value, depth)) = pending.pop() {
+        if depth > 64 {
+            return Err(key::invalid("document exceeds nesting or node limits"));
+        }
+        match value {
+            Value::Array(values) => {
+                if !values.is_empty() && depth + 1 > 64 {
+                    return Err(key::invalid("document exceeds nesting or node limits"));
+                }
+                for child in values {
+                    if matches!(child, Value::Array(_) | Value::Object(_)) {
+                        pending.push((child, depth + 1));
+                    }
+                }
+            }
+            Value::Object(values) => {
+                if !values.is_empty() && depth + 1 > 64 {
+                    return Err(key::invalid("document exceeds nesting or node limits"));
+                }
+                for child in values.values() {
+                    if matches!(child, Value::Array(_) | Value::Object(_)) {
+                        pending.push((child, depth + 1));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 impl CollectionSchema {
     pub(super) fn has_value_bounds(&self) -> bool {
         self.fields.iter().any(|rule| {
@@ -181,12 +231,44 @@ impl CollectionSchema {
     }
 
     pub(super) fn validate_document(&self, document: &Value) -> io::Result<()> {
-        if !document.is_object() {
+        let Some(root) = document.as_object() else {
             return Err(key::invalid("document must be a JSON object"));
-        }
+        };
         validate_tree(document)?;
+        self.validate_fields(document, root)
+    }
+
+    /// Equivalent to `validate_document`, skipping only tree-bound checks that
+    /// are mathematically guaranteed by the encoded JSON byte length while
+    /// always enforcing every schema rule.
+    pub(super) fn validate_stored_document(
+        &self,
+        document: &Value,
+        encoded_len: usize,
+    ) -> io::Result<()> {
+        let Some(root) = document.as_object() else {
+            return Err(key::invalid("document must be a JSON object"));
+        };
+        if encoded_len > NODE_SAFE_ENCODED_BYTES {
+            validate_tree(document)?;
+        } else if encoded_len > TREE_SAFE_ENCODED_BYTES {
+            validate_depth_only(root)?;
+        }
+        self.validate_fields(document, root)
+    }
+
+    fn validate_fields(
+        &self,
+        document: &Value,
+        root: &serde_json::Map<String, Value>,
+    ) -> io::Result<()> {
         for rule in &self.fields {
-            match field(document, &rule.path) {
+            let found = if rule.path.len() == 1 {
+                root.get(&rule.path[0])
+            } else {
+                field(document, &rule.path)
+            };
+            match found {
                 None if rule.required => return Err(key::invalid("required field is missing")),
                 None => {}
                 Some(Value::Null) if rule.nullable => {}

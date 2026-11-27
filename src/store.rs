@@ -52,10 +52,12 @@ pub use read_set::{
     MAX_TRANSACTION_READ_CONSTRAINT_BYTES, MAX_TRANSACTION_READ_CONSTRAINTS,
     MAX_TRANSACTION_VALIDATION_ITEMS,
 };
+pub(crate) use snapshot::SnapshotPointSession;
 pub use snapshot::{
     MAX_ACTIVE_SNAPSHOTS, MAX_SNAPSHOT_KEY_BYTES, MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_TOTAL_KEY_BYTES,
     MAX_SNAPSHOT_TOTAL_KEYS, Snapshot, SnapshotBudgetStatus,
 };
+pub(crate) use transaction::OrdinaryPointSession;
 pub use transaction::{
     MAX_TRANSACTION_STAGED_TOTAL_BYTES, TimedTransactionError, Transaction, TransactionMode,
 };
@@ -532,10 +534,7 @@ impl Store {
         }
         let log = Arc::clone(inner.log.as_ref().expect("published log missing"));
         drop(inner);
-        locations
-            .into_iter()
-            .map(|location| location.map(|location| log.read(location)).transpose())
-            .collect()
+        log.read_many_locations(&locations)
     }
 
     /// Returns at most `limit` entries in bytewise key order.
@@ -584,10 +583,7 @@ impl Store {
         }
         let log = Arc::clone(inner.log.as_ref().expect("published log missing"));
         drop(inner);
-        locations
-            .into_iter()
-            .map(|(key, location)| log.read(location).map(|value| (key, value)))
-            .collect()
+        log.read_entries(locations)
     }
 
     /// Replaces the value at `key`; synchronization completes before success.

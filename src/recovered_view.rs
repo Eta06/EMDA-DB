@@ -401,14 +401,7 @@ impl RecoveredCheckpointView {
             locations.push(location);
         }
         drop(lookup);
-        locations
-            .into_iter()
-            .map(|location| {
-                location
-                    .map(|location| self.base.log.read(location))
-                    .transpose()
-            })
-            .collect()
+        self.base.log.read_many_locations(&locations)
     }
 
     /// Scans recovered keys in bytewise order with exclusive optional bounds.
@@ -443,7 +436,8 @@ impl RecoveredCheckpointView {
         }
         let mut result = Vec::new();
         let mut bytes = 0_usize;
-        self.visit_entries(after, before, |key, location| {
+        let mut read_ahead = crate::log::LogReadAhead::new(&self.base.log);
+        self.visit_entries_with_peek(after, before, |key, location, peek| {
             let size = key.len() + location.length;
             if result.len() == limit
                 || bytes + size > MAX_SCAN_BYTES
@@ -451,7 +445,17 @@ impl RecoveredCheckpointView {
             {
                 return Ok(ControlFlow::Break(()));
             }
-            let value = self.base.log.read(location)?;
+            let remaining = limit - result.len() - 1;
+            let value = read_ahead.read_with_peek(location, |push| {
+                let mut count = 0;
+                peek(&mut |next| {
+                    if count >= remaining {
+                        return false;
+                    }
+                    count += 1;
+                    push(next)
+                });
+            })?;
             bytes += size;
             result.push((key.to_vec(), value));
             Ok(ControlFlow::Continue(()))
@@ -467,51 +471,107 @@ impl RecoveredCheckpointView {
         before: Option<&[u8]>,
         mut visit: impl FnMut(&[u8], ValueLocation) -> io::Result<ControlFlow<()>>,
     ) -> io::Result<()> {
+        self.visit_entries_with_peek(after, before, |key, location, _| visit(key, location))
+    }
+
+    pub(crate) fn visit_entries_with_peek(
+        &self,
+        after: Option<&[u8]>,
+        before: Option<&[u8]>,
+        mut visit: impl FnMut(
+            &[u8],
+            ValueLocation,
+            crate::log::LocationPeek<'_>,
+        ) -> io::Result<ControlFlow<()>>,
+    ) -> io::Result<()> {
         let bounds = (
             after.map_or(Unbounded, Excluded),
             before.map_or(Unbounded, Excluded),
         );
         let mut updates = self.overlay.range::<[u8], _>(bounds).peekable();
         let mut stopped = false;
-        self.base
-            .visit_entries(after, before, |base_key, base_location| {
+        self.base.visit_entries_with_peek(
+            after,
+            before,
+            |base_key, base_location, base_peek| {
                 while updates
                     .peek()
                     .is_some_and(|(key, _)| key.as_ref() < base_key)
                 {
                     let (key, location) = updates.next().expect("peeked overlay entry");
                     if let Some(location) = location {
-                        if visit(key, *location)?.is_break() {
+                        let mut peek = |push: &mut dyn FnMut(ValueLocation) -> bool| {
+                            for (next_key, next_loc) in updates.clone() {
+                                if next_key.as_ref() >= base_key {
+                                    break;
+                                }
+                                if let Some(next_loc) = next_loc {
+                                    if !push(*next_loc) {
+                                        return;
+                                    }
+                                }
+                            }
+                            if push(base_location) {
+                                base_peek(push);
+                            }
+                        };
+                        if visit(key, *location, &mut peek)?.is_break() {
                             stopped = true;
                             return Ok(ControlFlow::Break(()));
                         }
                     }
                 }
-                let chosen = if updates
+                let (chosen, from_overlay) = if updates
                     .peek()
                     .is_some_and(|(key, _)| key.as_ref() == base_key)
                 {
-                    updates
-                        .next()
-                        .expect("peeked overlay entry")
-                        .1
-                        .as_ref()
-                        .copied()
+                    (
+                        updates
+                            .next()
+                            .expect("peeked overlay entry")
+                            .1
+                            .as_ref()
+                            .copied(),
+                        true,
+                    )
                 } else {
-                    Some(base_location)
+                    (Some(base_location), false)
                 };
                 if let Some(location) = chosen {
-                    if visit(base_key, location)?.is_break() {
+                    let mut peek = |push: &mut dyn FnMut(ValueLocation) -> bool| {
+                        if from_overlay {
+                            for (_, next_loc) in updates.clone() {
+                                if let Some(next_loc) = next_loc {
+                                    if !push(*next_loc) {
+                                        return;
+                                    }
+                                }
+                            }
+                        } else {
+                            base_peek(push);
+                        }
+                    };
+                    if visit(base_key, location, &mut peek)?.is_break() {
                         stopped = true;
                         return Ok(ControlFlow::Break(()));
                     }
                 }
                 Ok(ControlFlow::Continue(()))
-            })?;
+            },
+        )?;
         if !stopped {
-            for (key, location) in updates {
+            while let Some((key, location)) = updates.next() {
                 if let Some(location) = location {
-                    if visit(key, *location)?.is_break() {
+                    let mut peek = |push: &mut dyn FnMut(ValueLocation) -> bool| {
+                        for (_, next_loc) in updates.clone() {
+                            if let Some(next_loc) = next_loc {
+                                if !push(*next_loc) {
+                                    break;
+                                }
+                            }
+                        }
+                    };
+                    if visit(key, *location, &mut peek)?.is_break() {
                         break;
                     }
                 }

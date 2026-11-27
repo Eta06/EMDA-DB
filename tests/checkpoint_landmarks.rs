@@ -118,6 +118,9 @@ fn bulk_reads_keep_order_and_recheck_blocks_across_calls() {
     drop(initial);
 
     let store = retry_lock(|| CheckpointStore::open(&path, &checkpoint, &digest)).unwrap();
+    // Disable the default verified-block cache so this test checks that
+    // `get_many` does not retain a per-call lookup buffer across API calls.
+    store.set_checkpoint_block_cache_limit(0).unwrap();
     let snapshot = store.snapshot().unwrap();
     let mut current = model.clone();
     store.put(&key(0), b"replacement").unwrap();

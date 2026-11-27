@@ -263,6 +263,9 @@ fn repeated_scan_rechecks_checkpoint_after_using_new_range_with_staged_entries()
     use std::os::unix::fs::FileExt;
 
     let (dir, store) = fixture();
+    // Disable the default verified-block cache to verify that recorded read-set
+    // ranges do not bypass checkpoint block verification on repeated scans.
+    store.set_checkpoint_block_cache_limit(0).unwrap();
     let result = store.transaction_with_read_set(|tx| {
         tx.delete(b"a")?;
         tx.put(b"b", b"staged")?;

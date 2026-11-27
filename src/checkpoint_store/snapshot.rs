@@ -309,12 +309,78 @@ impl CheckpointSnapshot<'_> {
             .scan_admitted(after, before, limit, admit)
     }
 
+    pub(crate) fn with_point_session<T>(
+        &self,
+        action: impl FnOnce(&mut CheckpointSnapshotPointSession<'_>) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let _admission = self.store.direct_reads.acquire_snapshot()?;
+        let data = self.view()?;
+        let _healthy = self.store.read()?;
+        let view = data.view.as_ref().expect("active snapshot has a view");
+        let mut session = CheckpointSnapshotPointSession {
+            view,
+            deadline: data.deadline,
+            lookup: view.base.lookup(),
+            read_ahead: crate::log::LogReadAhead::new(&view.base.log),
+        };
+        action(&mut session)
+    }
+
     /// Releases the captured view and its reservation. Repeated calls are safe.
     pub fn cancel(&mut self) {
         self.state
             .write()
             .unwrap_or_else(|poison| poison.into_inner())
             .release(&self.store, SnapshotStatus::Cancelled);
+    }
+}
+
+pub(crate) struct CheckpointSnapshotPointSession<'a> {
+    view: &'a RecoveredCheckpointView,
+    deadline: Option<Instant>,
+    lookup: crate::checkpoint_view::CheckpointLookup<'a>,
+    read_ahead: crate::log::LogReadAhead<'a>,
+}
+
+impl CheckpointSnapshotPointSession<'_> {
+    pub(crate) fn get_admitted_with_peek(
+        &mut self,
+        key: &[u8],
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+        peek_keys: impl FnOnce(&mut dyn FnMut(&[u8]) -> bool),
+    ) -> io::Result<Option<Vec<u8>>> {
+        record::validate_key(key)?;
+        if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "checkpoint snapshot expired",
+            ));
+        }
+        let location = match self.view.overlay.get(key) {
+            Some(location) => *location,
+            None => self.lookup.location(key)?,
+        };
+        let Some(location) = location else {
+            return Ok(None);
+        };
+        admit(location.length)?;
+        let value = self.read_ahead.read_with_peek(location, |push| {
+            peek_keys(&mut |next_key| {
+                let next_loc = match self.view.overlay.get(next_key) {
+                    Some(loc) => *loc,
+                    None => self.lookup.location_if_loaded(next_key),
+                };
+                if let Some(next_loc) = next_loc {
+                    push(next_loc)
+                } else {
+                    true
+                }
+            });
+        })?;
+        Ok(Some(value))
     }
 }
 

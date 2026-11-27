@@ -43,10 +43,10 @@ pub use checkpoint_store::{
     BoundedSuffixRebuildLimits, CheckpointCompactionLimits, CheckpointMemoryStatus,
     CheckpointRecoveryLimits, CheckpointSnapshot, CheckpointSnapshotBudgetStatus, CheckpointStore,
     CheckpointStoreLimits, CheckpointTransaction, CheckpointTransactionMode, CheckpointWorker,
-    CheckpointWorkerStatus, DiskBudgetPending, DiskBudgetStatus, MAX_CHECKPOINT_ACTIVE_SNAPSHOTS,
-    MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS, MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES,
-    MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS, OnlineCheckpointCompactionOptions,
-    OnlineCheckpointSnapshot, OnlineCheckpointStore,
+    CheckpointWorkerStatus, DEFAULT_CHECKPOINT_BLOCK_CACHE_BYTES, DiskBudgetPending,
+    DiskBudgetStatus, MAX_CHECKPOINT_ACTIVE_SNAPSHOTS, MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS,
+    MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES, MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS,
+    OnlineCheckpointCompactionOptions, OnlineCheckpointSnapshot, OnlineCheckpointStore,
 };
 pub use checkpoint_view::{
     CheckpointBlockCacheStatus, CheckpointView, CheckpointViewLimits,

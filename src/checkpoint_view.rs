@@ -17,7 +17,11 @@ use std::sync::{Arc, Mutex, Weak};
 pub const MAX_CHECKPOINT_VIEW_BLOCKS: usize = 131_072;
 /// Maximum checkpoint index bytes read into memory for one block.
 pub const MAX_CHECKPOINT_VIEW_BLOCK_BYTES: usize = 32 * 1024;
-const KEY_PREFIX_BYTES: usize = 16;
+// Store up to 256 bytes of each block's first key in a packed directory array
+// so binary search resolves long shared prefixes (such as document and index
+// key namespaces) without reading intermediate checkpoint blocks. Keys sharing
+// a longer prefix still fall back to verifying the complete block.
+const MAX_FIRST_KEY_PREFIX_BYTES: usize = 256;
 // A sparse directory of entry offsets reduces per-lookup decoding work while
 // retaining the full block read and SHA-256 verification on every access.
 const LANDMARK_INTERVAL: usize = 16;
@@ -69,6 +73,12 @@ impl CheckpointViewLimits {
         let from_blocks = self.max_blocks * MAX_BLOCK_LANDMARKS;
         from_bytes.min(from_blocks as u64) as usize
     }
+
+    fn max_first_key_bytes(self) -> usize {
+        let from_blocks = self.max_blocks.saturating_mul(MAX_FIRST_KEY_PREFIX_BYTES);
+        let from_file = usize::try_from(self.max_file_bytes).unwrap_or(usize::MAX);
+        from_blocks.min(from_file)
+    }
 }
 
 fn reserve_directory_slot<T>(
@@ -88,32 +98,59 @@ fn reserve_directory_slot<T>(
     Ok(())
 }
 
+fn reserve_directory_bytes(
+    buffer: &mut Vec<u8>,
+    added: usize,
+    limit: usize,
+    limit_error: impl FnOnce() -> io::Error,
+) -> io::Result<()> {
+    let needed = buffer
+        .len()
+        .checked_add(added)
+        .filter(|&total| total <= limit)
+        .ok_or_else(limit_error)?;
+    if needed > buffer.capacity() {
+        let capacity = buffer
+            .capacity()
+            .saturating_mul(2)
+            .max(needed)
+            .max(64)
+            .min(limit);
+        buffer
+            .try_reserve_exact(capacity - buffer.len())
+            .map_err(|_| io::Error::other("checkpoint block directory allocation failed"))?;
+    }
+    Ok(())
+}
+
 struct Block {
-    first_key_prefix: [u8; KEY_PREFIX_BYTES],
-    first_key_len: usize,
+    first_key_end: u32,
+    first_key_len: u16,
     offset: u64,
     length: usize,
     digest: [u8; 32],
     landmark_end: u32,
 }
 
-impl Block {
-    fn compare_prefix(&self, key: &[u8]) -> Option<std::cmp::Ordering> {
-        let shared = self.first_key_len.min(key.len()).min(KEY_PREFIX_BYTES);
-        let comparison = self.first_key_prefix[..shared].cmp(&key[..shared]);
-        if comparison != std::cmp::Ordering::Equal {
-            return Some(comparison);
-        }
-        if self.first_key_len <= KEY_PREFIX_BYTES || key.len() <= KEY_PREFIX_BYTES {
-            return Some(self.first_key_len.cmp(&key.len()));
-        }
-        None
+fn compare_key_prefix(
+    prefix: &[u8],
+    first_key_len: usize,
+    key: &[u8],
+) -> Option<std::cmp::Ordering> {
+    let shared = prefix.len().min(key.len());
+    let comparison = prefix[..shared].cmp(&key[..shared]);
+    if comparison != std::cmp::Ordering::Equal {
+        return Some(comparison);
     }
+    if first_key_len <= prefix.len() || key.len() <= prefix.len() {
+        return Some(first_key_len.cmp(&key.len()));
+    }
+    None
 }
 
 struct BlockBuilder {
-    first_key_prefix: [u8; KEY_PREFIX_BYTES],
-    first_key_len: usize,
+    first_key_end: u32,
+    first_key_len: u16,
     offset: u64,
     length: usize,
     digest: Sha256,
@@ -123,7 +160,7 @@ struct BlockBuilder {
 impl BlockBuilder {
     fn finish(self, landmarks: usize) -> io::Result<Block> {
         Ok(Block {
-            first_key_prefix: self.first_key_prefix,
+            first_key_end: self.first_key_end,
             first_key_len: self.first_key_len,
             offset: self.offset,
             length: self.length,
@@ -158,6 +195,7 @@ pub struct CheckpointView {
 struct CheckpointIndex {
     file: File,
     blocks: Vec<Block>,
+    first_keys: Vec<u8>,
     landmarks: Vec<u16>,
     read_budget: Option<checkpoint::CheckpointReadBudget>,
     cache: BlockCache,
@@ -181,6 +219,7 @@ pub struct CheckpointBlockCacheStatus {
 
 #[derive(Default)]
 struct CacheState {
+    limit: usize,
     used: usize,
     tick: u64,
     blocks: HashMap<usize, (Arc<[u8]>, u64)>,
@@ -193,7 +232,8 @@ struct CacheState {
 // immutable once its directory is verified, so cached bytes stay correct.
 #[derive(Default)]
 struct BlockCache {
-    // Read without the mutex so a disabled cache costs one atomic load.
+    // Fast-path mirror of `state.limit` so a disabled cache costs one atomic
+    // load. Every mutation checks `state.limit` under `state` to stay exact.
     limit: AtomicUsize,
     state: Mutex<CacheState>,
 }
@@ -210,25 +250,38 @@ impl BlockCache {
             return Ok(None);
         }
         let mut state = self.lock()?;
-        state.tick += 1;
-        let tick = state.tick;
+        if state.limit == 0 {
+            return Ok(None);
+        }
+        let current_tick = state.tick;
         let Some((bytes, used)) = state.blocks.get_mut(&position) else {
             state.misses += 1;
             return Ok(None);
         };
-        let (bytes, previous) = (Arc::clone(bytes), std::mem::replace(used, tick));
-        state.order.remove(&previous);
-        state.order.insert(tick, position);
+        let bytes = Arc::clone(bytes);
+        let previous = *used;
+        if previous != current_tick {
+            let next_tick = current_tick + 1;
+            *used = next_tick;
+            state.tick = next_tick;
+            state.order.remove(&previous);
+            state.order.insert(next_tick, position);
+        }
         state.hits += 1;
         Ok(Some(bytes))
     }
 
     fn insert(&self, position: usize, bytes: Arc<[u8]>) -> io::Result<()> {
-        let limit = self.limit.load(Ordering::Acquire);
-        if bytes.len() > limit {
+        if self.limit.load(Ordering::Acquire) < bytes.len() {
             return Ok(());
         }
         let mut state = self.lock()?;
+        // Recheck the authoritative limit under the lock so a concurrent
+        // limit reduction or rollover invalidation can never be bypassed.
+        let limit = state.limit;
+        if bytes.len() > limit {
+            return Ok(());
+        }
         if state.blocks.contains_key(&position) {
             return Ok(());
         }
@@ -250,6 +303,7 @@ impl BlockCache {
 
     fn set_limit(&self, limit: usize) -> io::Result<()> {
         let mut state = self.lock()?;
+        state.limit = limit;
         self.limit.store(limit, Ordering::Release);
         while state.used > limit {
             let Some((_, evicted)) = state.order.pop_first() else {
@@ -265,7 +319,7 @@ impl BlockCache {
     fn status(&self) -> io::Result<CheckpointBlockCacheStatus> {
         let state = self.lock()?;
         Ok(CheckpointBlockCacheStatus {
-            limit_bytes: self.limit.load(Ordering::Acquire),
+            limit_bytes: state.limit,
             cached_bytes: state.used,
             cached_blocks: state.blocks.len(),
             hits: state.hits,
@@ -283,6 +337,21 @@ impl CheckpointPin {
 }
 
 impl CheckpointIndex {
+    fn first_key_prefix(&self, position: usize) -> &[u8] {
+        let start = position
+            .checked_sub(1)
+            .map_or(0, |i| self.blocks[i].first_key_end as usize);
+        &self.first_keys[start..self.blocks[position].first_key_end as usize]
+    }
+
+    fn compare_first_key_prefix(&self, position: usize, key: &[u8]) -> Option<std::cmp::Ordering> {
+        compare_key_prefix(
+            self.first_key_prefix(position),
+            usize::from(self.blocks[position].first_key_len),
+            key,
+        )
+    }
+
     fn landmarks(&self, position: usize) -> &[u16] {
         let start = position
             .checked_sub(1)
@@ -568,8 +637,10 @@ impl CheckpointView {
         let checkpoint = checkpoint::open_index_file(checkpoint)?;
         let read_budget = max_checkpoint_read_bytes.map(checkpoint::CheckpointReadBudget::new);
         let mut blocks = Vec::new();
+        let mut first_keys = Vec::new();
         let mut landmarks = Vec::new();
         let max_landmarks = limits.max_landmarks();
+        let max_first_key_bytes = limits.max_first_key_bytes();
         let mut current: Option<BlockBuilder> = None;
         let mut keys = 0_u64;
         let verified = checkpoint::visit_index_file(
@@ -604,12 +675,27 @@ impl CheckpointView {
                         limits.max_blocks,
                         checkpoint::block_limit_error,
                     )?;
-                    let mut first_key_prefix = [0; KEY_PREFIX_BYTES];
-                    let prefix_len = key.len().min(KEY_PREFIX_BYTES);
-                    first_key_prefix[..prefix_len].copy_from_slice(&key[..prefix_len]);
+                    let prefix_len = key.len().min(MAX_FIRST_KEY_PREFIX_BYTES);
+                    reserve_directory_bytes(
+                        &mut first_keys,
+                        prefix_len,
+                        max_first_key_bytes,
+                        || {
+                            record::invalid_data(
+                                "checkpoint block prefix directory exceeds its bounds",
+                            )
+                        },
+                    )?;
+                    first_keys.extend_from_slice(&key[..prefix_len]);
+                    let first_key_end = u32::try_from(first_keys.len()).map_err(|_| {
+                        record::invalid_data("checkpoint block prefix directory overflow")
+                    })?;
+                    let first_key_len = u16::try_from(key.len()).map_err(|_| {
+                        record::invalid_data("checkpoint block key length overflow")
+                    })?;
                     current = Some(BlockBuilder {
-                        first_key_prefix,
-                        first_key_len: key.len(),
+                        first_key_end,
+                        first_key_len,
                         offset,
                         length: 0,
                         digest: Sha256::new(),
@@ -652,6 +738,7 @@ impl CheckpointView {
             index: Arc::new(CheckpointIndex {
                 file: checkpoint,
                 blocks,
+                first_keys,
                 landmarks,
                 read_budget,
                 cache: BlockCache::default(),
@@ -816,9 +903,11 @@ impl CheckpointView {
         self.has_tail
     }
 
-    /// Bytes held by the retained block directory and landmark array.
+    /// Bytes held by the retained block directory, packed first-key prefixes,
+    /// and landmark array.
     pub(crate) fn directory_bytes(&self) -> usize {
         self.index.blocks.capacity() * std::mem::size_of::<Block>()
+            + self.index.first_keys.capacity()
             + self.index.landmarks.capacity() * std::mem::size_of::<u16>()
     }
 
@@ -878,6 +967,17 @@ impl CheckpointView {
         }
     }
 
+    pub(crate) fn with_point_session<T>(
+        &self,
+        action: impl FnOnce(&mut CheckpointViewPointSession<'_>) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let mut session = CheckpointViewPointSession {
+            lookup: self.lookup(),
+            read_ahead: crate::log::LogReadAhead::new(&self.log),
+        };
+        action(&mut session)
+    }
+
     /// Scans historical keys in bytewise order using exclusive optional bounds.
     /// Each result is capped by `MAX_SCAN_ENTRIES` and `MAX_SCAN_BYTES`.
     pub fn scan(
@@ -910,7 +1010,8 @@ impl CheckpointView {
         }
         let mut result = Vec::new();
         let mut size = 0_usize;
-        self.visit_entries(after, before, |key, location| {
+        let mut read_ahead = crate::log::LogReadAhead::new(&self.log);
+        self.visit_entries_with_peek(after, before, |key, location, peek| {
             let bytes = key.len() + location.length;
             if result.len() == limit
                 || size + bytes > MAX_SCAN_BYTES
@@ -918,8 +1019,19 @@ impl CheckpointView {
             {
                 return Ok(ControlFlow::Break(()));
             }
+            let remaining = limit - result.len() - 1;
+            let value = read_ahead.read_with_peek(location, |push| {
+                let mut count = 0;
+                peek(&mut |next| {
+                    if count >= remaining {
+                        return false;
+                    }
+                    count += 1;
+                    push(next)
+                });
+            })?;
             size += bytes;
-            result.push((key.to_vec(), self.log.read(location)?));
+            result.push((key.to_vec(), value));
             Ok(ControlFlow::Continue(()))
         })?;
         Ok(result)
@@ -932,6 +1044,22 @@ impl CheckpointView {
         after: Option<&[u8]>,
         before: Option<&[u8]>,
         mut visit: impl FnMut(&[u8], ValueLocation) -> io::Result<ControlFlow<()>>,
+    ) -> io::Result<()> {
+        self.visit_entries_with_peek(after, before, |key, location, _| visit(key, location))
+    }
+
+    /// Visit verified checkpoint entries while allowing the callback to peek
+    /// upcoming value locations in the already-verified current block for
+    /// bounded log read-ahead. Peeking performs no I/O or read-budget charges.
+    pub(crate) fn visit_entries_with_peek(
+        &self,
+        after: Option<&[u8]>,
+        before: Option<&[u8]>,
+        mut visit: impl FnMut(
+            &[u8],
+            ValueLocation,
+            crate::log::LocationPeek<'_>,
+        ) -> io::Result<ControlFlow<()>>,
     ) -> io::Result<()> {
         let mut lookup = self.lookup();
         let mut after = after;
@@ -956,7 +1084,18 @@ impl CheckpointView {
                 if before.is_some_and(|bound| key >= bound) {
                     return Ok(());
                 }
-                if visit(key, location)?.is_break() {
+                let mut peek = |push: &mut dyn FnMut(ValueLocation) -> bool| {
+                    let mut ahead = cursor.clone();
+                    while let Ok(Some((next_key, next_location))) = ahead.next() {
+                        if before.is_some_and(|bound| next_key >= bound) {
+                            break;
+                        }
+                        if !push(next_location) {
+                            break;
+                        }
+                    }
+                };
+                if visit(key, location, &mut peek)?.is_break() {
                     return Ok(());
                 }
             }
@@ -1007,7 +1146,7 @@ impl CheckpointLookup<'_> {
             let middle = low + (high - low) / 2;
             // The directory prefix is verified on open. An inconclusive
             // comparison uses the complete checked block.
-            let comparison = match view.index.blocks[middle].compare_prefix(key) {
+            let comparison = match view.index.compare_first_key_prefix(middle, key) {
                 Some(comparison) => comparison,
                 None => {
                     let mut cursor = BlockCursor::new(self.block(middle)?, view.prefix);
@@ -1042,8 +1181,69 @@ impl CheckpointLookup<'_> {
         }
         Ok(None)
     }
+
+    /// Searches only the block already loaded and verified in this lookup
+    /// buffer, performing no I/O, cache access, or read-budget accounting.
+    pub(crate) fn location_if_loaded(&self, key: &[u8]) -> Option<ValueLocation> {
+        let position = self.position?;
+        if self.view.index.compare_first_key_prefix(position, key)
+            == Some(std::cmp::Ordering::Greater)
+        {
+            return None;
+        }
+        if position + 1 < self.view.index.blocks.len()
+            && matches!(
+                self.view.index.compare_first_key_prefix(position + 1, key),
+                Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+            )
+        {
+            return None;
+        }
+        let bytes = self.shared.as_deref().unwrap_or(&self.bytes);
+        let landmarks = self.view.index.landmarks(position);
+        let mut cursor = BlockCursor::at_key(bytes, self.view.prefix, landmarks, key).ok()?;
+        while let Some((candidate, location)) = cursor.next().ok()? {
+            match candidate.cmp(key) {
+                std::cmp::Ordering::Equal => return Some(location),
+                std::cmp::Ordering::Greater => return None,
+                std::cmp::Ordering::Less => {}
+            }
+        }
+        None
+    }
 }
 
+pub(crate) struct CheckpointViewPointSession<'a> {
+    lookup: CheckpointLookup<'a>,
+    read_ahead: crate::log::LogReadAhead<'a>,
+}
+
+impl CheckpointViewPointSession<'_> {
+    pub(crate) fn get_admitted_with_peek(
+        &mut self,
+        key: &[u8],
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+        peek_keys: impl FnOnce(&mut dyn FnMut(&[u8]) -> bool),
+    ) -> io::Result<Option<Vec<u8>>> {
+        record::validate_key(key)?;
+        let Some(location) = self.lookup.location(key)? else {
+            return Ok(None);
+        };
+        admit(location.length)?;
+        let value = self.read_ahead.read_with_peek(location, |push| {
+            peek_keys(&mut |next_key| {
+                if let Some(next_loc) = self.lookup.location_if_loaded(next_key) {
+                    push(next_loc)
+                } else {
+                    true
+                }
+            });
+        })?;
+        Ok(Some(value))
+    }
+}
+
+#[derive(Clone)]
 struct BlockCursor<'a> {
     bytes: &'a [u8],
     offset: usize,
@@ -1173,6 +1373,7 @@ mod tests {
         let view = CheckpointView::open_with_limits(&path, &checkpoint, &digest, limits).unwrap();
         assert_eq!(view.block_count(), 5);
         assert!(view.index.blocks.capacity() <= limits.max_blocks);
+        assert!(view.index.first_keys.capacity() <= limits.max_first_key_bytes());
         assert_eq!(view.index.landmarks, vec![16 * 1_018; 5]);
         assert!(view.index.landmarks.capacity() <= limits.max_landmarks());
         for key in &keys {
@@ -1218,7 +1419,7 @@ mod tests {
     #[test]
     fn prefix_order_is_exact_or_requires_full_key_comparison() {
         let mut keys = Vec::new();
-        for len in 1..=40 {
+        for len in (1..=40).chain(250..=270) {
             for fill in [0_u8, 42, 255] {
                 let key = vec![fill; len];
                 keys.push(key.clone());
@@ -1230,26 +1431,96 @@ mod tests {
             }
         }
         for first in &keys {
-            let mut prefix = [0_u8; KEY_PREFIX_BYTES];
-            let len = first.len().min(KEY_PREFIX_BYTES);
-            prefix[..len].copy_from_slice(&first[..len]);
-            let block = Block {
-                first_key_prefix: prefix,
-                first_key_len: first.len(),
-                offset: 0,
-                length: 0,
-                digest: [0; 32],
-                landmark_end: 0,
-            };
+            let prefix = &first[..first.len().min(MAX_FIRST_KEY_PREFIX_BYTES)];
             for key in &keys {
-                match block.compare_prefix(key) {
+                match compare_key_prefix(prefix, first.len(), key) {
                     Some(ordering) => assert_eq!(ordering, first.cmp(key)),
                     None => {
-                        assert!(first.len() > KEY_PREFIX_BYTES && key.len() > KEY_PREFIX_BYTES);
-                        assert_eq!(&first[..KEY_PREFIX_BYTES], &key[..KEY_PREFIX_BYTES]);
+                        assert!(
+                            first.len() > MAX_FIRST_KEY_PREFIX_BYTES
+                                && key.len() > MAX_FIRST_KEY_PREFIX_BYTES
+                        );
+                        assert_eq!(
+                            &first[..MAX_FIRST_KEY_PREFIX_BYTES],
+                            &key[..MAX_FIRST_KEY_PREFIX_BYTES]
+                        );
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn shared_prefix_keys_over_16_bytes_avoid_intermediate_block_reads() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("store");
+        let checkpoint = root.path().join("index");
+        // Document-style 32-byte shared prefix across many blocks.
+        let shared = b"\0emda-document\x01D\0\x05items-collection";
+        let keys = (0_u32..3_000)
+            .map(|n| {
+                let mut key = shared.to_vec();
+                key.extend_from_slice(format!("{n:08}").as_bytes());
+                key
+            })
+            .collect::<Vec<_>>();
+        let store = crate::Store::open(&path).unwrap();
+        for chunk in keys.chunks(500) {
+            let ops = chunk
+                .iter()
+                .map(|key| crate::BatchOperation::Put { key, value: b"ok" })
+                .collect::<Vec<_>>();
+            store.write_batch(&ops).unwrap();
+        }
+        let digest = store.checkpoint_to(&checkpoint).unwrap();
+        store.close_private_store().unwrap();
+
+        let view = CheckpointView::open(&path, &checkpoint, &digest).unwrap();
+        assert!(view.block_count() >= 4, "need multi-block checkpoint");
+        // Limit=1 counts misses without storing blocks in the cache.
+        view.set_block_cache_limit(1).unwrap();
+        assert_eq!(view.get(&keys[1_500]).unwrap().as_deref(), Some(&b"ok"[..]));
+        let status = view.block_cache_status().unwrap();
+        assert_eq!(
+            status.misses, 1,
+            "32-byte shared prefix must resolve target block with zero intermediate reads: {status:?}"
+        );
+    }
+
+    #[test]
+    fn shared_prefix_keys_over_256_bytes_fall_back_to_verified_blocks_accurately() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("store");
+        let checkpoint = root.path().join("index");
+        let shared = vec![b'p'; MAX_FIRST_KEY_PREFIX_BYTES + 44];
+        let keys = (0_u32..260)
+            .map(|n| {
+                let mut key = shared.clone();
+                key.extend_from_slice(format!("-{n:05}").as_bytes());
+                key
+            })
+            .collect::<Vec<_>>();
+        let store = crate::Store::open(&path).unwrap();
+        let ops = keys
+            .iter()
+            .map(|key| crate::BatchOperation::Put { key, value: b"v" })
+            .collect::<Vec<_>>();
+        store.write_batch(&ops).unwrap();
+        let digest = store.checkpoint_to(&checkpoint).unwrap();
+        store.close_private_store().unwrap();
+
+        let view = CheckpointView::open(&path, &checkpoint, &digest).unwrap();
+        assert!(view.block_count() >= 3);
+        for key in &keys {
+            assert_eq!(view.get(key).unwrap().as_deref(), Some(&b"v"[..]));
+        }
+        let mut missing_mid = shared.clone();
+        missing_mid.extend_from_slice(b"-00120x");
+        assert_eq!(view.get(&missing_mid).unwrap(), None);
+        let scanned = view.scan(Some(&keys[10]), Some(&keys[200]), 300).unwrap();
+        assert_eq!(
+            scanned.into_iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            keys[11..200]
+        );
     }
 }

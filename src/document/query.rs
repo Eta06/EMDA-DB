@@ -435,7 +435,7 @@ impl DocumentTransaction<'_, '_> {
             });
         }
         let mut nonempty_entry = false;
-        let rows = self.scan_admitted(after, &before, query.limit, |_, len| {
+        let mut rows = self.scan_admitted(after, &before, query.limit, |_, len| {
             nonempty_entry = len != 0;
             !nonempty_entry
         })?;
@@ -443,77 +443,118 @@ impl DocumentTransaction<'_, '_> {
         let mut returned = 0;
         let mut used = 0_usize;
         let mut document_key_value_bytes = 0_usize;
-        let mut cursor = None;
-        for (entry, _) in rows {
-            if options.unique_equality && returned != 0 {
-                return Err(invalid_data("unique index contains multiple matches"));
-            }
-            if options
-                .candidate_limit
-                .is_some_and(|limit| returned >= limit)
-            {
-                return Err(key::invalid("document scan exceeds the operation limit"));
-            }
-            let id = entry_id(&entry, &index_prefix, definition.fields.len())?;
-            let document_key = key::document(collection, id)?;
-            let mut next_document_bytes = document_key_value_bytes;
-            let encoded = self
-                .read_document_bytes(&document_key, |len| {
-                    next_document_bytes = document_key_value_bytes
-                        .checked_add(document_key.len())
-                        .and_then(|total| total.checked_add(len))
-                        .ok_or_else(|| key::invalid("document scan byte count overflow"))?;
+        let mut cursor_index = None;
+        if !rows.is_empty() {
+            let peek_limit = if options.unique_equality {
+                1
+            } else {
+                options
+                    .candidate_limit
+                    .map_or(rows.len(), |cap| cap.min(rows.len()))
+            };
+            self.with_point_reader(|reader| {
+                for (index, (entry, _)) in rows.iter().enumerate() {
+                    if options.unique_equality && returned != 0 {
+                        return Err(invalid_data("unique index contains multiple matches"));
+                    }
                     if options
-                        .byte_limit
-                        .is_some_and(|limit| next_document_bytes > limit)
+                        .candidate_limit
+                        .is_some_and(|limit| returned >= limit)
                     {
                         return Err(key::invalid("document scan exceeds the operation limit"));
                     }
-                    if options.reject_response_overflow
-                        && options.response_byte_limit.is_some_and(|limit| {
-                            used.checked_add(id.len())
-                                .and_then(|total| total.checked_add(len))
-                                .is_none_or(|total| total > limit)
-                        })
+                    let id = entry_id(entry, &index_prefix, definition.fields.len())?;
+                    let document_key = key::document(collection, id)?;
+                    let mut next_document_bytes = document_key_value_bytes;
+                    let upcoming_end = peek_limit.max(index + 1).min(rows.len());
+                    let upcoming = &rows[index + 1..upcoming_end];
+                    let encoded = reader
+                        .read_document_bytes_with_peek(
+                            &document_key,
+                            |len| {
+                                next_document_bytes = document_key_value_bytes
+                                    .checked_add(document_key.len())
+                                    .and_then(|total| total.checked_add(len))
+                                    .ok_or_else(|| {
+                                        key::invalid("document scan byte count overflow")
+                                    })?;
+                                if options
+                                    .byte_limit
+                                    .is_some_and(|limit| next_document_bytes > limit)
+                                {
+                                    return Err(key::invalid(
+                                        "document scan exceeds the operation limit",
+                                    ));
+                                }
+                                if options.reject_response_overflow
+                                    && options.response_byte_limit.is_some_and(|limit| {
+                                        used.checked_add(id.len())
+                                            .and_then(|total| total.checked_add(len))
+                                            .is_none_or(|total| total > limit)
+                                    })
+                                {
+                                    return Err(key::invalid(
+                                        "lookup response exceeds its byte limit",
+                                    ));
+                                }
+                                Ok(())
+                            },
+                            |push_key| {
+                                for (next_entry, _) in upcoming {
+                                    let Ok(next_id) = entry_id(
+                                        next_entry,
+                                        &index_prefix,
+                                        definition.fields.len(),
+                                    ) else {
+                                        break;
+                                    };
+                                    let Ok(next_key) = key::document(collection, next_id) else {
+                                        break;
+                                    };
+                                    if !push_key(&next_key) {
+                                        break;
+                                    }
+                                }
+                            },
+                        )?
+                        .ok_or_else(|| invalid_data("index references a missing document"))?;
+                    let next_used = used
+                        .checked_add(id.len())
+                        .and_then(|n| n.checked_add(encoded.len()))
+                        .ok_or_else(|| key::invalid("query response size overflow"))?;
+                    if options
+                        .response_byte_limit
+                        .is_some_and(|limit| next_used > limit)
                     {
-                        return Err(key::invalid("lookup response exceeds its byte limit"));
+                        break;
                     }
-                    Ok(())
-                })?
-                .ok_or_else(|| invalid_data("index references a missing document"))?;
-            let next_used = used
-                .checked_add(id.len())
-                .and_then(|n| n.checked_add(encoded.len()))
-                .ok_or_else(|| key::invalid("query response size overflow"))?;
-            if options
-                .response_byte_limit
-                .is_some_and(|limit| next_used > limit)
-            {
-                break;
-            }
-            document_key_value_bytes = next_document_bytes;
-            let document = Self::decode_document(&encoded, &metadata.schema)?;
-            let expected = index::keys(collection, definition, &document, id)
-                .map_err(|_| invalid_data("document cannot be represented by its index"))?
-                .ok_or_else(|| invalid_data("document does not belong to its index"))?;
-            if expected.entry != entry {
-                return Err(invalid_data(
-                    "document index entry does not match the document",
-                ));
-            }
-            if let Some(unique) = expected.unique {
-                if self.read_unique_owner(&unique)?.as_deref() != Some(id.as_bytes()) {
-                    return Err(invalid_data("invalid unique index entry"));
+                    document_key_value_bytes = next_document_bytes;
+                    let document = Self::decode_document(&encoded, &metadata.schema)?;
+                    let expected = index::keys(collection, definition, &document, id)
+                        .map_err(|_| invalid_data("document cannot be represented by its index"))?
+                        .ok_or_else(|| invalid_data("document does not belong to its index"))?;
+                    if expected.entry != *entry {
+                        return Err(invalid_data(
+                            "document index entry does not match the document",
+                        ));
+                    }
+                    if let Some(unique) = expected.unique {
+                        if reader.read_unique_owner(&unique)?.as_deref() != Some(id.as_bytes()) {
+                            return Err(invalid_data("invalid unique index entry"));
+                        }
+                    }
+                    used = next_used;
+                    visit(DocumentEntry {
+                        id: id.to_owned(),
+                        document,
+                    });
+                    returned += 1;
+                    cursor_index = Some(index);
                 }
-            }
-            used = next_used;
-            visit(DocumentEntry {
-                id: id.to_owned(),
-                document,
-            });
-            returned += 1;
-            cursor = Some(entry);
+                Ok(())
+            })?;
         }
+        let cursor = cursor_index.map(|index| rows.swap_remove(index).0);
         if nonempty_entry && returned == entries_read {
             return Err(invalid_data("invalid index entry value"));
         }

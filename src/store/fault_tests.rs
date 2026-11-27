@@ -697,6 +697,11 @@ fn bulk_read_returns_no_partial_results_after_a_later_short_read() {
     let fault = Arc::new(Mutex::new(None));
     let store = open_fault_store(&dir, Arc::clone(&fault)).unwrap();
     store.put(b"a", b"first").unwrap();
+    // Separate `a` and `b` past the read-ahead coalescing gap so reading both
+    // spans two `read_exact_at` calls and exercises a failure on the second.
+    let gap = vec![b'x'; crate::log::SCAN_READ_AHEAD_MAX_GAP as usize + 1024];
+    store.put(b"gap", &gap).unwrap();
+    store.delete(b"gap").unwrap();
     store.put(b"b", b"second").unwrap();
     *fault.lock().unwrap() = Some(Fault::ShortReadAfter(1, 1));
     assert_eq!(
@@ -707,6 +712,13 @@ fn bulk_read_returns_no_partial_results_after_a_later_short_read() {
         store.get_many(&[b"a", b"b"]).unwrap(),
         vec![Some(b"first".to_vec()), Some(b"second".to_vec())]
     );
+    // A short read on a coalesced span also propagates without masking.
+    store.put(b"c", b"third").unwrap();
+    *fault.lock().unwrap() = Some(Fault::ShortRead(2));
+    assert_eq!(
+        store.get_many(&[b"b", b"c"]).unwrap_err().kind(),
+        io::ErrorKind::UnexpectedEof
+    );
 }
 
 #[test]
@@ -715,6 +727,11 @@ fn snapshot_refuses_reads_after_uncertain_write_and_propagates_read_errors() {
     let fault = Arc::new(Mutex::new(None));
     let store = open_fault_store(&dir, Arc::clone(&fault)).unwrap();
     store.put(b"a", b"first").unwrap();
+    // Separate `a` and `b` past the read-ahead coalescing gap so scanning both
+    // spans two `read_exact_at` calls and exercises a failure on the second.
+    let gap = vec![b'x'; crate::log::SCAN_READ_AHEAD_MAX_GAP as usize + 1024];
+    store.put(b"gap", &gap).unwrap();
+    store.delete(b"gap").unwrap();
     store.put(b"b", b"second").unwrap();
     let snapshot = store.snapshot(2, 2).unwrap();
     *fault.lock().unwrap() = Some(Fault::ShortReadAfter(1, 1));
@@ -722,6 +739,15 @@ fn snapshot_refuses_reads_after_uncertain_write_and_propagates_read_errors() {
         snapshot.scan(None, None, 2).unwrap_err().kind(),
         io::ErrorKind::UnexpectedEof
     );
+    // A short read on a coalesced span also propagates without masking.
+    store.put(b"c", b"third").unwrap();
+    let coalesced = store.snapshot(3, 3).unwrap();
+    *fault.lock().unwrap() = Some(Fault::ShortRead(2));
+    assert_eq!(
+        coalesced.scan(Some(b"a"), None, 2).unwrap_err().kind(),
+        io::ErrorKind::UnexpectedEof
+    );
+    drop(coalesced);
     *fault.lock().unwrap() = Some(Fault::SyncBefore);
     assert!(store.put(b"c", b"uncertain").is_err());
     assert!(

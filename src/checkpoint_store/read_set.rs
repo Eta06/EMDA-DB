@@ -87,13 +87,31 @@ impl Range {
         None
     }
 
-    pub(super) fn visit_entries(
+    pub(super) fn visit_entries_with_peek(
         &self,
-        mut visit: impl FnMut(&[u8], ValueLocation) -> io::Result<ControlFlow<()>>,
+        mut visit: impl FnMut(
+            &[u8],
+            ValueLocation,
+            crate::log::LocationPeek<'_>,
+        ) -> io::Result<ControlFlow<()>>,
     ) -> io::Result<()> {
         let mut start = 0;
-        for entry in &self.entries {
-            if visit(&self.keys[start..entry.end], entry.location.location)?.is_break() {
+        for (index, entry) in self.entries.iter().enumerate() {
+            let rest = &self.entries[index + 1..];
+            let mut peek = |push: &mut dyn FnMut(ValueLocation) -> bool| {
+                for next in rest {
+                    if !push(next.location.location) {
+                        break;
+                    }
+                }
+            };
+            if visit(
+                &self.keys[start..entry.end],
+                entry.location.location,
+                &mut peek,
+            )?
+            .is_break()
+            {
                 break;
             }
             start = entry.end;

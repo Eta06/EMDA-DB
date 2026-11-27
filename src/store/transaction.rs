@@ -250,6 +250,11 @@ impl Transaction<'_> {
             after.map_or(Unbounded, Excluded),
             before.map_or(Unbounded, Excluded),
         );
+        let log = snapshot
+            .log
+            .as_ref()
+            .expect("active snapshot retains its log");
+        let mut read_ahead = crate::log::LogReadAhead::new(log);
         let mut base = snapshot.index.range::<[u8], _>(bounds).peekable();
         let mut pending = self.staged.range::<[u8], _>(bounds).peekable();
         let mut result = Vec::new();
@@ -273,11 +278,14 @@ impl Transaction<'_> {
                 if !admit(key, location.length) {
                     break;
                 }
-                let value = snapshot
-                    .log
-                    .as_ref()
-                    .expect("active snapshot retains its log")
-                    .read(*location)?;
+                let remaining = limit - result.len() - 1;
+                let value = read_ahead.read_with_peek(*location, |push| {
+                    for (_, next_loc) in base.clone().take(remaining) {
+                        if !push(*next_loc) {
+                            break;
+                        }
+                    }
+                })?;
                 bytes += size;
                 result.push((key.clone(), value));
             } else {
@@ -299,6 +307,35 @@ impl Transaction<'_> {
             }
         }
         Ok(result)
+    }
+
+    pub(crate) fn with_point_session<T>(
+        &self,
+        action: impl FnOnce(&mut OrdinaryPointSession<'_>) -> io::Result<T>,
+    ) -> io::Result<T> {
+        crate::cancellation::check(self.cancellation.as_ref())?;
+        let snapshot = self.snapshot.read_index()?;
+        let read_set = self
+            .read_set
+            .as_ref()
+            .map(|read_set| {
+                read_set
+                    .lock()
+                    .map_err(|_| io::Error::other("transaction read set poisoned"))
+            })
+            .transpose()?;
+        let log = snapshot
+            .log
+            .as_ref()
+            .expect("active snapshot retains its log");
+        let mut session = OrdinaryPointSession {
+            tx: self,
+            snapshot_index: &snapshot.index,
+            deadline: snapshot.deadline,
+            read_ahead: crate::log::LogReadAhead::new(log),
+            read_set,
+        };
+        action(&mut session)
     }
 
     fn stage(&mut self, operation: Operation, key: &[u8], value: &[u8]) -> io::Result<()> {
@@ -349,6 +386,61 @@ impl Transaction<'_> {
         self.encoded_bytes = total;
         reservation.finish();
         Ok(())
+    }
+}
+
+pub(crate) struct OrdinaryPointSession<'a> {
+    tx: &'a Transaction<'a>,
+    snapshot_index: &'a BTreeMap<Vec<u8>, ValueLocation>,
+    deadline: Option<Instant>,
+    read_ahead: crate::log::LogReadAhead<'a>,
+    read_set: Option<std::sync::MutexGuard<'a, super::read_set::ReadSet>>,
+}
+
+impl OrdinaryPointSession<'_> {
+    pub(crate) fn get_admitted_with_peek(
+        &mut self,
+        key: &[u8],
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+        peek_keys: impl FnOnce(&mut dyn FnMut(&[u8]) -> bool),
+    ) -> io::Result<Option<Vec<u8>>> {
+        crate::cancellation::check(self.tx.cancellation.as_ref())?;
+        record::validate_key(key)?;
+        if self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "snapshot expired"));
+        }
+        if self.tx.snapshot.borrowed_store().commits.failed() {
+            return Err(uncertain_error());
+        }
+        if let Some(value) = self.tx.staged.get(key) {
+            if let Some(value) = value {
+                admit(value.len())?;
+            }
+            return Ok(value.clone());
+        }
+        if let Some(read_set) = &mut self.read_set {
+            read_set.point(key)?;
+        }
+        let Some(&location) = self.snapshot_index.get(key) else {
+            return Ok(None);
+        };
+        admit(location.length)?;
+        let value = self.read_ahead.read_with_peek(location, |push| {
+            peek_keys(&mut |next_key| {
+                if self.tx.staged.contains_key(next_key) {
+                    return true;
+                }
+                if let Some(&next_loc) = self.snapshot_index.get(next_key) {
+                    push(next_loc)
+                } else {
+                    true
+                }
+            });
+        })?;
+        Ok(Some(value))
     }
 }
 

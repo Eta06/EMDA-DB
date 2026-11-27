@@ -43,11 +43,13 @@ mod selection;
 mod snapshot;
 mod transaction;
 mod worker;
+pub(crate) use snapshot::CheckpointSnapshotPointSession;
 pub use snapshot::{
     CheckpointSnapshot, CheckpointSnapshotBudgetStatus, MAX_CHECKPOINT_ACTIVE_SNAPSHOTS,
     MAX_CHECKPOINT_SNAPSHOT_TOTAL_BLOCKS, MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEY_BYTES,
     MAX_CHECKPOINT_SNAPSHOT_TOTAL_OVERLAY_KEYS,
 };
+pub(crate) use transaction::CheckpointPointSession;
 pub use transaction::{CheckpointTransaction, CheckpointTransactionMode};
 pub use worker::{CheckpointWorker, CheckpointWorkerStatus};
 
@@ -136,6 +138,21 @@ type OpenLimits = CheckpointStoreLimits;
 
 // A checkpoint's covered log prefix length and digest.
 type CoveredPrefix = (u64, [u8; 32]);
+
+/// Default inclusive logical byte limit for the verified checkpoint block
+/// cache on a newly opened [`CheckpointStore`], clamped to the configured
+/// checkpoint file limit. Pass `0` to
+/// [`CheckpointStore::set_checkpoint_block_cache_limit`] to disable caching.
+pub const DEFAULT_CHECKPOINT_BLOCK_CACHE_BYTES: usize = 8 * 1024 * 1024;
+
+pub(crate) fn default_block_cache_limit(limits: CheckpointViewLimits) -> usize {
+    usize::try_from(
+        limits
+            .max_file_bytes
+            .min(DEFAULT_CHECKPOINT_BLOCK_CACHE_BYTES as u64),
+    )
+    .unwrap_or(DEFAULT_CHECKPOINT_BLOCK_CACHE_BYTES)
+}
 
 /// Memory kept by a checkpoint-backed store for its disk-backed index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -875,6 +892,8 @@ impl CheckpointStore {
         };
         let (automatic_config, disk_budget) = automatic_config;
         let mut view = suffix.attach(base);
+        let default_cache = default_block_cache_limit(checkpoint_view);
+        view.base.set_block_cache_limit(default_cache)?;
         let automatic = automatic_config.unwrap_or(false);
         if let Some(view_log) = Arc::get_mut(&mut view.base.log) {
             view_log.try_share_checkpoint_view_file(&log);
@@ -926,7 +945,7 @@ impl CheckpointStore {
             max_log_bytes,
             checkpoint_view_limits: checkpoint_view,
             disk_budget: RwLock::new(disk_budget),
-            block_cache_limit: AtomicUsize::new(0),
+            block_cache_limit: AtomicUsize::new(default_cache),
             unverified_prefix: Mutex::new(unverified_prefix.map(Box::new)),
             generation_token: disk_budget::generation_token(),
         })
@@ -1605,21 +1624,25 @@ impl CheckpointStore {
     }
 
     /// Sets an inclusive limit on verified checkpoint blocks cached in memory,
-    /// shared by every read and snapshot of the current checkpoint. Zero, the
-    /// default, disables the cache. A cached block is served without reading
-    /// or rehashing it; logical read admission still charges it. Lowering
-    /// the limit evicts least recently used blocks. The setting follows
-    /// rollovers on this handle and resets on reopen.
+    /// shared by every read and snapshot of the current checkpoint. Newly
+    /// opened stores default to [`DEFAULT_CHECKPOINT_BLOCK_CACHE_BYTES`]
+    /// clamped to the configured checkpoint file limit; pass `0` to disable
+    /// caching. A cached block is served without reading or rehashing it;
+    /// logical read admission still charges it. Lowering the limit evicts
+    /// least recently used blocks. The setting follows rollovers and
+    /// compaction handoffs on this handle and resets to the default on reopen.
     pub fn set_checkpoint_block_cache_limit(&self, limit_bytes: usize) -> io::Result<()> {
-        let state = self.read()?;
+        let state = self.state.write().map_err(|_| uncertain())?;
+        self.ensure_healthy(&state)?;
         if limit_bytes as u64 > self.checkpoint_view_limits.max_file_bytes {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "checkpoint block cache limit exceeds the checkpoint file limit",
             ));
         }
+        state.view.base.set_block_cache_limit(limit_bytes)?;
         self.block_cache_limit.store(limit_bytes, Ordering::Release);
-        state.view.base.set_block_cache_limit(limit_bytes)
+        Ok(())
     }
 
     /// Reports the memory this store keeps for its disk-backed index: the
