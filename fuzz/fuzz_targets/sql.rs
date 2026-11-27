@@ -113,6 +113,8 @@ fn fuzz_raw_sql(backend: &Backend, data: &[u8]) {
             max_mutation_rows: 16,
             max_select_rows: 64,
             max_sort_rows: 64,
+            max_groups: 64,
+            max_distinct_values: 64,
             max_visited_rows: 128,
             max_params: 16,
             max_text_bytes: 256,
@@ -341,13 +343,15 @@ enum ModelError {
     Type,
     Constraint,
     Unsupported,
+    Bounds,
 }
 
 fn assert_expected_error(actual: Result<SqlOutcome, SqlError>, expected: ModelError, sql: &str) {
     match (actual, expected) {
         (Err(SqlError::Type(_)), ModelError::Type)
         | (Err(SqlError::Constraint(_)), ModelError::Constraint)
-        | (Err(SqlError::Unsupported { .. }), ModelError::Unsupported) => {}
+        | (Err(SqlError::Unsupported { .. }), ModelError::Unsupported)
+        | (Err(SqlError::Bounds(_)), ModelError::Bounds) => {}
         (other, exp) => panic!("expected {exp:?} for `{sql}`, got {other:?}"),
     }
 }
@@ -1649,6 +1653,499 @@ fn exec_delete_op(
     }
 }
 
+fn model_scalar_key(v: &SqlValue) -> (u8, i64, u64, String, bool) {
+    match v {
+        SqlValue::Null => (0, 0, 0, String::new(), false),
+        SqlValue::Integer(n) => (1, *n, 0, String::new(), false),
+        SqlValue::Real(f) => {
+            let norm = if *f == 0.0 { 0.0 } else { *f };
+            (2, 0, norm.to_bits(), String::new(), false)
+        }
+        SqlValue::Text(s) => (3, 0, 0, s.clone(), false),
+        SqlValue::Boolean(b) => (4, 0, 0, String::new(), *b),
+    }
+}
+
+fn model_cmp_values(a: &SqlValue, b: &SqlValue, desc: bool, nulls_first: bool) -> Ordering {
+    match (a, b) {
+        (SqlValue::Null, SqlValue::Null) => Ordering::Equal,
+        (SqlValue::Null, _) => {
+            if nulls_first {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        }
+        (_, SqlValue::Null) => {
+            if nulls_first {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        }
+        _ => {
+            let ord = compare_non_null(a, b).expect("same column type");
+            if desc { ord.reverse() } else { ord }
+        }
+    }
+}
+
+fn exec_aggregate_select_op(
+    db: &SqlDatabase<'_>,
+    model: &BTreeMap<Pk, Row>,
+    cur: &mut ByteCursor<'_>,
+    text_pk: bool,
+    check_forced_scan: bool,
+) {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum AggOp {
+        CountStar,
+        CountCol(Col),
+        CountDistinct(Col),
+        Sum(Col),
+        Avg(Col),
+        Min(Col),
+        Max(Col),
+    }
+
+    impl AggOp {
+        fn sql(self, style: u8) -> String {
+            match self {
+                Self::CountStar => "COUNT(*)".into(),
+                Self::CountCol(c) => format!("COUNT({})", c.sql_ident(style)),
+                Self::CountDistinct(c) => format!("COUNT(DISTINCT {})", c.sql_ident(style)),
+                Self::Sum(c) => format!("SUM({})", c.sql_ident(style)),
+                Self::Avg(c) => format!("AVG({})", c.sql_ident(style)),
+                Self::Min(c) => format!("MIN({})", c.sql_ident(style)),
+                Self::Max(c) => format!("MAX({})", c.sql_ident(style)),
+            }
+        }
+        fn default_name(self) -> String {
+            match self {
+                Self::CountStar => "count(*)".into(),
+                Self::CountCol(c) => format!("count({})", c.canonical_name()),
+                Self::CountDistinct(c) => format!("count(distinct {})", c.canonical_name()),
+                Self::Sum(c) => format!("sum({})", c.canonical_name()),
+                Self::Avg(c) => format!("avg({})", c.canonical_name()),
+                Self::Min(c) => format!("min({})", c.canonical_name()),
+                Self::Max(c) => format!("max({})", c.canonical_name()),
+            }
+        }
+        fn check_type(self, text_pk: bool) -> Result<(), ModelError> {
+            match self {
+                Self::Sum(c) | Self::Avg(c) if !c.kind(text_pk).is_numeric() => {
+                    Err(ModelError::Type)
+                }
+                _ => Ok(()),
+            }
+        }
+        fn eval(self, rows: &[&Row]) -> Result<SqlValue, ModelError> {
+            match self {
+                Self::CountStar => Ok(SqlValue::Integer(rows.len() as i64)),
+                Self::CountCol(c) => {
+                    let cnt = rows
+                        .iter()
+                        .filter(|r| !matches!(r.get(c), SqlValue::Null))
+                        .count();
+                    Ok(SqlValue::Integer(cnt as i64))
+                }
+                Self::CountDistinct(c) => {
+                    let mut set = HashSet::new();
+                    for r in rows {
+                        let v = r.get(c);
+                        if !matches!(v, SqlValue::Null) {
+                            set.insert(model_scalar_key(&v));
+                        }
+                    }
+                    Ok(SqlValue::Integer(set.len() as i64))
+                }
+                Self::Sum(c) => {
+                    let mut int_sum: i128 = 0;
+                    let mut real_sum: f64 = 0.0;
+                    let mut is_real = false;
+                    let mut count = 0usize;
+                    for r in rows {
+                        match r.get(c) {
+                            SqlValue::Null => {}
+                            SqlValue::Integer(n) => {
+                                int_sum += i128::from(n);
+                                count += 1;
+                            }
+                            SqlValue::Real(f) => {
+                                is_real = true;
+                                real_sum += f;
+                                count += 1;
+                            }
+                            _ => return Err(ModelError::Type),
+                        }
+                    }
+                    if count == 0 {
+                        Ok(SqlValue::Null)
+                    } else if is_real {
+                        if !real_sum.is_finite() {
+                            Err(ModelError::Bounds)
+                        } else {
+                            Ok(SqlValue::Real(if real_sum == 0.0 { 0.0 } else { real_sum }))
+                        }
+                    } else {
+                        i64::try_from(int_sum)
+                            .map(SqlValue::Integer)
+                            .map_err(|_| ModelError::Bounds)
+                    }
+                }
+                Self::Avg(c) => {
+                    let mut int_sum: i128 = 0;
+                    let mut real_sum: f64 = 0.0;
+                    let mut is_real = false;
+                    let mut count = 0u64;
+                    for r in rows {
+                        match r.get(c) {
+                            SqlValue::Null => {}
+                            SqlValue::Integer(n) => {
+                                int_sum += i128::from(n);
+                                count += 1;
+                            }
+                            SqlValue::Real(f) => {
+                                is_real = true;
+                                real_sum += f;
+                                count += 1;
+                            }
+                            _ => return Err(ModelError::Type),
+                        }
+                    }
+                    if count == 0 {
+                        Ok(SqlValue::Null)
+                    } else {
+                        let avg = if is_real {
+                            real_sum / (count as f64)
+                        } else {
+                            (int_sum as f64) / (count as f64)
+                        };
+                        if !avg.is_finite() {
+                            Err(ModelError::Bounds)
+                        } else {
+                            Ok(SqlValue::Real(if avg == 0.0 { 0.0 } else { avg }))
+                        }
+                    }
+                }
+                Self::Min(c) => {
+                    let mut best: Option<SqlValue> = None;
+                    for r in rows {
+                        let v = r.get(c);
+                        if matches!(v, SqlValue::Null) {
+                            continue;
+                        }
+                        if best
+                            .as_ref()
+                            .is_none_or(|b| compare_non_null(&v, b).unwrap() == Ordering::Less)
+                        {
+                            best = Some(if let SqlValue::Real(f) = v {
+                                SqlValue::Real(if f == 0.0 { 0.0 } else { f })
+                            } else {
+                                v
+                            });
+                        }
+                    }
+                    Ok(best.unwrap_or(SqlValue::Null))
+                }
+                Self::Max(c) => {
+                    let mut best: Option<SqlValue> = None;
+                    for r in rows {
+                        let v = r.get(c);
+                        if matches!(v, SqlValue::Null) {
+                            continue;
+                        }
+                        if best
+                            .as_ref()
+                            .is_none_or(|b| compare_non_null(&v, b).unwrap() == Ordering::Greater)
+                        {
+                            best = Some(if let SqlValue::Real(f) = v {
+                                SqlValue::Real(if f == 0.0 { 0.0 } else { f })
+                            } else {
+                                v
+                            });
+                        }
+                    }
+                    Ok(best.unwrap_or(SqlValue::Null))
+                }
+            }
+        }
+    }
+
+    let grp_count = (cur.next_or(0) % 3) as usize;
+    let mut group_cols = Vec::new();
+    for _ in 0..grp_count {
+        let c = Col::from_byte(cur.next_or(0));
+        if !group_cols.contains(&c) {
+            group_cols.push(c);
+        }
+    }
+
+    let mut select_sql_parts = Vec::new();
+    let mut expected_cols = Vec::new();
+    #[derive(Clone, Copy)]
+    enum SelOut {
+        Group(usize),
+        Agg(AggOp),
+    }
+    let mut sel_outs = Vec::new();
+
+    for (gi, &gc) in group_cols.iter().enumerate() {
+        let style = cur.next_or(0);
+        if cur.next_or(0) & 1 != 0 {
+            let alias = format!("g_{gi}");
+            select_sql_parts.push(format!("{} AS {alias}", gc.sql_ident(style)));
+            expected_cols.push(alias);
+        } else {
+            select_sql_parts.push(gc.sql_ident(style).to_string());
+            expected_cols.push(gc.canonical_name().to_string());
+        }
+        sel_outs.push(SelOut::Group(gi));
+    }
+
+    let agg_count = if group_cols.is_empty() {
+        1 + (cur.next_or(0) % 3) as usize
+    } else {
+        (cur.next_or(0) % 3) as usize
+    };
+    let mut agg_ops = Vec::new();
+    for ai in 0..agg_count {
+        let col = Col::from_byte(cur.next_or(0));
+        let op = match cur.next_or(0) % 7 {
+            0 => AggOp::CountStar,
+            1 => AggOp::CountCol(col),
+            2 => AggOp::CountDistinct(col),
+            3 => AggOp::Sum(col),
+            4 => AggOp::Avg(col),
+            5 => AggOp::Min(col),
+            _ => AggOp::Max(col),
+        };
+        let style = cur.next_or(0);
+        let op_sql = op.sql(style);
+        if cur.next_or(0) & 1 != 0 {
+            let alias = format!("a_{ai}");
+            select_sql_parts.push(format!("{op_sql} AS {alias}"));
+            expected_cols.push(alias);
+        } else {
+            select_sql_parts.push(op_sql);
+            expected_cols.push(op.default_name());
+        }
+        agg_ops.push(op);
+        sel_outs.push(SelOut::Agg(op));
+    }
+
+    let mut sql = format!("SELECT {} FROM m", select_sql_parts.join(", "));
+    let mut params = Vec::new();
+
+    let where_node = if !cur.next_or(0).is_multiple_of(4) {
+        let (w_sql, w_node) = gen_where_expr(cur, text_pk, &mut params, 1);
+        sql.push_str(" WHERE ");
+        sql.push_str(&w_sql);
+        Some(w_node)
+    } else {
+        None
+    };
+
+    if !group_cols.is_empty() {
+        sql.push_str(" GROUP BY ");
+        for (i, &c) in group_cols.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            sql.push_str(c.sql_ident(cur.next_or(0)));
+        }
+    }
+
+    let min_cnt = if cur.next_or(0) & 1 != 0 {
+        let th = (cur.next_or(0) % 4) as i64;
+        sql.push_str(" HAVING COUNT(*) >= ?");
+        params.push(SqlValue::Integer(th));
+        Some(th)
+    } else {
+        None
+    };
+
+    let order_by_agg = !agg_ops.is_empty() && cur.next_or(0) & 1 != 0;
+    let order_desc = cur.next_or(0) & 1 != 0;
+    let order_nulls = match cur.next_or(0) % 3 {
+        0 => None,
+        1 => Some(true),
+        _ => Some(false),
+    };
+    if order_by_agg {
+        sql.push_str(" ORDER BY ");
+        sql.push_str(&agg_ops[0].sql(0));
+        if order_desc {
+            sql.push_str(" DESC");
+        }
+        if let Some(nf) = order_nulls {
+            sql.push_str(if nf { " NULLS FIRST" } else { " NULLS LAST" });
+        }
+    }
+
+    let (limit, offset) = if cur.next_or(0) & 1 != 0 {
+        let lim = (cur.next_or(0) % 5) as usize;
+        let off = (cur.next_or(0) % 4) as usize;
+        sql.push_str(&format!(" LIMIT {lim} OFFSET {off}"));
+        (Some(lim), off)
+    } else {
+        (None, 0)
+    };
+
+    let mut bind_err = None;
+    for p in &params {
+        if let SqlValue::Real(f) = p
+            && !f.is_finite()
+        {
+            bind_err = Some(ModelError::Type);
+            break;
+        }
+    }
+    if bind_err.is_none()
+        && let Some(ref w) = where_node
+        && let Err(e) = w.check_types(text_pk)
+    {
+        bind_err = Some(e);
+    }
+    if bind_err.is_none() {
+        for op in &agg_ops {
+            if let Err(e) = op.check_type(text_pk) {
+                bind_err = Some(e);
+                break;
+            }
+        }
+    }
+
+    let actual = db.execute(&sql, &params);
+    if let Some(exp_err) = bind_err {
+        assert_expected_error(actual, exp_err, &sql);
+        return;
+    }
+
+    let filtered: Vec<&Row> = model
+        .values()
+        .filter(|row| {
+            where_node
+                .as_ref()
+                .is_none_or(|w| w.eval(row) == Some(true))
+        })
+        .collect();
+
+    type ModelGroupKey = Vec<(u8, i64, u64, String, bool)>;
+    type GroupBucket<'a> = (Vec<SqlValue>, Vec<&'a Row>);
+    let mut group_map: Vec<(ModelGroupKey, GroupBucket<'_>)> = Vec::new();
+    if group_cols.is_empty() {
+        group_map.push((Vec::new(), (Vec::new(), filtered)));
+    } else {
+        for row in filtered {
+            let vals: Vec<SqlValue> = group_cols.iter().map(|&c| row.get(c)).collect();
+            let keys: Vec<_> = vals.iter().map(model_scalar_key).collect();
+            if let Some((_, (_, bucket))) = group_map.iter_mut().find(|(k, _)| *k == keys) {
+                bucket.push(row);
+            } else {
+                group_map.push((keys, (vals, vec![row])));
+            }
+        }
+    }
+
+    let mut final_groups: Vec<(Vec<SqlValue>, Vec<SqlValue>)> = Vec::new();
+    let mut runtime_err: Option<ModelError> = None;
+    for (_, (gvals, rows)) in group_map {
+        let mut agg_vals = Vec::with_capacity(agg_ops.len());
+        for op in &agg_ops {
+            match op.eval(&rows) {
+                Ok(v) => agg_vals.push(v),
+                Err(e) => {
+                    runtime_err = Some(e);
+                    break;
+                }
+            }
+        }
+        if runtime_err.is_some() {
+            break;
+        }
+        if let Some(th) = min_cnt
+            && (rows.len() as i64) < th
+        {
+            continue;
+        }
+        final_groups.push((gvals, agg_vals));
+    }
+
+    if let Some(exp_err) = runtime_err {
+        assert_expected_error(actual, exp_err, &sql);
+        return;
+    }
+
+    if limit == Some(0) {
+        assert_eq!(
+            actual.unwrap(),
+            SqlOutcome::Rows {
+                columns: expected_cols,
+                rows: Vec::new(),
+            }
+        );
+        return;
+    }
+
+    final_groups.sort_by(|(ga, aa), (gb, ab)| {
+        if order_by_agg {
+            let nf = order_nulls.unwrap_or(!order_desc);
+            let ord = model_cmp_values(&aa[0], &ab[0], order_desc, nf);
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        }
+        for (va, vb) in ga.iter().zip(gb.iter()) {
+            let ord = model_cmp_values(va, vb, false, true);
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        }
+        Ordering::Equal
+    });
+
+    let expected_rows: Vec<Vec<SqlValue>> = final_groups
+        .into_iter()
+        .skip(offset)
+        .take(limit.unwrap_or(usize::MAX))
+        .map(|(gvals, avals)| {
+            sel_outs
+                .iter()
+                .map(|out| match out {
+                    SelOut::Group(gi) => gvals[*gi].clone(),
+                    SelOut::Agg(op) => {
+                        let idx = agg_ops
+                            .iter()
+                            .position(|candidate| candidate == op)
+                            .unwrap();
+                        avals[idx].clone()
+                    }
+                })
+                .collect()
+        })
+        .collect();
+
+    let outcome = actual.unwrap_or_else(|e| panic!("AGG SELECT `{sql}` failed: {e}"));
+    if check_forced_scan {
+        let scanned = db
+            .execute_force_full_scan_for_test(&sql, &params)
+            .unwrap_or_else(|e| panic!("forced-scan AGG SELECT `{sql}` failed: {e}"));
+        assert_eq!(
+            outcome, scanned,
+            "indexed vs forced-scan agg mismatch for `{sql}`"
+        );
+    }
+    assert_eq!(
+        outcome,
+        SqlOutcome::Rows {
+            columns: expected_cols,
+            rows: expected_rows,
+        },
+        "AGG SELECT mismatch for `{sql}` params={params:?}"
+    );
+}
+
 fn exec_error_probe(db: &SqlDatabase<'_>, selector: u8) {
     match selector % 5 {
         0 => assert!(matches!(
@@ -1785,13 +2282,16 @@ fn fuzz_structured_model(root: &Path, data: &[u8]) -> Backend {
         let Some(op) = cur.next() else {
             break;
         };
-        match op % 10 {
+        match op % 11 {
             0 | 1 => {
                 exec_insert_op(&backend.sql(), &mut model, &mut cur, text_pk, has_unique_n);
                 check_full_table(&backend.sql(), &model);
             }
-            2 | 3 => {
+            2 => {
                 exec_select_op(&backend.sql(), &model, &mut cur, text_pk, with_indexes);
+            }
+            3 => {
+                exec_aggregate_select_op(&backend.sql(), &model, &mut cur, text_pk, with_indexes);
             }
             4 => {
                 exec_update_op(&backend.sql(), &mut model, &mut cur, text_pk, has_unique_n);

@@ -826,12 +826,18 @@ fn unsupported_sql_features_return_unsupported_naming_feature() {
         "SELECT a.id FROM a CROSS JOIN b",
         "SELECT a.id FROM a JOIN b USING (id)",
         "SELECT * FROM a, b",
-        "SELECT id FROM a GROUP BY id",
+        "SELECT id FROM a GROUP BY ROLLUP (id)",
+        "SELECT id FROM a GROUP BY 1",
+        "SELECT id FROM a GROUP BY id + 1",
         "SELECT id FROM a ORDER BY 1",
         "SELECT id FROM a OFFSET 5",
         "UPDATE a SET b = 1 LIMIT 5",
         "DELETE FROM a ORDER BY id LIMIT 1",
-        "SELECT COUNT(*) FROM a",
+        "SELECT SUM(DISTINCT id) FROM a",
+        "SELECT COUNT(*) OVER () FROM a",
+        "SELECT COUNT(*) + 1 FROM a",
+        "SELECT SUM(COUNT(*)) FROM a",
+        "SELECT * FROM a WHERE COUNT(*) > 1",
         "SELECT * FROM (SELECT * FROM a)",
         "SELECT * FROM a WHERE id IN (SELECT id FROM b)",
         "SELECT * FROM a WHERE EXISTS (SELECT id FROM b)",
@@ -903,6 +909,30 @@ fn all_bounds_enforced_at_limit_and_limit_plus_one() {
 
     let bad = SqlLimits {
         max_sort_rows: database_engine::sql::MAX_SQL_SORT_ROWS + 1,
+        ..Default::default()
+    };
+    assert!(matches!(bad.validate(), Err(SqlError::Bounds(_))));
+
+    let bad = SqlLimits {
+        max_groups: database_engine::sql::MAX_SQL_GROUPS + 1,
+        ..Default::default()
+    };
+    assert!(matches!(bad.validate(), Err(SqlError::Bounds(_))));
+
+    let bad = SqlLimits {
+        max_distinct_values: database_engine::sql::MAX_SQL_DISTINCT_VALUES + 1,
+        ..Default::default()
+    };
+    assert!(matches!(bad.validate(), Err(SqlError::Bounds(_))));
+
+    let bad = SqlLimits {
+        max_groups: 0,
+        ..Default::default()
+    };
+    assert!(matches!(bad.validate(), Err(SqlError::Bounds(_))));
+
+    let bad = SqlLimits {
+        max_distinct_values: 0,
         ..Default::default()
     };
     assert!(matches!(bad.validate(), Err(SqlError::Bounds(_))));

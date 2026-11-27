@@ -309,6 +309,67 @@ fn indexed_workload(name: &str, db: &dyn Backend, rows: i64, ops: i64) -> Result
     ))
 }
 
+fn agg_row_params(id: i64) -> Vec<SqlValue> {
+    vec![
+        SqlValue::Integer(id),
+        SqlValue::Integer(id % 100),
+        SqlValue::Integer(id * 3 + 1),
+        SqlValue::Real(id as f64 / 4.0),
+        SqlValue::Boolean(id % 3 == 0),
+    ]
+}
+
+fn aggregate_workload(name: &str, db: &dyn Backend, rows: i64, ops: i64) -> Result<String> {
+    db.exec(
+        "CREATE TABLE agg_items (id INTEGER PRIMARY KEY, grp INTEGER NOT NULL, val INTEGER NOT NULL, score REAL, active BOOLEAN NOT NULL)",
+        &[],
+    )?;
+    let tuple = "(?, ?, ?, ?, ?)";
+    for chunk in (0..rows).collect::<Vec<_>>().chunks(100) {
+        let sql = format!(
+            "INSERT INTO agg_items VALUES {}",
+            vec![tuple; chunk.len()].join(", ")
+        );
+        let params = chunk
+            .iter()
+            .flat_map(|id| agg_row_params(*id))
+            .collect::<Vec<_>>();
+        db.exec(&sql, &params)?;
+    }
+
+    let count_sql = "SELECT COUNT(*) FROM agg_items";
+    let sum_where_sql = "SELECT SUM(val) FROM agg_items WHERE active = TRUE AND score >= ?";
+    let group_sql = "SELECT grp, COUNT(*), SUM(val), AVG(score) FROM agg_items GROUP BY grp";
+    let (mut count_samples, mut sum_where_samples, mut group_samples) = (vec![], vec![], vec![]);
+    let iters = ops.clamp(1, 20);
+    let expected_groups = (rows as usize).min(100);
+
+    for _ in 0..iters {
+        time(&mut count_samples, || {
+            (db.exec(count_sql, &[])? == 1)
+                .then_some(())
+                .ok_or_else(|| "COUNT(*) unexpected row count".into())
+        })?;
+        time(&mut sum_where_samples, || {
+            (db.exec(sum_where_sql, &[SqlValue::Real(0.0)])? == 1)
+                .then_some(())
+                .ok_or_else(|| "SUM WHERE unexpected row count".into())
+        })?;
+        time(&mut group_samples, || {
+            (db.exec(group_sql, &[])? == expected_groups)
+                .then_some(())
+                .ok_or_else(|| "GROUP BY unexpected group count".into())
+        })?;
+    }
+
+    Ok(format!(
+        "{{\"backend\":\"{name}-agg\",\"rows\":{rows},\"groups\":{expected_groups},\"count_star\":{},\"sum_where\":{},\"group_by_100\":{}}}",
+        Samples(count_samples).json(),
+        Samples(sum_where_samples).json(),
+        Samples(group_samples).json(),
+    ))
+}
+
 fn sqlite(path: &Path) -> Result<Sqlite> {
     let conn = rusqlite::Connection::open(path)?;
     conn.execute_batch(
@@ -440,5 +501,43 @@ fn main() -> Result<()> {
     let sqlite_idx = sqlite(&root.join("sqlite-idx.db"))?;
     println!("{}", indexed_workload("sqlite", &sqlite_idx, rows, ops)?);
     drop(sqlite_idx);
+
+    let store_agg = Store::open(root.join("store-agg"))?;
+    match aggregate_workload(
+        "emda-store",
+        &SqlDatabase::new(DocumentDatabase::new(&store_agg)),
+        rows,
+        ops,
+    ) {
+        Ok(line) => println!("{line}"),
+        Err(err) => println!(
+            "{{\"backend\":\"emda-store-agg\",\"rows\":{rows},\"skipped\":{:?}}}",
+            err.to_string()
+        ),
+    }
+    drop(store_agg);
+
+    let initial_agg = Store::open(root.join("checkpoint-agg-log"))?;
+    let digest_agg = initial_agg.checkpoint_to(root.join("checkpoint-agg"))?;
+    drop(initial_agg);
+    let ckpt_agg = CheckpointStore::open(
+        root.join("checkpoint-agg-log"),
+        root.join("checkpoint-agg"),
+        &digest_agg,
+    )?;
+    println!(
+        "{}",
+        aggregate_workload(
+            "emda-checkpoint",
+            &SqlDatabase::new(DocumentDatabase::with_checkpoint_store(&ckpt_agg)),
+            rows,
+            ops
+        )?
+    );
+    drop(ckpt_agg);
+
+    let sqlite_agg = sqlite(&root.join("sqlite-agg.db"))?;
+    println!("{}", aggregate_workload("sqlite", &sqlite_agg, rows, ops)?);
+    drop(sqlite_agg);
     Ok(())
 }
