@@ -124,6 +124,30 @@ pub(crate) struct Log {
     witness: Option<Witness>,
     metadata: bool,
     anchor: Option<Witness>,
+    // True only for V2 stores (external witness) when the log volume supports
+    // barrier-ordered sync (`F_BARRIERFSYNC` on macOS APFS/HFS+) and the log
+    // and witness reside on the same device. Never true for legacy or V3 logs.
+    ordered_barrier_sync: bool,
+}
+
+fn compute_ordered_barrier_sync(
+    file: &dyn LogIo,
+    metadata: bool,
+    witness: Option<&Witness>,
+) -> bool {
+    if metadata {
+        return false;
+    }
+    let Some(witness) = witness else {
+        return false;
+    };
+    let Ok(true) = file.supports_ordered_witness_barrier() else {
+        return false;
+    };
+    match (file.file_identity(), witness.device_id()) {
+        (Ok(Some((log_dev, _))), Ok(Some(witness_dev))) => log_dev == witness_dev,
+        _ => false,
+    }
 }
 
 /// Appends to an exclusively owned staging log. The stage must be discarded
@@ -273,12 +297,15 @@ impl Log {
         }
         // Match ordinary writable-open's persistence requirement for entries.
         File::open(path)?.sync_all()?;
+        let ordered_barrier_sync =
+            compute_ordered_barrier_sync(file.as_ref(), metadata, Some(&witness));
         Ok(Self {
             file,
             log_id: Some(id),
             witness: Some(witness),
             metadata,
             anchor,
+            ordered_barrier_sync,
         })
     }
 
@@ -319,6 +346,7 @@ impl Log {
                 witness: Some(witness),
                 metadata,
                 anchor,
+                ordered_barrier_sync: false,
             },
             boundary,
         ))
@@ -595,6 +623,7 @@ impl Log {
             witness: None,
             metadata,
             anchor: None,
+            ordered_barrier_sync: false,
         };
         let verify_header = || {
             let mut actual = [0; LOG_HEADER_SIZE];
@@ -621,6 +650,7 @@ impl Log {
             witness: None,
             metadata,
             anchor: None,
+            ordered_barrier_sync: false,
         };
         if let Some((length, digest)) = expected {
             log.verify_digest_range(0, length, digest)?;
@@ -673,12 +703,15 @@ impl Log {
         (limits, max_log_scan_bytes): (StoreRecoveryLimits, Option<u64>),
         checkpoint: Option<(&Path, &[u8; 32])>,
     ) -> io::Result<(Self, BTreeMap<Vec<u8>, ValueLocation>, ReplayedEnd)> {
+        let ordered_barrier_sync =
+            compute_ordered_barrier_sync(file.as_ref(), metadata, witness.as_ref());
         let log = Self {
             file,
             log_id,
             witness,
             metadata,
             anchor: None,
+            ordered_barrier_sync,
         };
         let start = if let Some((path, trusted_digest)) = checkpoint {
             if limits.max_live_key_bytes.is_some() {
@@ -957,10 +990,22 @@ impl Log {
         })
     }
 
+    fn sync_log_before_witness(&self) -> io::Result<()> {
+        if self.ordered_barrier_sync {
+            debug_assert!(!self.metadata && self.witness.is_some());
+            if !self.metadata && self.witness.is_some() {
+                return self.file.sync_ordered_before_witness();
+            }
+        }
+        self.file.sync_data()
+    }
+
     pub(crate) fn sync_data(&self) -> io::Result<()> {
         self.require_attached_witness()?;
         // V3's witness uses fsync on the log inode, covering data AND xattrs.
-        // V2 still requires log fdatasync followed by the external witness sync.
+        // V2 requires ordered log synchronization followed by witness sync; on
+        // macOS APFS/HFS+ volumes where log and witness share a device,
+        // F_BARRIERFSYNC orders the log before the witness's F_FULLFSYNC.
         if self.metadata {
             return self
                 .witness
@@ -968,9 +1013,9 @@ impl Log {
                 .ok_or_else(|| io::Error::other("metadata log has no attached commit witness"))?
                 .advance(self.file.len()?);
         }
-        self.file.sync_data()?;
+        self.sync_log_before_witness()?;
         if let Some(witness) = &self.witness {
-            witness.advance(self.file.len()?)?;
+            witness.advance_with_sync(self.file.len()?, self.ordered_barrier_sync)?;
         }
         Ok(())
     }
@@ -992,10 +1037,10 @@ impl Log {
             ));
         }
         if !self.metadata {
-            self.file.sync_data()?;
+            self.sync_log_before_witness()?;
         }
         if let Some(witness) = &self.witness {
-            witness.advance_tracked(boundary, tracker)?;
+            witness.advance_tracked_with_sync(boundary, tracker, self.ordered_barrier_sync)?;
         }
         Ok(())
     }
@@ -1066,6 +1111,7 @@ impl Log {
         }
         self.witness = None;
         self.anchor = None;
+        self.ordered_barrier_sync = false;
         Ok(())
     }
 
@@ -1117,12 +1163,21 @@ impl Log {
 
     #[cfg(test)]
     pub(crate) fn attach_test_witness(&mut self, witness: Witness) {
+        self.ordered_barrier_sync =
+            compute_ordered_barrier_sync(self.file.as_ref(), self.metadata, Some(&witness));
         self.witness = Some(witness);
     }
 
     #[cfg(test)]
     pub(crate) fn replace_io_for_test(&mut self, file: Box<dyn LogIo>) {
+        self.ordered_barrier_sync =
+            compute_ordered_barrier_sync(file.as_ref(), self.metadata, self.witness.as_ref());
         self.file = file;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn uses_ordered_barrier_sync(&self) -> bool {
+        self.ordered_barrier_sync
     }
 
     pub(crate) fn verify_witness(&self) -> io::Result<()> {

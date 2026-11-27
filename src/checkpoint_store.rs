@@ -239,6 +239,11 @@ pub struct CheckpointStore {
 }
 
 impl CheckpointStore {
+    #[cfg(all(test, target_os = "macos"))]
+    pub(crate) fn uses_ordered_barrier_sync_for_test(&self) -> bool {
+        self.log.uses_ordered_barrier_sync()
+    }
+
     /// Opens an existing witnessed store and checkpoint with the hard caps.
     /// A managed selection must instead be opened with `open_managed`.
     pub fn open(

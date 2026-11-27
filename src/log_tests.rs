@@ -327,6 +327,7 @@ fn log_sync_precedes_witness_and_all_boundary_failures_propagate() {
                 id,
                 28,
             )),
+            ordered_barrier_sync: false,
         };
         let outcome = log.sync_data();
         assert_eq!(outcome.is_ok(), fault == Fault::None);
@@ -371,6 +372,7 @@ fn metadata_path_requires_witness_update_and_inode_sync_without_a_second_log_syn
                 id,
                 28,
             )),
+            ordered_barrier_sync: false,
         };
         assert_eq!(log.sync_data().is_ok(), fault == Fault::None);
         assert_eq!(&*state.events.lock().unwrap(), expected);
@@ -468,6 +470,7 @@ fn replay_log_with_failure(
         }),
         log_id: id,
         witness: None,
+        ordered_barrier_sync: false,
     };
     (reads, log)
 }
@@ -1416,5 +1419,452 @@ fn prefix_reconstruction_requires_attached_witness() {
     assert!(
         log.reconstruct_prefix_index_peaks(&BTreeMap::new(), LOG_HEADER_SIZE as u64, limits)
             .is_err()
+    );
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BarrierFault {
+    None,
+    LogBarrier,
+    WitnessRead,
+    WitnessWriteBefore,
+    WitnessWriteAfter,
+    WitnessFullSync,
+}
+
+struct BarrierShared {
+    events: Mutex<Vec<&'static str>>,
+    witness: Mutex<Vec<u8>>,
+    supports_barrier: Result<bool, &'static str>,
+    log_dev: Result<Option<u64>, &'static str>,
+    witness_dev: Result<Option<u64>, &'static str>,
+    fault: BarrierFault,
+}
+
+struct BarrierLogHandle(Arc<BarrierShared>);
+struct BarrierWitnessHandle(Arc<BarrierShared>);
+
+impl LogIo for BarrierLogHandle {
+    fn len(&self) -> io::Result<u64> {
+        Ok(128)
+    }
+    fn read_exact_at(&self, _buffer: &mut [u8], _offset: u64) -> io::Result<()> {
+        unreachable!()
+    }
+    fn append_all(&self, _bytes: &[u8]) -> io::Result<()> {
+        unreachable!()
+    }
+    fn sync_data(&self) -> io::Result<()> {
+        self.0.events.lock().unwrap().push("log_sync_full");
+        Ok(())
+    }
+    fn supports_ordered_witness_barrier(&self) -> io::Result<bool> {
+        self.0.supports_barrier.map_err(io::Error::other)
+    }
+    fn sync_ordered_before_witness(&self) -> io::Result<()> {
+        self.0.events.lock().unwrap().push("log_sync_barrier");
+        if self.0.fault == BarrierFault::LogBarrier {
+            return Err(io::Error::other("injected barrier sync failure"));
+        }
+        Ok(())
+    }
+    fn file_identity(&self) -> io::Result<Option<(u64, u64)>> {
+        self.0
+            .log_dev
+            .map(|dev| dev.map(|id| (id, 1)))
+            .map_err(io::Error::other)
+    }
+}
+
+impl WitnessIo for BarrierWitnessHandle {
+    fn len(&self) -> io::Result<u64> {
+        Ok(self.0.witness.lock().unwrap().len() as u64)
+    }
+    fn read_exact_at(&self, bytes: &mut [u8], _offset: u64) -> io::Result<()> {
+        self.0.events.lock().unwrap().push("witness_read");
+        if self.0.fault == BarrierFault::WitnessRead {
+            return Err(io::Error::other("injected witness read failure"));
+        }
+        bytes.copy_from_slice(&self.0.witness.lock().unwrap());
+        Ok(())
+    }
+    fn write_all_at(&self, bytes: &[u8], _offset: u64) -> io::Result<()> {
+        self.0.events.lock().unwrap().push("witness_write");
+        if self.0.fault == BarrierFault::WitnessWriteBefore {
+            return Err(io::Error::other("injected witness write failure"));
+        }
+        self.0.witness.lock().unwrap().copy_from_slice(bytes);
+        if self.0.fault == BarrierFault::WitnessWriteAfter {
+            return Err(io::Error::other("injected witness write outcome unknown"));
+        }
+        Ok(())
+    }
+    fn sync_data(&self) -> io::Result<()> {
+        self.0.events.lock().unwrap().push("witness_sync_data");
+        Ok(())
+    }
+    fn sync_full(&self) -> io::Result<()> {
+        self.0.events.lock().unwrap().push("witness_sync_full");
+        if self.0.fault == BarrierFault::WitnessFullSync {
+            return Err(io::Error::other("injected witness fullfsync failure"));
+        }
+        Ok(())
+    }
+    fn device_id(&self) -> io::Result<Option<u64>> {
+        self.0.witness_dev.map_err(io::Error::other)
+    }
+}
+
+#[test]
+fn ordered_barrier_sync_uses_barrier_then_full_witness_sync_and_propagates_faults() {
+    use crate::publication_outcome::{ManagedRebuildFailure, track_managed_rebuild};
+
+    let id = [9_u8; 16];
+    for (fault, expected_events, expected_offset, unknown_tail_adoption) in [
+        (
+            BarrierFault::None,
+            &[
+                "log_sync_barrier",
+                "witness_read",
+                "witness_write",
+                "witness_sync_full",
+            ][..],
+            128_u64,
+            false,
+        ),
+        (
+            BarrierFault::LogBarrier,
+            &["log_sync_barrier"][..],
+            29_u64,
+            false,
+        ),
+        (
+            BarrierFault::WitnessRead,
+            &["log_sync_barrier", "witness_read"][..],
+            29_u64,
+            false,
+        ),
+        (
+            BarrierFault::WitnessWriteBefore,
+            &["log_sync_barrier", "witness_read", "witness_write"][..],
+            29_u64,
+            true,
+        ),
+        (
+            BarrierFault::WitnessWriteAfter,
+            &["log_sync_barrier", "witness_read", "witness_write"][..],
+            128_u64,
+            true,
+        ),
+        (
+            BarrierFault::WitnessFullSync,
+            &[
+                "log_sync_barrier",
+                "witness_read",
+                "witness_write",
+                "witness_sync_full",
+            ][..],
+            128_u64,
+            true,
+        ),
+    ] {
+        for tracked in [false, true] {
+            let shared = Arc::new(BarrierShared {
+                events: Mutex::new(Vec::new()),
+                witness: Mutex::new(witness::encode_for_test(&id, 29)),
+                supports_barrier: Ok(true),
+                log_dev: Ok(Some(42)),
+                witness_dev: Ok(Some(42)),
+                fault,
+            });
+            let witness =
+                Witness::for_test(Box::new(BarrierWitnessHandle(Arc::clone(&shared))), id, 29);
+            let file: Box<dyn LogIo> = Box::new(BarrierLogHandle(Arc::clone(&shared)));
+            let ordered = compute_ordered_barrier_sync(file.as_ref(), false, Some(&witness));
+            assert!(ordered);
+            let log = Log {
+                file,
+                log_id: Some(id),
+                witness: Some(witness),
+                metadata: false,
+                anchor: None,
+                ordered_barrier_sync: ordered,
+            };
+            assert!(log.uses_ordered_barrier_sync());
+            if tracked {
+                let result = track_managed_rebuild(|tracker| {
+                    log.sync_validated_boundary_tracked(128, Some(&tracker.tail_adoption))
+                });
+                match fault {
+                    BarrierFault::None => assert!(result.is_ok()),
+                    _ if unknown_tail_adoption => assert!(matches!(
+                        result,
+                        Err(ManagedRebuildFailure::TailAdoptionOutcomeUnknown(_))
+                    )),
+                    _ => assert!(matches!(
+                        result,
+                        Err(ManagedRebuildFailure::NotPublished(_))
+                    )),
+                }
+            } else {
+                let result = log.sync_data();
+                assert_eq!(result.is_ok(), fault == BarrierFault::None);
+            }
+            assert_eq!(&*shared.events.lock().unwrap(), expected_events);
+            let stored = witness::decode(
+                shared
+                    .witness
+                    .lock()
+                    .unwrap()
+                    .as_slice()
+                    .try_into()
+                    .unwrap(),
+                &id,
+            )
+            .unwrap();
+            assert_eq!(stored, expected_offset);
+        }
+    }
+}
+
+#[test]
+fn ordered_barrier_sync_is_disabled_for_cross_device_missing_dev_legacy_and_v3() {
+    let id = [11_u8; 16];
+    let fallback_v2 = &[
+        "log_sync_full",
+        "witness_read",
+        "witness_write",
+        "witness_sync_data",
+    ][..];
+    for (name, metadata, has_witness, supports_barrier, log_dev, witness_dev, expected_events) in [
+        (
+            "cross-device-v2",
+            false,
+            true,
+            Ok(true),
+            Ok(Some(1)),
+            Ok(Some(2)),
+            fallback_v2,
+        ),
+        (
+            "unknown-log-dev-v2",
+            false,
+            true,
+            Ok(true),
+            Ok(None),
+            Ok(Some(2)),
+            fallback_v2,
+        ),
+        (
+            "unknown-witness-dev-v2",
+            false,
+            true,
+            Ok(true),
+            Ok(Some(1)),
+            Ok(None),
+            fallback_v2,
+        ),
+        (
+            "unsupported-volume-v2",
+            false,
+            true,
+            Ok(false),
+            Ok(Some(1)),
+            Ok(Some(1)),
+            fallback_v2,
+        ),
+        (
+            "capability-probe-error-v2",
+            false,
+            true,
+            Err("probe error"),
+            Ok(Some(1)),
+            Ok(Some(1)),
+            fallback_v2,
+        ),
+        (
+            "log-dev-error-v2",
+            false,
+            true,
+            Ok(true),
+            Err("log stat error"),
+            Ok(Some(1)),
+            fallback_v2,
+        ),
+        (
+            "witness-dev-error-v2",
+            false,
+            true,
+            Ok(true),
+            Ok(Some(1)),
+            Err("witness stat error"),
+            fallback_v2,
+        ),
+        (
+            "legacy-unwitnessed",
+            false,
+            false,
+            Ok(true),
+            Ok(Some(1)),
+            Ok(Some(1)),
+            &["log_sync_full"][..],
+        ),
+        (
+            "v3-metadata",
+            true,
+            true,
+            Ok(true),
+            Ok(Some(1)),
+            Ok(Some(1)),
+            &["witness_read", "witness_write", "witness_sync_data"][..],
+        ),
+    ] {
+        let shared = Arc::new(BarrierShared {
+            events: Mutex::new(Vec::new()),
+            witness: Mutex::new(witness::encode_for_test(&id, 29)),
+            supports_barrier,
+            log_dev,
+            witness_dev,
+            fault: BarrierFault::None,
+        });
+        let witness = has_witness.then(|| {
+            Witness::for_test(Box::new(BarrierWitnessHandle(Arc::clone(&shared))), id, 29)
+        });
+        let file: Box<dyn LogIo> = Box::new(BarrierLogHandle(Arc::clone(&shared)));
+        let ordered = compute_ordered_barrier_sync(file.as_ref(), metadata, witness.as_ref());
+        assert!(!ordered, "{name} must not enable ordered_barrier_sync");
+        let log = Log {
+            file,
+            log_id: has_witness.then_some(id),
+            witness,
+            metadata,
+            anchor: None,
+            ordered_barrier_sync: ordered,
+        };
+        assert!(!log.uses_ordered_barrier_sync(), "{name}");
+        log.sync_data().unwrap();
+        assert_eq!(&*shared.events.lock().unwrap(), expected_events, "{name}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_new_store_creates_v2_with_ordered_barrier_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let store = crate::Store::open(&path).unwrap();
+    assert!(store.uses_ordered_barrier_sync_for_test());
+    store.put(b"k1", b"v1").unwrap();
+    let len_after_k1 = std::fs::metadata(path.join("records.log")).unwrap().len();
+    store.put(b"k2", b"v2").unwrap();
+    let checkpoint_path = dir.path().join("checkpoint");
+    let digest = store.checkpoint_to(&checkpoint_path).unwrap();
+    drop(store);
+
+    let raw_log = std::fs::read(path.join("records.log")).unwrap();
+    assert!(raw_log.starts_with(b"EMDALOG2"));
+    assert!(!raw_log.starts_with(b"EMDALOG3"));
+    let witness_bytes = std::fs::read(path.join("commit.state")).unwrap();
+    assert_eq!(witness_bytes.len(), witness::WITNESS_SIZE);
+
+    let checkpoint_store = crate::CheckpointStore::open(&path, &checkpoint_path, &digest).unwrap();
+    assert!(checkpoint_store.uses_ordered_barrier_sync_for_test());
+    checkpoint_store.put(b"k3", b"v3").unwrap();
+    drop(checkpoint_store);
+
+    let reopened = crate::Store::open(&path).unwrap();
+    assert!(reopened.uses_ordered_barrier_sync_for_test());
+    assert_eq!(reopened.get(b"k1").unwrap().as_deref(), Some(&b"v1"[..]));
+    assert_eq!(reopened.get(b"k2").unwrap().as_deref(), Some(&b"v2"[..]));
+    assert_eq!(reopened.get(b"k3").unwrap().as_deref(), Some(&b"v3"[..]));
+    drop(reopened);
+
+    // Truncating records.log back to an earlier record boundary must fail closed.
+    let witness_before = std::fs::read(path.join("commit.state")).unwrap();
+    let raw_after_k3 = std::fs::read(path.join("records.log")).unwrap();
+    std::fs::write(
+        path.join("records.log"),
+        &raw_after_k3[..len_after_k1 as usize],
+    )
+    .unwrap();
+    let err = match crate::Store::open(&path) {
+        Ok(_) => panic!("truncated V2 log must be rejected"),
+        Err(err) => err,
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        std::fs::read(path.join("commit.state")).unwrap(),
+        witness_before
+    );
+
+    // V3 on macOS remains intentionally unsupported (never silently opened or downgraded).
+    let v3_dir = dir.path().join("v3-unsupported");
+    std::fs::create_dir(&v3_dir).unwrap();
+    let v3_log = include_bytes!("../tests/fixtures/v3-mixed-records.log");
+    let v3_anchor = include_bytes!("../tests/fixtures/v3-mixed-commit.state");
+    std::fs::write(v3_dir.join("records.log"), v3_log).unwrap();
+    std::fs::write(v3_dir.join("commit.state"), v3_anchor).unwrap();
+    let err = match crate::Store::open(&v3_dir) {
+        Ok(_) => panic!("V3 store must remain unsupported on macOS"),
+        Err(err) => err,
+    };
+    assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+    assert_eq!(std::fs::read(v3_dir.join("records.log")).unwrap(), v3_log);
+    assert_eq!(
+        std::fs::read(v3_dir.join("commit.state")).unwrap(),
+        v3_anchor
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_v2_fixture_uses_ordered_barrier_preserves_format_and_detects_truncation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path();
+    std::fs::write(
+        path.join("records.log"),
+        include_bytes!("../tests/fixtures/v2-empty-records.log"),
+    )
+    .unwrap();
+    std::fs::write(
+        path.join("commit.state"),
+        include_bytes!("../tests/fixtures/v2-empty-commit.state"),
+    )
+    .unwrap();
+    let (log, _) = Log::open(path, false).unwrap();
+    assert!(!log.metadata);
+    assert!(log.uses_ordered_barrier_sync());
+    drop(log);
+
+    let store = crate::Store::open(path).unwrap();
+    assert!(store.uses_ordered_barrier_sync_for_test());
+    store.put(b"k1", b"v1").unwrap();
+    let len_after_k1 = std::fs::metadata(path.join("records.log")).unwrap().len();
+    store.put(b"k2", b"v2").unwrap();
+    drop(store);
+
+    let raw_log = std::fs::read(path.join("records.log")).unwrap();
+    assert!(raw_log.starts_with(b"EMDALOG2"));
+    let reopened = crate::Store::open(path).unwrap();
+    assert_eq!(reopened.get(b"k1").unwrap().as_deref(), Some(&b"v1"[..]));
+    assert_eq!(reopened.get(b"k2").unwrap().as_deref(), Some(&b"v2"[..]));
+    drop(reopened);
+
+    // Truncating records.log back to an exact prior record boundary must still
+    // be detected and rejected without modifying either file.
+    let witness_before = std::fs::read(path.join("commit.state")).unwrap();
+    std::fs::write(path.join("records.log"), &raw_log[..len_after_k1 as usize]).unwrap();
+    let err = match crate::Store::open(path) {
+        Ok(_) => panic!("truncated V2 log must be rejected"),
+        Err(err) => err,
+    };
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(
+        std::fs::read(path.join("records.log")).unwrap(),
+        &raw_log[..len_after_k1 as usize]
+    );
+    assert_eq!(
+        std::fs::read(path.join("commit.state")).unwrap(),
+        witness_before
     );
 }

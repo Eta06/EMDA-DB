@@ -1033,3 +1033,317 @@ fn checkpoint_reports_uncertain_publication_for_each_ancestor_sync_failure() {
         );
     }
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BarrierSyncFault {
+    LogBarrierBefore,
+    LogBarrierAfter,
+    LogBarrierWouldBlock,
+    WitnessWriteBefore,
+    WitnessWriteAfter,
+    WitnessFullSync,
+}
+
+struct BarrierFaultState {
+    fault: Mutex<Option<BarrierSyncFault>>,
+    events: Mutex<Vec<&'static str>>,
+}
+
+struct BarrierFaultLog {
+    file: File,
+    state: Arc<BarrierFaultState>,
+}
+
+struct BarrierFaultWitness {
+    file: File,
+    state: Arc<BarrierFaultState>,
+}
+
+impl LogIo for BarrierFaultLog {
+    fn len(&self) -> io::Result<u64> {
+        Ok(self.file.metadata()?.len())
+    }
+    fn read_exact_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<()> {
+        FileExt::read_exact_at(&self.file, buffer, offset)
+    }
+    fn append_all(&self, bytes: &[u8]) -> io::Result<()> {
+        let mut file = &self.file;
+        file.write_all(bytes)
+    }
+    fn sync_data(&self) -> io::Result<()> {
+        self.state.events.lock().unwrap().push("log_sync_full");
+        self.file.sync_data()
+    }
+    fn supports_ordered_witness_barrier(&self) -> io::Result<bool> {
+        Ok(true)
+    }
+    fn sync_ordered_before_witness(&self) -> io::Result<()> {
+        self.state.events.lock().unwrap().push("log_sync_barrier");
+        let fault = {
+            let mut slot = self.state.fault.lock().unwrap();
+            if matches!(
+                *slot,
+                Some(
+                    BarrierSyncFault::LogBarrierBefore
+                        | BarrierSyncFault::LogBarrierAfter
+                        | BarrierSyncFault::LogBarrierWouldBlock
+                )
+            ) {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        match fault {
+            Some(BarrierSyncFault::LogBarrierBefore) => Err(io::Error::from_raw_os_error(5)),
+            Some(BarrierSyncFault::LogBarrierAfter) => {
+                self.file.sync_data()?;
+                Err(io::Error::from_raw_os_error(5))
+            }
+            Some(BarrierSyncFault::LogBarrierWouldBlock) => Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "injected barrier sync would block",
+            )),
+            _ => self.file.sync_data(),
+        }
+    }
+    fn file_identity(&self) -> io::Result<Option<(u64, u64)>> {
+        Ok(Some((77, 1)))
+    }
+}
+
+impl crate::witness::WitnessIo for BarrierFaultWitness {
+    fn len(&self) -> io::Result<u64> {
+        Ok(self.file.metadata()?.len())
+    }
+    fn read_exact_at(&self, bytes: &mut [u8], offset: u64) -> io::Result<()> {
+        FileExt::read_exact_at(&self.file, bytes, offset)
+    }
+    fn write_all_at(&self, bytes: &[u8], offset: u64) -> io::Result<()> {
+        self.state.events.lock().unwrap().push("witness_write");
+        let fault = {
+            let mut slot = self.state.fault.lock().unwrap();
+            if matches!(
+                *slot,
+                Some(BarrierSyncFault::WitnessWriteBefore | BarrierSyncFault::WitnessWriteAfter)
+            ) {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        if matches!(fault, Some(BarrierSyncFault::WitnessWriteBefore)) {
+            return Err(io::Error::other("injected witness write failure"));
+        }
+        FileExt::write_all_at(&self.file, bytes, offset)?;
+        if matches!(fault, Some(BarrierSyncFault::WitnessWriteAfter)) {
+            return Err(io::Error::other("injected witness write outcome unknown"));
+        }
+        Ok(())
+    }
+    fn sync_data(&self) -> io::Result<()> {
+        self.state.events.lock().unwrap().push("witness_sync_data");
+        self.file.sync_data()
+    }
+    fn sync_full(&self) -> io::Result<()> {
+        self.state.events.lock().unwrap().push("witness_sync_full");
+        let fail = {
+            let mut slot = self.state.fault.lock().unwrap();
+            if matches!(*slot, Some(BarrierSyncFault::WitnessFullSync)) {
+                slot.take();
+                true
+            } else {
+                false
+            }
+        };
+        if fail {
+            return Err(io::Error::from_raw_os_error(5));
+        }
+        self.file.sync_data()
+    }
+    fn device_id(&self) -> io::Result<Option<u64>> {
+        Ok(Some(77))
+    }
+}
+
+fn open_ordered_barrier_fault_store(
+    path: &Path,
+    state: Arc<BarrierFaultState>,
+) -> io::Result<Store> {
+    fs::write(
+        path.join("records.log"),
+        include_bytes!("../../tests/fixtures/v2-empty-records.log"),
+    )?;
+    fs::write(
+        path.join("commit.state"),
+        include_bytes!("../../tests/fixtures/v2-empty-commit.state"),
+    )?;
+    Store::open_using(path, |path, initialize| {
+        let (mut log, index) = Log::open(path, initialize)?;
+        let id = log.id().expect("V2 fixture has log identity");
+        let log_file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(path.join("records.log"))?;
+        let witness_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.join("commit.state"))?;
+        let (witness, _) = crate::witness::Witness::from_io(
+            Box::new(BarrierFaultWitness {
+                file: witness_file,
+                state: Arc::clone(&state),
+            }),
+            id,
+        )?;
+        log.attach_test_witness(witness);
+        log.replace_io_for_test(Box::new(BarrierFaultLog {
+            file: log_file,
+            state: Arc::clone(&state),
+        }));
+        Ok((log, index))
+    })
+}
+
+#[test]
+fn ordered_barrier_sync_faults_poison_store_and_preserve_witness_invariants() {
+    for (fault, expected_events, witness_unchanged) in [
+        (
+            BarrierSyncFault::LogBarrierBefore,
+            &["log_sync_barrier"][..],
+            true,
+        ),
+        (
+            BarrierSyncFault::LogBarrierAfter,
+            &["log_sync_barrier"][..],
+            true,
+        ),
+        (
+            BarrierSyncFault::LogBarrierWouldBlock,
+            &["log_sync_barrier"][..],
+            true,
+        ),
+        (
+            BarrierSyncFault::WitnessWriteBefore,
+            &["log_sync_barrier", "witness_write"][..],
+            true,
+        ),
+        (
+            BarrierSyncFault::WitnessWriteAfter,
+            &["log_sync_barrier", "witness_write"][..],
+            false,
+        ),
+        (
+            BarrierSyncFault::WitnessFullSync,
+            &["log_sync_barrier", "witness_write", "witness_sync_full"][..],
+            false,
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let state = Arc::new(BarrierFaultState {
+            fault: Mutex::new(None),
+            events: Mutex::new(Vec::new()),
+        });
+        let store = open_ordered_barrier_fault_store(dir.path(), Arc::clone(&state)).unwrap();
+        assert!(store.log.uses_ordered_barrier_sync());
+        store.put(b"safe", b"committed").unwrap();
+        assert_eq!(
+            &*state.events.lock().unwrap(),
+            &["log_sync_barrier", "witness_write", "witness_sync_full"]
+        );
+        state.events.lock().unwrap().clear();
+        let witness_before = fs::read(dir.path().join("commit.state")).unwrap();
+
+        *state.fault.lock().unwrap() = Some(fault);
+        let error = store.put(b"unknown", b"value").unwrap_err();
+        assert!(error.to_string().contains("outcome is uncertain"));
+        assert_eq!(&*state.events.lock().unwrap(), expected_events);
+        let witness_after = fs::read(dir.path().join("commit.state")).unwrap();
+        assert_eq!(witness_after == witness_before, witness_unchanged);
+        assert!(store.get(b"safe").is_err());
+        assert!(store.put(b"later", b"value").is_err());
+        drop(store);
+
+        let reopened = retry_lock(|| Store::open(dir.path())).unwrap();
+        assert_eq!(
+            reopened.get(b"safe").unwrap().as_deref(),
+            Some(&b"committed"[..])
+        );
+        assert_eq!(
+            reopened.get(b"unknown").unwrap().as_deref(),
+            Some(&b"value"[..])
+        );
+    }
+}
+
+#[test]
+fn ordered_barrier_sync_faults_report_unknown_outcome_for_detailed_and_transactions() {
+    for fault in [
+        BarrierSyncFault::LogBarrierBefore,
+        BarrierSyncFault::LogBarrierWouldBlock,
+        BarrierSyncFault::WitnessFullSync,
+    ] {
+        for mode in 0..3 {
+            let dir = tempfile::tempdir().unwrap();
+            let state = Arc::new(BarrierFaultState {
+                fault: Mutex::new(None),
+                events: Mutex::new(Vec::new()),
+            });
+            let store = open_ordered_barrier_fault_store(dir.path(), Arc::clone(&state)).unwrap();
+            assert!(store.log.uses_ordered_barrier_sync());
+            store.put(b"safe", b"committed").unwrap();
+            state.events.lock().unwrap().clear();
+            let witness_before = fs::read(dir.path().join("commit.state")).unwrap();
+
+            *state.fault.lock().unwrap() = Some(fault);
+            match mode {
+                0 => {
+                    let result = store.put_detailed(b"unknown", b"value");
+                    assert!(matches!(
+                        result,
+                        Err(crate::MutationFailure::OutcomeUnknown(_))
+                    ));
+                }
+                1 => {
+                    let result = store.transaction_detailed(
+                        crate::TransactionMode::Conservative,
+                        None,
+                        None,
+                        |tx| tx.put(b"unknown", b"value"),
+                    );
+                    assert!(matches!(
+                        result,
+                        Err(crate::TransactionFailure::OutcomeUnknown(_))
+                    ));
+                }
+                _ => {
+                    let error = store
+                        .transaction(|tx| tx.put(b"unknown", b"value"))
+                        .unwrap_err();
+                    assert!(!crate::is_transaction_conflict(&error));
+                    if fault == BarrierSyncFault::LogBarrierWouldBlock {
+                        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+                    }
+                }
+            }
+            if fault != BarrierSyncFault::WitnessFullSync {
+                assert_eq!(
+                    fs::read(dir.path().join("commit.state")).unwrap(),
+                    witness_before
+                );
+            }
+            assert!(store.get(b"safe").is_err());
+            drop(store);
+
+            let reopened = retry_lock(|| Store::open(dir.path())).unwrap();
+            assert_eq!(
+                reopened.get(b"safe").unwrap().as_deref(),
+                Some(&b"committed"[..])
+            );
+            assert_eq!(
+                reopened.get(b"unknown").unwrap().as_deref(),
+                Some(&b"value"[..])
+            );
+        }
+    }
+}

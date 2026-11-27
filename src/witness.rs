@@ -5,7 +5,7 @@
 use crate::{publication_outcome::TailAdoptionTracker, record};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read};
-use std::os::unix::fs::FileExt;
+use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -56,6 +56,13 @@ pub(crate) trait WitnessIo: Send + Sync {
     fn read_exact_at(&self, bytes: &mut [u8], offset: u64) -> io::Result<()>;
     fn write_all_at(&self, bytes: &[u8], offset: u64) -> io::Result<()>;
     fn sync_data(&self) -> io::Result<()>;
+    // Full device-cache flush required after an ordered barrier sync on the log.
+    fn sync_full(&self) -> io::Result<()> {
+        self.sync_data()
+    }
+    fn device_id(&self) -> io::Result<Option<u64>> {
+        Ok(None)
+    }
     fn read_marker(&self) -> io::Result<[u8; WITNESS_SIZE]> {
         if self.len()? != WITNESS_SIZE as u64 {
             return Err(record::invalid_data("invalid commit witness length"));
@@ -78,6 +85,13 @@ impl WitnessIo for File {
     }
     fn sync_data(&self) -> io::Result<()> {
         File::sync_data(self)
+    }
+    #[cfg(target_os = "macos")]
+    fn sync_full(&self) -> io::Result<()> {
+        crate::log_io::macos_sync::fullfsync(self)
+    }
+    fn device_id(&self) -> io::Result<Option<u64>> {
+        Ok(Some(self.metadata()?.dev()))
     }
 }
 
@@ -177,13 +191,27 @@ impl Witness {
     }
 
     pub(crate) fn advance(&self, offset: u64) -> io::Result<()> {
-        self.advance_tracked(offset, None)
+        self.advance_tracked_with_sync(offset, None, false)
     }
 
+    pub(crate) fn advance_with_sync(&self, offset: u64, require_full_sync: bool) -> io::Result<()> {
+        self.advance_tracked_with_sync(offset, None, require_full_sync)
+    }
+
+    #[cfg(test)]
     pub(crate) fn advance_tracked(
         &self,
         offset: u64,
         tracker: Option<&TailAdoptionTracker>,
+    ) -> io::Result<()> {
+        self.advance_tracked_with_sync(offset, tracker, false)
+    }
+
+    pub(crate) fn advance_tracked_with_sync(
+        &self,
+        offset: u64,
+        tracker: Option<&TailAdoptionTracker>,
+        require_full_sync: bool,
     ) -> io::Result<()> {
         let mut current = self
             .offset
@@ -196,7 +224,11 @@ impl Witness {
         }
         let write_witness = || {
             self.file.write_all_at(&encode(&self.id, offset), 0)?;
-            self.file.sync_data()
+            if require_full_sync {
+                self.file.sync_full()
+            } else {
+                self.file.sync_data()
+            }
         };
         match tracker {
             Some(tracker) => tracker.update(write_witness)?,
@@ -204,6 +236,10 @@ impl Witness {
         }
         *current = offset;
         Ok(())
+    }
+
+    pub(crate) fn device_id(&self) -> io::Result<Option<u64>> {
+        self.file.device_id()
     }
 
     pub(crate) fn verify(&self, log_len: u64) -> io::Result<()> {
@@ -350,5 +386,133 @@ mod tests {
                 if error.kind() == io::ErrorKind::InvalidData
         ));
         assert_eq!(read(&Handle(memory), &id).unwrap(), 64);
+    }
+
+    #[test]
+    fn require_full_sync_uses_sync_full_and_propagates_faults() {
+        #[derive(Clone, Copy)]
+        enum FullFault {
+            None,
+            Partial(usize),
+            SyncFull,
+        }
+        struct FullMemory {
+            bytes: Mutex<Vec<u8>>,
+            fault: FullFault,
+            sync_data_calls: Mutex<usize>,
+            sync_full_calls: Mutex<usize>,
+        }
+        struct FullHandle(Arc<FullMemory>);
+        impl WitnessIo for FullHandle {
+            fn len(&self) -> io::Result<u64> {
+                Ok(self.0.bytes.lock().unwrap().len() as u64)
+            }
+            fn read_exact_at(&self, bytes: &mut [u8], offset: u64) -> io::Result<()> {
+                let stored = self.0.bytes.lock().unwrap();
+                bytes.copy_from_slice(&stored[offset as usize..offset as usize + bytes.len()]);
+                Ok(())
+            }
+            fn write_all_at(&self, bytes: &[u8], offset: u64) -> io::Result<()> {
+                let mut stored = self.0.bytes.lock().unwrap();
+                let count = match self.0.fault {
+                    FullFault::Partial(count) => count,
+                    FullFault::None | FullFault::SyncFull => bytes.len(),
+                };
+                stored[offset as usize..offset as usize + count].copy_from_slice(&bytes[..count]);
+                if matches!(self.0.fault, FullFault::Partial(_)) {
+                    return Err(io::Error::other("injected witness write failure"));
+                }
+                Ok(())
+            }
+            fn sync_data(&self) -> io::Result<()> {
+                *self.0.sync_data_calls.lock().unwrap() += 1;
+                Ok(())
+            }
+            fn sync_full(&self) -> io::Result<()> {
+                *self.0.sync_full_calls.lock().unwrap() += 1;
+                if matches!(self.0.fault, FullFault::SyncFull) {
+                    return Err(io::Error::other("injected witness full sync failure"));
+                }
+                Ok(())
+            }
+        }
+
+        let id = [12; 16];
+
+        // Success path invokes sync_full and never sync_data.
+        let memory = Arc::new(FullMemory {
+            bytes: Mutex::new(encode(&id, 28).to_vec()),
+            fault: FullFault::None,
+            sync_data_calls: Mutex::new(0),
+            sync_full_calls: Mutex::new(0),
+        });
+        let witness = Witness::for_test(Box::new(FullHandle(Arc::clone(&memory))), id, 28);
+        witness.advance_with_sync(128, true).unwrap();
+        assert_eq!(*memory.sync_data_calls.lock().unwrap(), 0);
+        assert_eq!(*memory.sync_full_calls.lock().unwrap(), 1);
+        assert_eq!(read(&FullHandle(memory), &id).unwrap(), 128);
+        witness.verify(128).unwrap();
+
+        // SyncFull fault returns TailAdoptionOutcomeUnknown and blocks reuse.
+        let memory = Arc::new(FullMemory {
+            bytes: Mutex::new(encode(&id, 28).to_vec()),
+            fault: FullFault::SyncFull,
+            sync_data_calls: Mutex::new(0),
+            sync_full_calls: Mutex::new(0),
+        });
+        let witness = Witness::for_test(Box::new(FullHandle(Arc::clone(&memory))), id, 28);
+        let result = track_managed_rebuild(|tracker| {
+            witness.advance_tracked_with_sync(128, Some(&tracker.tail_adoption), true)
+        });
+        assert!(matches!(
+            result,
+            Err(ManagedRebuildFailure::TailAdoptionOutcomeUnknown(_))
+        ));
+        assert_eq!(*memory.sync_data_calls.lock().unwrap(), 0);
+        assert_eq!(*memory.sync_full_calls.lock().unwrap(), 1);
+        assert_eq!(read(&FullHandle(memory), &id).unwrap(), 128);
+        assert!(witness.verify(128).is_err());
+
+        // Partial write before sync_full never calls sync_full and never forges a boundary.
+        for count in [0, 12, WITNESS_SIZE] {
+            let memory = Arc::new(FullMemory {
+                bytes: Mutex::new(encode(&id, 28).to_vec()),
+                fault: FullFault::Partial(count),
+                sync_data_calls: Mutex::new(0),
+                sync_full_calls: Mutex::new(0),
+            });
+            let witness = Witness::for_test(Box::new(FullHandle(Arc::clone(&memory))), id, 28);
+            let result = track_managed_rebuild(|tracker| {
+                witness.advance_tracked_with_sync(128, Some(&tracker.tail_adoption), true)
+            });
+            assert!(matches!(
+                result,
+                Err(ManagedRebuildFailure::TailAdoptionOutcomeUnknown(_))
+            ));
+            assert_eq!(*memory.sync_data_calls.lock().unwrap(), 0);
+            assert_eq!(*memory.sync_full_calls.lock().unwrap(), 0);
+            let state = read(&FullHandle(memory), &id);
+            assert!(state.is_err() || matches!(state, Ok(28 | 128)));
+        }
+
+        // Substituted witness fails with NotPublished before touching write or sync_full.
+        let memory = Arc::new(FullMemory {
+            bytes: Mutex::new(encode(&id, 64).to_vec()),
+            fault: FullFault::None,
+            sync_data_calls: Mutex::new(0),
+            sync_full_calls: Mutex::new(0),
+        });
+        let witness = Witness::for_test(Box::new(FullHandle(Arc::clone(&memory))), id, 28);
+        let result = track_managed_rebuild(|tracker| {
+            witness.advance_tracked_with_sync(128, Some(&tracker.tail_adoption), true)
+        });
+        assert!(matches!(
+            result,
+            Err(ManagedRebuildFailure::NotPublished(error))
+                if error.kind() == io::ErrorKind::InvalidData
+        ));
+        assert_eq!(*memory.sync_data_calls.lock().unwrap(), 0);
+        assert_eq!(*memory.sync_full_calls.lock().unwrap(), 0);
+        assert_eq!(read(&FullHandle(memory), &id).unwrap(), 64);
     }
 }

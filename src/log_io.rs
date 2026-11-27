@@ -5,6 +5,372 @@ use std::io::{self, IoSlice, Write};
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::sync::Arc;
 
+#[cfg(target_os = "macos")]
+pub(crate) mod macos_sync {
+    use rustix::io::Errno;
+    use std::ffi::{c_char, c_int, c_void};
+    use std::fs::File;
+    use std::io;
+    use std::os::fd::AsRawFd;
+
+    const MNT_LOCAL: u32 = 0x0000_1000;
+    const ATTR_BIT_MAP_COUNT: u16 = 5;
+    const ATTR_VOL_CAPABILITIES: u32 = 0x0002_0000;
+    const ATTR_VOL_INFO: u32 = 0x8000_0000;
+    const VOL_CAPABILITIES_INTERFACES: usize = 1;
+    const VOL_CAP_INT_BARRIERFSYNC: u32 = 0x0100_0000;
+    const F_BARRIERFSYNC: c_int = 85;
+
+    #[repr(C)]
+    struct AttrList {
+        bitmapcount: u16,
+        reserved: u16,
+        commonattr: u32,
+        volattr: u32,
+        dirattr: u32,
+        fileattr: u32,
+        forkattr: u32,
+    }
+
+    #[repr(C)]
+    struct VolCapabilitiesAttr {
+        capabilities: [u32; 4],
+        valid: [u32; 4],
+    }
+
+    #[repr(C)]
+    struct CapBuf {
+        length: u32,
+        caps: VolCapabilitiesAttr,
+    }
+
+    unsafe extern "C" {
+        fn fgetattrlist(
+            fd: c_int,
+            attr_list: *const AttrList,
+            attr_buf: *mut c_void,
+            attr_buf_size: usize,
+            options: u32,
+        ) -> c_int;
+        fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
+    }
+
+    fn is_supported_local_fs(flags: u32, fstypename: &[c_char]) -> bool {
+        if (flags & MNT_LOCAL) == 0 {
+            return false;
+        }
+        let bytes: Vec<u8> = fstypename
+            .iter()
+            .take_while(|&&byte| byte != 0)
+            .map(|&byte| byte as u8)
+            .collect();
+        matches!(bytes.as_slice(), b"apfs" | b"hfs")
+    }
+
+    /// Queries whether an open descriptor resides on a local APFS or HFS+
+    /// volume reporting `VOL_CAP_INT_BARRIERFSYNC`.
+    ///
+    /// Restricts barrier-ordered V2 log flushes to local APFS and HFS+ volumes
+    /// whose `fcntl(2)` semantics guarantee that `F_BARRIERFSYNC` orders log
+    /// writes ahead of a subsequent same-device `F_FULLFSYNC` on the witness.
+    pub(crate) fn supports_barrier_fsync(file: &File) -> io::Result<bool> {
+        let stat = loop {
+            match rustix::fs::fstatfs(file) {
+                Err(Errno::INTR) => continue,
+                result => break result,
+            }
+        }?;
+        if !is_supported_local_fs(stat.f_flags, &stat.f_fstypename) {
+            return Ok(false);
+        }
+        let attr_list = AttrList {
+            bitmapcount: ATTR_BIT_MAP_COUNT,
+            reserved: 0,
+            commonattr: 0,
+            volattr: ATTR_VOL_INFO | ATTR_VOL_CAPABILITIES,
+            dirattr: 0,
+            fileattr: 0,
+            forkattr: 0,
+        };
+        let mut buf = CapBuf {
+            length: 0,
+            caps: VolCapabilitiesAttr {
+                capabilities: [0; 4],
+                valid: [0; 4],
+            },
+        };
+        loop {
+            let rc = unsafe {
+                fgetattrlist(
+                    file.as_raw_fd(),
+                    &attr_list,
+                    (&raw mut buf).cast::<c_void>(),
+                    std::mem::size_of::<CapBuf>(),
+                    0,
+                )
+            };
+            if rc == 0 {
+                break;
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            if matches!(
+                Errno::from_io_error(&error),
+                Some(Errno::NOTSUP | Errno::OPNOTSUPP | Errno::INVAL | Errno::NOTTY)
+            ) {
+                return Ok(false);
+            }
+            return Err(error);
+        }
+        if (buf.length as usize) < std::mem::size_of::<CapBuf>() {
+            return Ok(false);
+        }
+        let supported = buf.caps.capabilities[VOL_CAPABILITIES_INTERFACES]
+            & buf.caps.valid[VOL_CAPABILITIES_INTERFACES];
+        Ok((supported & VOL_CAP_INT_BARRIERFSYNC) != 0)
+    }
+
+    pub(crate) fn fullfsync_with(mut full: impl FnMut() -> Result<(), Errno>) -> io::Result<()> {
+        loop {
+            match full() {
+                Ok(()) => return Ok(()),
+                Err(Errno::INTR) => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    /// Performs `fcntl(fd, F_FULLFSYNC)`, retrying only `EINTR` and never
+    /// silently degrading to plain `fsync(2)`.
+    pub(crate) fn fullfsync(file: &File) -> io::Result<()> {
+        fullfsync_with(|| rustix::fs::fcntl_fullfsync(file))
+    }
+
+    fn raw_barrierfsync(file: &File) -> Result<(), Errno> {
+        let rc = unsafe { fcntl(file.as_raw_fd(), F_BARRIERFSYNC) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(Errno::from_io_error(&io::Error::last_os_error()).unwrap_or(Errno::IO))
+        }
+    }
+
+    pub(crate) fn barrier_or_fallback(
+        mut barrier: impl FnMut() -> Result<(), Errno>,
+        mut full: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<()> {
+        loop {
+            match barrier() {
+                Ok(()) => return Ok(()),
+                Err(Errno::INTR) => continue,
+                Err(Errno::NOTSUP | Errno::OPNOTSUPP | Errno::INVAL | Errno::NOTTY) => {
+                    return full();
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    /// Orders Phase 1 (`records.log`) ahead of Phase 2 (`commit.state`) on the
+    /// same device using `F_BARRIERFSYNC`. Falls back strictly to `F_FULLFSYNC`
+    /// if the barrier command is unsupported; never falls back to plain `fsync`.
+    pub(crate) fn barrier_fsync_or_fullfsync(file: &File) -> io::Result<()> {
+        barrier_or_fallback(|| raw_barrierfsync(file), || fullfsync(file))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn supported_local_fs_requires_local_apfs_or_hfs() {
+            let mut apfs = [0 as c_char; 16];
+            for (dst, &src) in apfs.iter_mut().zip(b"apfs") {
+                *dst = src as c_char;
+            }
+            let mut hfs = [0 as c_char; 16];
+            for (dst, &src) in hfs.iter_mut().zip(b"hfs") {
+                *dst = src as c_char;
+            }
+            let mut msdos = [0 as c_char; 16];
+            for (dst, &src) in msdos.iter_mut().zip(b"msdos") {
+                *dst = src as c_char;
+            }
+            assert!(is_supported_local_fs(MNT_LOCAL, &apfs));
+            assert!(is_supported_local_fs(MNT_LOCAL, &hfs));
+            assert!(!is_supported_local_fs(0, &apfs));
+            assert!(!is_supported_local_fs(MNT_LOCAL, &msdos));
+        }
+
+        #[test]
+        fn barrier_or_fallback_retries_eintr_falls_back_on_unsupported_and_propagates_eio() {
+            let mut barrier_calls = 0;
+            let mut full_calls = 0;
+            barrier_or_fallback(
+                || {
+                    barrier_calls += 1;
+                    if barrier_calls <= 2 {
+                        Err(Errno::INTR)
+                    } else {
+                        Ok(())
+                    }
+                },
+                || {
+                    full_calls += 1;
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!((barrier_calls, full_calls), (3, 0));
+
+            for unsupported in [Errno::NOTSUP, Errno::OPNOTSUPP, Errno::INVAL, Errno::NOTTY] {
+                let mut barrier_calls = 0;
+                let mut full_calls = 0;
+                barrier_or_fallback(
+                    || {
+                        barrier_calls += 1;
+                        Err(unsupported)
+                    },
+                    || {
+                        full_calls += 1;
+                        Ok(())
+                    },
+                )
+                .unwrap();
+                assert_eq!((barrier_calls, full_calls), (1, 1));
+            }
+
+            let mut full_calls = 0;
+            let err = barrier_or_fallback(
+                || Err(Errno::IO),
+                || {
+                    full_calls += 1;
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+            assert_eq!(full_calls, 0);
+            assert_eq!(Errno::from_io_error(&err), Some(Errno::IO));
+
+            // EINTR followed by EIO propagates EIO without invoking fallback.
+            let mut barrier_calls = 0;
+            let mut full_calls = 0;
+            let err = barrier_or_fallback(
+                || {
+                    barrier_calls += 1;
+                    if barrier_calls == 1 {
+                        Err(Errno::INTR)
+                    } else {
+                        Err(Errno::IO)
+                    }
+                },
+                || {
+                    full_calls += 1;
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+            assert_eq!((barrier_calls, full_calls), (2, 0));
+            assert_eq!(Errno::from_io_error(&err), Some(Errno::IO));
+
+            // EINTR followed by ENOTSUP falls back once to strict F_FULLFSYNC.
+            let mut barrier_calls = 0;
+            let mut full_calls = 0;
+            barrier_or_fallback(
+                || {
+                    barrier_calls += 1;
+                    if barrier_calls == 1 {
+                        Err(Errno::INTR)
+                    } else {
+                        Err(Errno::NOTSUP)
+                    }
+                },
+                || {
+                    full_calls += 1;
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!((barrier_calls, full_calls), (2, 1));
+        }
+
+        #[test]
+        fn barrier_or_fallback_propagates_fallback_fullfsync_error() {
+            for fallback_errno in [Errno::IO, Errno::NOTSUP, Errno::INVAL] {
+                let mut barrier_calls = 0;
+                let mut full_calls = 0;
+                let err = barrier_or_fallback(
+                    || {
+                        barrier_calls += 1;
+                        Err(Errno::NOTSUP)
+                    },
+                    || {
+                        full_calls += 1;
+                        Err(fallback_errno.into())
+                    },
+                )
+                .unwrap_err();
+                assert_eq!((barrier_calls, full_calls), (1, 1));
+                assert_eq!(Errno::from_io_error(&err), Some(fallback_errno));
+            }
+        }
+
+        #[test]
+        fn fullfsync_with_retries_eintr_and_never_falls_back_on_errors() {
+            let mut calls = 0;
+            fullfsync_with(|| {
+                calls += 1;
+                if calls <= 2 { Err(Errno::INTR) } else { Ok(()) }
+            })
+            .unwrap();
+            assert_eq!(calls, 3);
+
+            for non_retryable in [
+                Errno::IO,
+                Errno::NOTSUP,
+                Errno::OPNOTSUPP,
+                Errno::INVAL,
+                Errno::NOTTY,
+            ] {
+                let mut calls = 0;
+                let err = fullfsync_with(|| {
+                    calls += 1;
+                    if calls == 1 {
+                        Err(Errno::INTR)
+                    } else {
+                        Err(non_retryable)
+                    }
+                })
+                .unwrap_err();
+                assert_eq!(calls, 2);
+                assert_eq!(Errno::from_io_error(&err), Some(non_retryable));
+            }
+        }
+
+        #[test]
+        fn local_temp_volume_reports_barrier_capability_and_syncs() {
+            let file = tempfile::tempfile().unwrap();
+            let barrier = supports_barrier_fsync(&file).unwrap();
+            // On macOS APFS/HFS+ development volumes barrier sync is supported;
+            // either way fullfsync and barrier_fsync_or_fullfsync must succeed.
+            barrier_fsync_or_fullfsync(&file).unwrap();
+            fullfsync(&file).unwrap();
+            let stat = rustix::fs::fstatfs(&file).unwrap();
+            if is_supported_local_fs(stat.f_flags, &stat.f_fstypename) {
+                assert!(barrier);
+            }
+        }
+
+        #[test]
+        fn non_apfs_descriptor_reports_no_barrier_capability() {
+            let dev_null = File::open("/dev/null").unwrap();
+            assert!(!supports_barrier_fsync(&dev_null).unwrap());
+        }
+    }
+}
+
 pub(crate) trait LogIo: Send + Sync {
     fn len(&self) -> io::Result<u64>;
     fn read_exact_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<()>;
@@ -18,6 +384,17 @@ pub(crate) trait LogIo: Send + Sync {
         Ok(())
     }
     fn sync_data(&self) -> io::Result<()>;
+    // Whether the log handle supports a hardware write-barrier flush that
+    // orders log data ahead of a subsequent same-device witness F_FULLFSYNC.
+    fn supports_ordered_witness_barrier(&self) -> io::Result<bool> {
+        Ok(false)
+    }
+    // Synchronize the log with an ordering barrier before a mandatory
+    // same-device full flush on the commit witness. Must never be called
+    // without that following full flush (e.g., never for unwitnessed logs).
+    fn sync_ordered_before_witness(&self) -> io::Result<()> {
+        self.sync_data()
+    }
 
     // Optional identity and shared ownership support for real file handles.
     // Test and other I/O adapters retain their existing independent path.
@@ -51,6 +428,16 @@ impl LogIo for File {
         File::sync_data(self)
     }
 
+    #[cfg(target_os = "macos")]
+    fn supports_ordered_witness_barrier(&self) -> io::Result<bool> {
+        macos_sync::supports_barrier_fsync(self)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn sync_ordered_before_witness(&self) -> io::Result<()> {
+        macos_sync::barrier_fsync_or_fullfsync(self)
+    }
+
     fn file_identity(&self) -> io::Result<Option<(u64, u64)>> {
         let metadata = self.metadata()?;
         Ok(Some((metadata.dev(), metadata.ino())))
@@ -78,6 +465,14 @@ impl LogIo for Arc<File> {
 
     fn sync_data(&self) -> io::Result<()> {
         LogIo::sync_data(self.as_ref())
+    }
+
+    fn supports_ordered_witness_barrier(&self) -> io::Result<bool> {
+        LogIo::supports_ordered_witness_barrier(self.as_ref())
+    }
+
+    fn sync_ordered_before_witness(&self) -> io::Result<()> {
+        LogIo::sync_ordered_before_witness(self.as_ref())
     }
 
     fn file_identity(&self) -> io::Result<Option<(u64, u64)>> {

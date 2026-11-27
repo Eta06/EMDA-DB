@@ -121,6 +121,11 @@ impl Store {
         lock.release()
     }
 
+    #[cfg(all(test, target_os = "macos"))]
+    pub(crate) fn uses_ordered_barrier_sync_for_test(&self) -> bool {
+        self.log.uses_ordered_barrier_sync()
+    }
+
     // Instrument only before any snapshots or other owners exist. Restore the
     // published reference during unwinding as well as on normal return.
     #[cfg(all(test, target_os = "linux"))]
