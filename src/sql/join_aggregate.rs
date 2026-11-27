@@ -478,6 +478,7 @@ pub(super) fn prepare(
             offset: None,
             group_by: Vec::new(),
             having: None,
+            full: false,
             cached_plan: RwLock::new(None),
         },
     };

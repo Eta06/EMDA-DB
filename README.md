@@ -66,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     `ALTER TABLE ... ADD COLUMN`.
   - Online `CREATE [UNIQUE] INDEX`: 1–4 columns, up to 16 indexes per table.
   - `INNER`, `LEFT` and a first `RIGHT JOIN` of up to eight tables, using
-    key, index or hash access.
+    key, index or hash access, and a two-table `FULL JOIN`.
   - Aggregates, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT` and `OFFSET`, on
     one table or over joins.
   - Single-column foreign keys with `NO ACTION`/`RESTRICT` and
@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Being built now
 
-- **SQL.** `FULL` joins, correlated
+- **SQL.** `FULL` joins combined with other joins, correlated
   subqueries, composite foreign keys, `ON UPDATE` actions, more
   `ALTER TABLE` actions, and faster scans, aggregates and indexed reads.
 - **Service and operations.** A network API with authentication, project

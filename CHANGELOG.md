@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add SQL `FULL [OUTER] JOIN` as the only join of a statement: the left
+  join followed by the right table's unmatched rows, with `WHERE`, `ORDER
+  BY`, `OFFSET` and `LIMIT` applied to the union within `max_select_rows`.
+  Six queries match SQLite on both backends.
 - Add aggregates over SQL joins: `COUNT`, `SUM`, `AVG`, `MIN` and `MAX`
   (including `COUNT(DISTINCT ...)`), `GROUP BY` over columns of any joined
   table, `HAVING`, and `ORDER BY`/`LIMIT` over the groups, with the same

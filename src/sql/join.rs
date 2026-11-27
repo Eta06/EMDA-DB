@@ -16,6 +16,8 @@ use super::parser::{AggregateKind, CompareOp, LimitValue};
 
 #[path = "join_aggregate.rs"]
 mod aggregate;
+#[path = "join_full.rs"]
+mod full;
 use super::value::{
     MAX_SQL_COLUMNS, MAX_SQL_TEXT_PK_BYTES, SqlError, SqlLimits, SqlOutcome, SqlType, SqlValue,
     compare_i64_f64, encode_i64_pk_bytes,
@@ -46,6 +48,8 @@ pub(crate) struct JoinSelect {
     /// `GROUP BY` columns; with aggregate items, the statement aggregates.
     group_by: Vec<ColRef>,
     having: Option<JExpr>,
+    /// The only join is a `FULL [OUTER] JOIN`, stored as its `LEFT` half.
+    full: bool,
     cached_plan: RwLock<Option<Arc<JoinPlan>>>,
 }
 
@@ -61,6 +65,7 @@ impl Clone for JoinSelect {
             offset: self.offset,
             group_by: self.group_by.clone(),
             having: self.having.clone(),
+            full: self.full,
             cached_plan: RwLock::new(None),
         }
     }
@@ -77,6 +82,7 @@ impl PartialEq for JoinSelect {
             && self.offset == other.offset
             && self.group_by == other.group_by
             && self.having == other.having
+            && self.full == other.full
     }
 }
 
@@ -287,6 +293,7 @@ impl JoinParser<'_> {
         // first; it is accepted as the first join, where both tables are
         // visible to every later clause either way.
         let mut right_first = false;
+        let mut full = false;
         loop {
             if self.at_kw("right") {
                 if !joins.is_empty() {
@@ -300,7 +307,15 @@ impl JoinParser<'_> {
                 right_first = true;
             }
             if self.at_kw("full") {
-                return Err(self.unsupported("FULL JOIN"));
+                if !joins.is_empty() {
+                    return Err(self.unsupported("FULL JOIN with other joins"));
+                }
+                self.advance();
+                self.eat_kw("outer");
+                if !self.at_kw("join") {
+                    return Err(self.syntax("expected JOIN"));
+                }
+                full = true;
             }
             if self.at_kw("cross") || self.at_kw("natural") {
                 return Err(self.unsupported("CROSS or NATURAL JOIN"));
@@ -308,7 +323,7 @@ impl JoinParser<'_> {
             if matches!(self.peek().kind, TokenKind::Comma) {
                 return Err(self.unsupported("comma-separated FROM tables"));
             }
-            let kind = if right_first && joins.is_empty() {
+            let kind = if (right_first || full) && joins.is_empty() {
                 JoinKind::Left
             } else if self.eat_kw("left") {
                 self.eat_kw("outer");
@@ -396,6 +411,9 @@ impl JoinParser<'_> {
         } else if self.at_kw("offset") {
             return Err(self.unsupported("OFFSET without LIMIT"));
         }
+        if full && joins.len() != 1 {
+            return Err(self.unsupported("FULL JOIN with other joins"));
+        }
         if right_first {
             // Keep the written column order for `*`, then put the preserved
             // (right) table first.
@@ -422,6 +440,7 @@ impl JoinParser<'_> {
             offset,
             group_by,
             having,
+            full,
             cached_plan: RwLock::new(None),
         })
     }
@@ -3420,6 +3439,15 @@ fn run(
     limits: &SqlLimits,
     cache: &SqlCache,
 ) -> Result<SqlOutcome, SqlError> {
+    if statement.full {
+        if aggregate::is_aggregate(statement) {
+            return Err(SqlError::Unsupported {
+                feature: "aggregates over a FULL JOIN".into(),
+                offset: None,
+            });
+        }
+        return full::run(tx, statement, params, limits, cache);
+    }
     if aggregate::is_aggregate(statement) {
         return aggregate::run(tx, statement, params, limits, cache);
     }
@@ -3766,6 +3794,18 @@ pub(crate) fn explain(
     limits: &SqlLimits,
     cache: &SqlCache,
 ) -> Result<Vec<Vec<SqlValue>>, SqlError> {
+    if statement.full {
+        let mut left_half = statement.clone();
+        left_half.full = false;
+        let mut rows = explain(tx, &left_half, params, limits, cache)?;
+        rows.push(vec![
+            SqlValue::Text("full".into()),
+            SqlValue::Text(String::new()),
+            SqlValue::Text("then the mirrored LEFT JOIN's rows that matched nothing".into()),
+            SqlValue::Text("the union is sorted and limited after both halves".into()),
+        ]);
+        return Ok(rows);
+    }
     if aggregate::is_aggregate(statement) {
         let prepared = aggregate::prepare(tx, statement, cache)?;
         let mut rows = explain(tx, &prepared.inner, params, limits, cache)?;

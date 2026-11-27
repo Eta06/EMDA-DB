@@ -228,8 +228,8 @@ fn join_errors_are_classified() {
             SqlError::Type(_)
         ));
         for unsupported in [
-            "SELECT u.id FROM users u FULL JOIN teams t ON t.id = u.team",
-            "SELECT u.id FROM users u FULL JOIN teams t ON t.id = u.team",
+            "SELECT u.id FROM users u FULL JOIN teams t ON t.id = u.team JOIN orders o ON o.id = u.id",
+            "SELECT u.id FROM users u FULL JOIN teams t ON t.id = u.team JOIN orders o ON o.id = u.id",
             "SELECT u.id FROM users u CROSS JOIN teams t",
             "SELECT u.id FROM users u NATURAL JOIN teams t",
             "SELECT u.id FROM users u JOIN teams t USING (id)",
@@ -973,7 +973,7 @@ fn right_joins_match_sqlite() {
         }
         for sql in [
             "SELECT a.id FROM a JOIN b ON a.b_id = b.id RIGHT JOIN c ON c.b_id = b.id",
-            "SELECT a.id FROM a FULL OUTER JOIN b ON a.b_id = b.id",
+            "SELECT a.id FROM a CROSS JOIN b",
         ] {
             assert!(
                 matches!(db.execute(sql, &[]), Err(SqlError::Unsupported { .. })),
@@ -1068,6 +1068,62 @@ fn aggregates_over_joins_match_sqlite() {
             plan.last().map(|row| row[0].clone()),
             Some(SqlValue::Text("aggregate".into())),
             "{backend}"
+        );
+    });
+}
+
+/// `FULL JOIN` as the only join returns what SQLite returns.
+#[test]
+fn full_joins_match_sqlite() {
+    for_both(|db, backend| {
+        let sqlite = rusqlite::Connection::open_in_memory().unwrap();
+        for sql in [
+            "CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER, label TEXT)",
+            "CREATE TABLE b (id INTEGER PRIMARY KEY, k INTEGER, name TEXT)",
+            "INSERT INTO a VALUES (1, 10, 'x'), (2, 10, 'y'), (3, 30, 'z'), (4, NULL, 'w')",
+            "INSERT INTO b VALUES (7, 10, 'ten'), (8, 20, 'twenty'), (9, NULL, 'none'), (10, 40, NULL)",
+        ] {
+            db.execute(sql, &[]).unwrap();
+            sqlite.execute(sql, []).unwrap();
+        }
+        for sql in [
+            "SELECT * FROM a FULL JOIN b ON a.k = b.k ORDER BY a.id, b.id",
+            "SELECT a.label, b.name FROM a FULL OUTER JOIN b ON a.k = b.k ORDER BY b.name NULLS FIRST, a.label",
+            "SELECT a.id, b.id FROM a FULL JOIN b ON a.k = b.k WHERE a.id IS NULL OR b.id IS NULL ORDER BY a.id, b.id",
+            "SELECT a.id, b.id FROM a FULL JOIN b ON a.k = b.k AND b.name <> 'ten' ORDER BY a.id DESC, b.id",
+            "SELECT a.id, b.id FROM a FULL JOIN b ON a.k = b.k ORDER BY b.id NULLS LAST, a.id LIMIT 3 OFFSET 2",
+            "SELECT b.name FROM a FULL JOIN b ON a.k = b.k WHERE b.k > 15 ORDER BY b.name",
+        ] {
+            let ours = rows(db, sql, &[]);
+            let mut stmt = sqlite.prepare(sql).unwrap();
+            let n = stmt.column_count();
+            let theirs: Vec<Vec<SqlValue>> = stmt
+                .query_map([], |row| {
+                    (0..n).map(|i| row.get(i).map(from_sqlite)).collect()
+                })
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(ours, theirs, "{backend}: {sql}");
+        }
+        for sql in [
+            "SELECT a.id FROM a FULL JOIN b ON a.k = b.k JOIN b c ON c.id = b.id",
+            "SELECT a.id FROM a JOIN b ON a.k = b.k FULL JOIN b c ON c.id = b.id",
+            "SELECT COUNT(*) FROM a FULL JOIN b ON a.k = b.k",
+        ] {
+            assert!(
+                matches!(db.execute(sql, &[]), Err(SqlError::Unsupported { .. })),
+                "{backend}: {sql}"
+            );
+        }
+        let plan = rows(
+            db,
+            "EXPLAIN SELECT a.id FROM a FULL JOIN b ON a.k = b.k",
+            &[],
+        );
+        assert_eq!(
+            plan.last().map(|r| r[0].clone()),
+            Some(SqlValue::Text("full".into()))
         );
     });
 }
