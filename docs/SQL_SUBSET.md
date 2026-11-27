@@ -2,7 +2,7 @@
 
 This document describes the experimental embedded SQL subset in `database_engine::sql`. It runs in-process over `DocumentDatabase` and the shared witnessed storage and transaction engine (`Store`, `CheckpointStore`, and the retained backends).
 
-**This interface is NOT PostgreSQL-compatible, SQLite-compatible, or wire-protocol compatible.** There is no TCP server, wire protocol, session state, or multi-statement SQL transaction block. Read the [document model](DOCUMENT_MODEL.md) and [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md) before using it.
+**This interface is NOT PostgreSQL-compatible, SQLite-compatible, or wire-protocol compatible.** There is no TCP server, wire protocol, session state, or textual `BEGIN`/`COMMIT`/`ROLLBACK` transaction block (use [`SqlDatabase::transaction`](../src/sql/mod.rs) instead). Read the [document model](DOCUMENT_MODEL.md) and [storage and transaction contract](STORAGE_TRANSACTION_CONTRACT.md) before using it.
 
 ## Entry point and example
 
@@ -40,6 +40,56 @@ fn example(store: &Store) -> Result<(), Box<dyn std::error::Error>> {
 - `SqlDatabase::with_limits` and `SqlDatabase::set_limits` configure custom bounds up to hard maxima.
 - `prepare` lexes and parses a single statement (allowing an optional trailing `;`; rejecting multiple statements).
 - `execute_prepared` and `execute` run the statement inside one `DocumentDatabase` transaction in `DocumentTransactionMode::ReadSet`.
+- `SqlDatabase::transaction(|tx| { ... })` runs multiple statements inside a single `DocumentDatabase` transaction in `DocumentTransactionMode::ReadSet`, committing once when the closure returns `Ok`.
+- `SqlDatabase::transaction_with_retry(max_attempts, |tx| { ... })` retries **only** confirmed pre-commit conflicts (`SqlError::Conflict`), never `SqlError::OutcomeUnknown`; closures passed to `transaction_with_retry` must be side-effect-free because they may run multiple times before committing.
+
+## Multi-statement transactions (`SqlDatabase::transaction`)
+
+```rust
+use database_engine::{DocumentDatabase, SqlDatabase, SqlError, SqlOutcome, SqlValue, Store};
+
+fn transfer(store: &Store, from: i64, to: i64, amount: i64) -> Result<(), SqlError> {
+    let db = SqlDatabase::new(DocumentDatabase::new(store));
+    db.transaction_with_retry(8, |tx| {
+        let bal = match tx.execute("SELECT bal FROM accounts WHERE id = ?", &[SqlValue::Integer(from)])? {
+            SqlOutcome::Rows { rows, .. } => match rows[0][0] {
+                SqlValue::Integer(n) => n,
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+        if bal < amount {
+            return Err(SqlError::Constraint("insufficient funds".into()));
+        }
+        tx.execute(
+            "UPDATE accounts SET bal = ? WHERE id = ?",
+            &[SqlValue::Integer(bal - amount), SqlValue::Integer(from)],
+        )?;
+        let dst = match tx.execute("SELECT bal FROM accounts WHERE id = ?", &[SqlValue::Integer(to)])? {
+            SqlOutcome::Rows { rows, .. } => match rows[0][0] {
+                SqlValue::Integer(n) => n,
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+        tx.execute(
+            "UPDATE accounts SET bal = ? WHERE id = ?",
+            &[SqlValue::Integer(dst + amount), SqlValue::Integer(to)],
+        )?;
+        Ok(())
+    })
+}
+```
+
+- **Statement support inside `SqlTransaction`**: `SELECT` (including aggregates, `GROUP BY`, `HAVING`, and `INNER`/`LEFT` joins), `INSERT`, `UPDATE`, `DELETE`, and `CREATE TABLE` (including inline/table `UNIQUE` constraints) are supported through `SqlTransaction::execute` and `SqlTransaction::execute_prepared`. Online index DDL (`CREATE [UNIQUE] INDEX`, `DROP INDEX`) runs multi-step `Conservative` maintenance outside explicit transactions and is rejected inside `SqlTransaction` with `SqlError::Unsupported`.
+- **No textual session control**: `BEGIN`, `START`, `COMMIT`, `END`, and `ROLLBACK` passed to `prepare` / `execute` always fail with `SqlError::Unsupported` pointing to `SqlDatabase::transaction` / `SqlDatabase::transaction_with_retry`; there is no connection or session transaction state.
+- **Read-your-own-writes and serializable isolation**: Statements inside `SqlTransaction` observe all earlier staged writes (inserts, updates, deletes, secondary-index updates, joins, aggregates, and `CREATE TABLE` catalog entries) from the same closure. `DocumentTransactionMode::ReadSet` records point and complete scanned-range dependencies across the entire transaction and validates them before commit (and during reads on `CheckpointStore`), preventing dirty reads, non-repeatable reads, lost updates, write skew, and phantoms within observed point keys and scanned ranges. Disjoint keys and disjoint tables commit concurrently with zero conflicts.
+- **Abort, panic, and error-poisoning semantics**: Returning `Err` from the closure or unwinding on panic discards all staged writes and catalog changes. Any statement error inside `SqlTransaction` immediately poisons the transaction: if the closure catches and ignores a statement `Err` instead of propagating it, subsequent statements on `tx` and commit when the closure returns `Ok` both fail with `SqlError::TransactionAborted` without committing any earlier staged writes.
+- **Transaction-wide bounds (main differences from PostgreSQL and SQLite)**:
+  - **Whole-transaction staged-write cap**: Unlike PostgreSQL/SQLite, which allow arbitrarily large multi-statement transactions via WAL/undo logs, all staged keys in one `SqlTransaction` (including SQL catalog keys, document keys, and secondary/unique index keys) share the single `DB02` atomic record limit of **`1,024` distinct staged keys** (`MAX_ATOMIC_BATCH_OPERATIONS`) and **`16 MiB` encoded payload** (`MAX_ATOMIC_BATCH_BYTES`). Exceeding either across the statements in a transaction fails with `SqlError::Bounds` and rolls back the entire transaction.
+  - **Read-set dependency caps**: A single `ReadSet` transaction tracks at most **`2,048` distinct point/range constraints** (`MAX_TRANSACTION_READ_CONSTRAINTS`), **`2 MiB` of constraint bound keys** (`MAX_TRANSACTION_READ_CONSTRAINT_BYTES`), and **`65,536` validation items** (`MAX_TRANSACTION_VALIDATION_ITEMS`). Exceeding any of these fails with `SqlError::Bounds` and rolls back.
+  - **No savepoints / error poisoning**: There are no `SAVEPOINT`s; any statement error poisons the whole transaction (`SqlError::TransactionAborted`) rather than rolling back only the failed statement while keeping earlier statements alive.
+  - **Closure-only lifetime**: Transactions cannot span calls outside the `SqlDatabase::transaction` closure.
 
 ## Supported grammar
 
@@ -298,7 +348,10 @@ All bounds live in `SqlLimits` (implementing `Default`), configurable via `SqlDa
 | Indexes per table | 16 | 16 | Document-layer collection index cap |
 | Online `CREATE`/`DROP` step | 128 rows/keys | 128 rows/keys | Bounded chunk size for resumable index build, drop, and explicit-NULL rewrite |
 | Row serialized bytes | 1 MiB | 1 MiB | Document layer `MAX_DOCUMENT_BYTES` |
-| Atomic batch bytes | 16 MiB | 16 MiB | Storage `MAX_ATOMIC_BATCH_BYTES` per statement |
+| Atomic batch keys | 1,024 | 1,024 | Distinct staged keys (`MAX_ATOMIC_BATCH_OPERATIONS`) per statement or `SqlTransaction` |
+| Atomic batch bytes | 16 MiB | 16 MiB | Storage `MAX_ATOMIC_BATCH_BYTES` per statement or `SqlTransaction` |
+| Read-set constraints | 2,048 / 2 MiB | 2,048 / 2 MiB | Distinct point/range dependencies (`MAX_TRANSACTION_READ_CONSTRAINTS` / `MAX_TRANSACTION_READ_CONSTRAINT_BYTES`) per transaction |
+| Read-set validation items | 65,536 | 65,536 | Key comparisons during read-set validation (`MAX_TRANSACTION_VALIDATION_ITEMS`) per transaction |
 
 Statements never silently truncate: exceeding any bound fails with `SqlError::Bounds` and commits nothing.
 
@@ -314,6 +367,7 @@ Statements never silently truncate: exceeding any bound fails with `SqlError::Bo
 - `ParameterCount { expected, actual }`: wrong number of `params` passed to `execute` / `execute_prepared`.
 - `Conflict(io::Error)`: pre-commit transaction conflict (`database_engine::is_transaction_conflict` is `true`).
 - `OutcomeUnknown(io::Error)`: commit I/O failure whose persistence is uncertain; caller must reconcile before retrying.
+- `TransactionAborted(String)`: transaction poisoned by an earlier statement error inside `SqlDatabase::transaction`; commit is refused.
 - `Io(io::Error)`: other storage/I/O errors (including non-bounds `InvalidInput` rejections such as document schema validation failures, `InvalidData` row-integrity failures, and non-conflict `WouldBlock` admission limits).
 
 ## Atomicity, durability, and backend behavior
@@ -329,5 +383,5 @@ Every DML statement (`INSERT`, `UPDATE`, `DELETE`, `SELECT`) and small DDL state
 
 ## Implemented vs planned
 
-- **Implemented**: `CREATE TABLE [IF NOT EXISTS]` (including column-level `UNIQUE` and table-level `UNIQUE (col, ...)`), `CREATE [UNIQUE] INDEX [IF NOT EXISTS]` (single-tx for small tables and bounded resumable online build for large populated tables), `DROP INDEX [IF EXISTS] name ON table`, `INSERT`, `SELECT` (`*`, column list, `COUNT(*)` / `COUNT(col)` / `COUNT(DISTINCT col)` / `SUM(col)` / `AVG(col)` / `MIN(col)` / `MAX(col)`, `AS` aliases, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY` with `ASC`/`DESC`/`NULLS FIRST`/`NULLS LAST` over columns/aliases/aggregates, `LIMIT`/`OFFSET`), `UPDATE`, `DELETE`, `SqlValue`/`SqlLimits`/`SqlError`/`SqlStatement` prepared reuse, per-`SqlDatabase` catalog/statement/plan caching, compiled index templates, 3VL expressions, exact numeric comparisons, ascending PK order guarantee and streaming `ORDER BY pk ASC`, index-order `ORDER BY ... LIMIT` streaming, first-entry `MIN(pk)`/`MIN(index_leading_col)` optimization, bounded `ORDER BY pk DESC` and top-K / full sort, bounded `GROUP BY` and `COUNT(DISTINCT)`, primary-key point (`=`) and range (`>`, `>=`, `<`, `<=`) access paths, single and compound secondary index equality/range access via `DocumentTransaction::query_index`, bounded full-collection scan fallback via `DocumentTransaction::scan_documents`, `ReadSet` optimistic concurrency, and row PK/document-ID integrity verification, and `INNER`/`LEFT [OUTER] JOIN` of up to eight tables (see [Joins](#joins)); `DROP TABLE [IF EXISTS] name` (see [Dropping tables](#dropping-tables)); `ALTER TABLE name ADD [COLUMN]` (see [Adding columns](#adding-columns)).
-- **Planned (later slices)**: `RIGHT`/`FULL` joins, aggregates over joins, subqueries, multi-statement explicit SQL transactions (`BEGIN` / `COMMIT` / `ROLLBACK`), other schema changes (`DROP COLUMN`, `RENAME`, `ALTER COLUMN`, `DEFAULT`), and `EXPLAIN` / SQL diagnostics.
+- **Implemented**: `CREATE TABLE [IF NOT EXISTS]` (including column-level `UNIQUE` and table-level `UNIQUE (col, ...)`), `CREATE [UNIQUE] INDEX [IF NOT EXISTS]` (single-tx for small tables and bounded resumable online build for large populated tables), `DROP INDEX [IF EXISTS] name ON table`, `INSERT`, `SELECT` (`*`, column list, `COUNT(*)` / `COUNT(col)` / `COUNT(DISTINCT col)` / `SUM(col)` / `AVG(col)` / `MIN(col)` / `MAX(col)`, `AS` aliases, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY` with `ASC`/`DESC`/`NULLS FIRST`/`NULLS LAST` over columns/aliases/aggregates, `LIMIT`/`OFFSET`), `UPDATE`, `DELETE`, `SqlValue`/`SqlLimits`/`SqlError`/`SqlStatement` prepared reuse, `SqlDatabase::transaction` / `SqlDatabase::transaction_with_retry` / `SqlTransaction` multi-statement serializable transactions (with read-your-own-writes, transaction poisoning on caught statement errors, and conflict-only retries), per-`SqlDatabase` catalog/statement/plan caching, compiled index templates, 3VL expressions, exact numeric comparisons, ascending PK order guarantee and streaming `ORDER BY pk ASC`, index-order `ORDER BY ... LIMIT` streaming, first-entry `MIN(pk)`/`MIN(index_leading_col)` optimization, bounded `ORDER BY pk DESC` and top-K / full sort, bounded `GROUP BY` and `COUNT(DISTINCT)`, primary-key point (`=`) and range (`>`, `>=`, `<`, `<=`) access paths, single and compound secondary index equality/range access via `DocumentTransaction::query_index`, bounded full-collection scan fallback via `DocumentTransaction::scan_documents`, `ReadSet` optimistic concurrency, and row PK/document-ID integrity verification, and `INNER`/`LEFT [OUTER] JOIN` of up to eight tables (see [Joins](#joins)); `DROP TABLE [IF EXISTS] name` (see [Dropping tables](#dropping-tables)); `ALTER TABLE name ADD [COLUMN]` (see [Adding columns](#adding-columns)).
+- **Planned (later slices)**: `RIGHT`/`FULL` joins, aggregates over joins, subqueries, other schema changes (`DROP COLUMN`, `RENAME`, `ALTER COLUMN`, `DEFAULT`), and `EXPLAIN` / SQL diagnostics. Textual session-state `BEGIN`/`COMMIT`/`ROLLBACK` remain intentionally unsupported in favor of the closure API.
