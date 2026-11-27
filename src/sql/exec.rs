@@ -13,8 +13,8 @@ use super::value::{
 };
 use crate::document::flat::{FlatDocument, FlatScalar};
 use crate::document::{
-    DocumentDatabase, DocumentTransaction, DocumentTransactionMode, IndexBound, IndexQuery,
-    IndexValue, StoredDocument,
+    DocumentDatabase, DocumentTransaction, DocumentTransactionMode, IndexBound, IndexValue,
+    StoredDocument,
 };
 use crate::{MAX_SCAN_ENTRIES, TransactionFailure};
 use parking_lot::RwLock;
@@ -2551,15 +2551,39 @@ fn exec_simple_select(
 
     let rows = match plan.order_strategy {
         OrderStrategy::PkAsc => {
-            let can_stream = match &access {
-                AccessPlan::Index {
-                    preserves_pk_asc,
-                    satisfies_order_by,
-                    ..
-                } => *preserves_pk_asc || *satisfies_order_by,
-                _ => true,
-            };
-            if can_stream {
+            if let AccessPlan::Index {
+                preserves_pk_asc,
+                satisfies_order_by,
+                ..
+            } = &access
+            {
+                if *preserves_pk_asc || *satisfies_order_by {
+                    exec_index_streaming_select(
+                        tx,
+                        table,
+                        plan,
+                        access,
+                        bound_filter,
+                        params,
+                        limits,
+                        limit,
+                        offset,
+                    )?
+                } else {
+                    exec_pk_sorted_select(
+                        tx,
+                        table,
+                        plan,
+                        access,
+                        bound_filter,
+                        params,
+                        limits,
+                        limit,
+                        offset,
+                        false,
+                    )?
+                }
+            } else {
                 exec_streaming_select(
                     tx,
                     table,
@@ -2570,19 +2594,6 @@ fn exec_simple_select(
                     limits,
                     limit,
                     offset,
-                )?
-            } else {
-                exec_pk_sorted_select(
-                    tx,
-                    table,
-                    plan,
-                    access,
-                    bound_filter,
-                    params,
-                    limits,
-                    limit,
-                    offset,
-                    false,
                 )?
             }
         }
@@ -2711,7 +2722,7 @@ fn exec_simple_select(
                     ..
                 }
             ) {
-                exec_streaming_select(
+                exec_index_streaming_select(
                     tx,
                     table,
                     plan,
@@ -3719,16 +3730,22 @@ fn exec_pk_sorted_select(
     if let Some(lim) = limit {
         let keep_cap = (offset as u128).saturating_add(lim as u128);
         let mut heap: BinaryHeap<PkSortRow> = BinaryHeap::new();
-        visit_access_rows(
+        let wanted = &plan.wanted_columns;
+        visit_access_rows_ref(
             tx,
             table,
             access,
             bound_filter,
             params,
             limits,
-            Some(&plan.wanted_columns),
             None,
-            |doc_id, verified_pk, obj| {
+            |doc_id, verified_pk, row| {
+                let to_owned_map = |row: RowRef<'_>| match row {
+                    RowRef::Flat(doc) => doc.to_map_where(|name| {
+                        table.column_index(name).is_some_and(|index| wanted[index])
+                    }),
+                    RowRef::Map(obj) => obj.clone(),
+                };
                 if (heap.len() as u128) < keep_cap {
                     if heap.len() >= limits.max_sort_rows {
                         return Err(SqlError::Bounds(format!(
@@ -3743,9 +3760,9 @@ fn exec_pk_sorted_select(
                         )));
                     }
                     heap.push(PkSortRow {
-                        doc_id,
+                        doc_id: doc_id.to_owned(),
                         verified_pk,
-                        obj,
+                        obj: to_owned_map(row),
                         desc,
                     });
                 } else if let Some(mut top) = heap.peek_mut() {
@@ -3757,9 +3774,9 @@ fn exec_pk_sorted_select(
                     };
                     if is_better {
                         *top = PkSortRow {
-                            doc_id,
+                            doc_id: doc_id.to_owned(),
                             verified_pk,
-                            obj,
+                            obj: to_owned_map(row),
                             desc,
                         };
                     }
@@ -3790,18 +3807,32 @@ fn exec_pk_sorted_select(
         }
         Ok(rows)
     } else {
-        let mut first: Option<(String, Vec<SqlValue>)> = None;
-        let mut rest: Vec<(String, Vec<SqlValue>)> = Vec::new();
-        visit_access_rows(
+        enum PkSortKey {
+            Int(i64),
+            Text(String),
+        }
+        impl PkSortKey {
+            fn cmp_order(&self, other: &Self, desc: bool) -> Ordering {
+                let ord = match (self, other) {
+                    (Self::Int(a), Self::Int(b)) => a.cmp(b),
+                    (Self::Text(a), Self::Text(b)) => a.as_bytes().cmp(b.as_bytes()),
+                    _ => unreachable!("table rows share one primary-key type"),
+                };
+                if desc { ord.reverse() } else { ord }
+            }
+        }
+        let mut first: Option<(PkSortKey, Vec<SqlValue>)> = None;
+        let mut rest: Vec<(PkSortKey, Vec<SqlValue>)> = Vec::new();
+        let mut in_order = true;
+        visit_access_rows_ref(
             tx,
             table,
             access,
             bound_filter,
             params,
             limits,
-            Some(&plan.wanted_columns),
             None,
-            |doc_id, verified_pk, obj| {
+            |doc_id, verified_pk, row| {
                 let count = usize::from(first.is_some()) + rest.len();
                 if count >= limits.max_select_rows {
                     return Err(SqlError::Bounds(format!(
@@ -3815,20 +3846,25 @@ fn exec_pk_sorted_select(
                         limits.max_sort_rows
                     )));
                 }
-                let row = project_row_with_pk(
-                    obj,
-                    table,
-                    &plan.proj_indices,
-                    &plan.proj_is_last,
-                    verified_pk,
-                )?;
+                let projected = project_row_ref(row, table, &plan.proj_indices, verified_pk)?;
+                let key = match verified_pk {
+                    Some(n) => PkSortKey::Int(n),
+                    None => PkSortKey::Text(doc_id.to_owned()),
+                };
                 if first.is_none() && rest.is_empty() {
-                    first = Some((doc_id, row));
+                    first = Some((key, projected));
                 } else {
                     if let Some(first_pair) = first.take() {
                         rest.push(first_pair);
                     }
-                    rest.push((doc_id, row));
+                    if in_order {
+                        if let Some((prev_key, _)) = rest.last() {
+                            if prev_key.cmp_order(&key, desc) == Ordering::Greater {
+                                in_order = false;
+                            }
+                        }
+                    }
+                    rest.push((key, projected));
                 }
                 Ok(ControlFlow::Continue(()))
             },
@@ -3836,10 +3872,9 @@ fn exec_pk_sorted_select(
         if rest.is_empty() {
             return Ok(first.map_or_else(Vec::new, |(_, row)| vec![row]));
         }
-        rest.sort_unstable_by(|a, b| {
-            let ord = a.0.as_bytes().cmp(b.0.as_bytes());
-            if desc { ord.reverse() } else { ord }
-        });
+        if !in_order {
+            rest.sort_unstable_by(|a, b| a.0.cmp_order(&b.0, desc));
+        }
         Ok(rest.into_iter().map(|(_, row)| row).collect())
     }
 }
@@ -4163,6 +4198,7 @@ fn visit_access_rows(
             filter,
             params,
             limits,
+            wanted,
             stream_cap,
             on_match,
         ),
@@ -4182,7 +4218,7 @@ fn visit_access_rows(
     }
 }
 
-/// `visit_access_rows`, passing borrowed rows: flat rows from range and
+/// `visit_access_rows`, passing borrowed rows: flat rows from range, index, and
 /// full scans are never turned into owned objects.
 #[allow(clippy::too_many_arguments)]
 fn visit_access_rows_ref(
@@ -4212,6 +4248,27 @@ fn visit_access_rows_ref(
             stream_cap,
             on_row,
         ),
+        AccessPlan::Index {
+            index_idx,
+            equal,
+            lower,
+            upper,
+            unique_equality,
+            ..
+        } => visit_index_rows_ref(
+            tx,
+            table,
+            &table.indexes[index_idx].name,
+            equal,
+            lower,
+            upper,
+            unique_equality,
+            filter,
+            params,
+            limits,
+            stream_cap,
+            on_row,
+        ),
         AccessPlan::FullScan => scan_range_rows_ref(
             tx,
             table,
@@ -4238,6 +4295,160 @@ fn visit_access_rows_ref(
     }
 }
 
+fn project_row_ref(
+    row: RowRef<'_>,
+    table: &TableDef,
+    proj_indices: &[usize],
+    verified_int_pk: Option<i64>,
+) -> Result<Vec<SqlValue>, SqlError> {
+    let pk_idx = table.primary_key_index;
+    let mut projected = Vec::with_capacity(proj_indices.len());
+    for &idx in proj_indices {
+        if let Some(n) = verified_int_pk.filter(|_| idx == pk_idx) {
+            projected.push(SqlValue::Integer(n));
+            continue;
+        }
+        projected.push(row.col(&table.columns[idx])?.into_owned());
+    }
+    Ok(projected)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exec_index_streaming_select(
+    tx: &DocumentTransaction<'_, '_>,
+    table: &TableDef,
+    plan: &BoundSelectPlan,
+    access: AccessPlan,
+    bound_filter: Option<&BoundExpr>,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    limit: Option<usize>,
+    offset: usize,
+) -> Result<Vec<Vec<SqlValue>>, SqlError> {
+    let mut skipped = 0usize;
+    let mut rows = Vec::new();
+    let stream_cap = if bound_filter.is_none() {
+        limit.map(|l| offset.saturating_add(l))
+    } else {
+        None
+    };
+    visit_access_rows_ref(
+        tx,
+        table,
+        access,
+        bound_filter,
+        params,
+        limits,
+        stream_cap,
+        |_doc_id, verified_pk, row| {
+            if skipped < offset {
+                skipped += 1;
+                return Ok(ControlFlow::Continue(()));
+            }
+            if rows.len() >= limits.max_select_rows {
+                return Err(SqlError::Bounds(format!(
+                    "SELECT result exceeds max_select_rows ({})",
+                    limits.max_select_rows
+                )));
+            }
+            rows.push(project_row_ref(
+                row,
+                table,
+                &plan.proj_indices,
+                verified_pk,
+            )?);
+            if Some(rows.len()) == limit {
+                Ok(ControlFlow::Break(()))
+            } else {
+                Ok(ControlFlow::Continue(()))
+            }
+        },
+    )?;
+    Ok(rows)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn visit_index_rows_ref(
+    tx: &DocumentTransaction<'_, '_>,
+    table: &TableDef,
+    index_name: &str,
+    equal: Vec<IndexValue>,
+    lower: Option<IndexBound>,
+    upper: Option<IndexBound>,
+    unique_equality: bool,
+    filter: Option<&BoundExpr>,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    stream_cap: Option<usize>,
+    mut on_match: impl FnMut(&str, Option<i64>, RowRef<'_>) -> Result<ControlFlow<()>, SqlError>,
+) -> Result<(), SqlError> {
+    const MAX_INDEX_QUERY_DOCUMENTS: usize = 256;
+    let visited = std::cell::Cell::new(0usize);
+    let stream_cap = std::cell::Cell::new(stream_cap);
+
+    tx.visit_index_stored(
+        &table.name,
+        index_name,
+        &equal,
+        lower.as_ref(),
+        upper.as_ref(),
+        unique_equality,
+        || {
+            let remaining_visit = limits.max_visited_rows.saturating_sub(visited.get());
+            let mut page_limit = remaining_visit
+                .saturating_add(1)
+                .clamp(1, MAX_INDEX_QUERY_DOCUMENTS);
+            if unique_equality {
+                page_limit = page_limit.min(2);
+            }
+            if let Some(cap) = stream_cap.get() {
+                if cap == 0 {
+                    return 0;
+                }
+                page_limit = page_limit.min(cap);
+            }
+            page_limit
+        },
+        |id, stored| {
+            let next_visited = visited.get() + 1;
+            visited.set(next_visited);
+            if next_visited > limits.max_visited_rows {
+                return Err(SqlError::Bounds(format!(
+                    "visited row count exceeds max_visited_rows ({})",
+                    limits.max_visited_rows
+                )));
+            }
+            match stored {
+                StoredDocument::Flat(doc) => {
+                    let pk_col = &table.columns[table.primary_key_index];
+                    let verified_pk = verify_pk_value(table, id, decode_flat_col(&doc, pk_col)?)?;
+                    if eval_where_flat(filter, table, &doc, params)? {
+                        if let Some(cap) = stream_cap.get() {
+                            stream_cap.set(Some(cap.saturating_sub(1)));
+                        }
+                        on_match(id, verified_pk, RowRef::Flat(&doc))
+                    } else {
+                        Ok(ControlFlow::Continue(()))
+                    }
+                }
+                StoredDocument::Full(document) => {
+                    let obj = doc_into_object(document)?;
+                    let verified_pk = verify_doc_pk_id(table, id, &obj)?;
+                    if eval_where_doc(filter, table, &obj, params)? {
+                        if let Some(cap) = stream_cap.get() {
+                            stream_cap.set(Some(cap.saturating_sub(1)));
+                        }
+                        on_match(id, verified_pk, RowRef::Map(&obj))
+                    } else {
+                        Ok(ControlFlow::Continue(()))
+                    }
+                }
+            }
+        },
+    )
+    .map_err(classify_io_error)?
+}
+
 #[allow(clippy::too_many_arguments)]
 fn visit_index_rows(
     tx: &DocumentTransaction<'_, '_>,
@@ -4250,72 +4461,39 @@ fn visit_index_rows(
     filter: Option<&BoundExpr>,
     params: &[SqlValue],
     limits: &SqlLimits,
-    mut stream_cap: Option<usize>,
+    wanted: Option<&[bool]>,
+    stream_cap: Option<usize>,
     mut on_match: impl FnMut(
         String,
         Option<i64>,
         Map<String, Value>,
     ) -> Result<ControlFlow<()>, SqlError>,
 ) -> Result<(), SqlError> {
-    const MAX_INDEX_QUERY_DOCUMENTS: usize = 256;
-    let mut visited = 0usize;
-    let mut query = IndexQuery {
+    visit_index_rows_ref(
+        tx,
+        table,
+        index_name,
         equal,
         lower,
         upper,
-        after: None,
-        limit: 1,
-    };
-
-    loop {
-        let remaining_visit = limits.max_visited_rows.saturating_sub(visited);
-        let mut page_limit = remaining_visit
-            .saturating_add(1)
-            .clamp(1, MAX_INDEX_QUERY_DOCUMENTS);
-        if unique_equality {
-            page_limit = page_limit.min(2);
-        }
-        if let Some(cap) = stream_cap {
-            if cap == 0 {
-                return Ok(());
-            }
-            page_limit = page_limit.min(cap);
-        }
-        query.limit = page_limit;
-        let page = tx
-            .query_index(&table.name, index_name, &query)
-            .map_err(classify_io_error)?;
-        if page.documents.is_empty() {
-            return Ok(());
-        }
-        let done = unique_equality
-            || (page.plan.entries_read < page_limit
-                && page.plan.returned == page.plan.entries_read);
-        query.after = page.next;
-
-        for entry in page.documents {
-            visited += 1;
-            if visited > limits.max_visited_rows {
-                return Err(SqlError::Bounds(format!(
-                    "visited row count exceeds max_visited_rows ({})",
-                    limits.max_visited_rows
-                )));
-            }
-            let obj = doc_into_object(entry.document)?;
-            let verified_pk = verify_doc_pk_id(table, &entry.id, &obj)?;
-            if eval_where_doc(filter, table, &obj, params)? {
-                if let Some(cap) = &mut stream_cap {
-                    *cap = cap.saturating_sub(1);
-                }
-                if on_match(entry.id, verified_pk, obj)?.is_break() {
-                    return Ok(());
-                }
-            }
-        }
-        if done {
-            return Ok(());
-        }
-    }
+        unique_equality,
+        filter,
+        params,
+        limits,
+        stream_cap,
+        |id, verified_pk, row| {
+            let obj = match row {
+                RowRef::Flat(doc) => match wanted {
+                    Some(wanted) => doc.to_map_where(|name| {
+                        table.column_index(name).is_some_and(|index| wanted[index])
+                    }),
+                    None => doc.to_map(),
+                },
+                RowRef::Map(obj) => obj.clone(),
+            };
+            on_match(id.to_owned(), verified_pk, obj)
+        },
+    )
 }
 
 /// Reads rows of a primary-key range in place, page by page. `on_match` runs

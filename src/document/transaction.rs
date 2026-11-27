@@ -533,6 +533,20 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         budget_error.map_or(Ok(()), Err)
     }
 
+    /// Visits one bounded page of keys as `scan_admitted` would return them,
+    /// lending each key without copying keys or values on ordinary and
+    /// checkpoint transactions.
+    pub(super) fn visit_admitted_keys(
+        &self,
+        after: &[u8],
+        before: &[u8],
+        limit: usize,
+        admit: impl FnMut(&[u8], usize) -> bool,
+        mut visit: impl FnMut(&[u8]) -> bool,
+    ) -> io::Result<()> {
+        self.visit_admitted(after, before, limit, admit, |key, _| visit(key))
+    }
+
     pub(super) fn scan_document_page(
         &self,
         after: &[u8],
