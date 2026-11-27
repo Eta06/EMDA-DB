@@ -87,14 +87,11 @@ impl SqlCache {
     }
 }
 
-pub(crate) fn execute_statement(
-    db: &DocumentDatabase<'_>,
+fn validate_params(
     stmt: &SqlStatement,
     params: &[SqlValue],
     limits: &SqlLimits,
-    cache: &SqlCache,
-    force_full_scan: bool,
-) -> Result<SqlOutcome, SqlError> {
+) -> Result<(), SqlError> {
     if params.len() > limits.max_params {
         return Err(SqlError::Bounds(format!(
             "parameter count {} exceeds max_params ({})",
@@ -125,6 +122,18 @@ pub(crate) fn execute_statement(
             _ => {}
         }
     }
+    Ok(())
+}
+
+pub(crate) fn execute_statement(
+    db: &DocumentDatabase<'_>,
+    stmt: &SqlStatement,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    cache: &SqlCache,
+    force_full_scan: bool,
+) -> Result<SqlOutcome, SqlError> {
+    validate_params(stmt, params, limits)?;
 
     match &stmt.inner {
         Statement::CreateIndex(create_idx) => return exec_create_index(db, create_idx, cache),
@@ -137,15 +146,47 @@ pub(crate) fn execute_statement(
         _ => {}
     }
 
-    run_tx(db, |tx| match &stmt.inner {
+    run_tx(db, |tx| {
+        execute_statement_in_validated_tx(tx, stmt, params, limits, cache, force_full_scan)
+    })
+}
+
+pub(crate) fn execute_statement_in_tx(
+    tx: &mut DocumentTransaction<'_, '_>,
+    stmt: &SqlStatement,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    cache: &SqlCache,
+    force_full_scan: bool,
+) -> Result<SqlOutcome, SqlError> {
+    validate_params(stmt, params, limits)?;
+    execute_statement_in_validated_tx(tx, stmt, params, limits, cache, force_full_scan)
+}
+
+fn execute_statement_in_validated_tx(
+    tx: &mut DocumentTransaction<'_, '_>,
+    stmt: &SqlStatement,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    cache: &SqlCache,
+    force_full_scan: bool,
+) -> Result<SqlOutcome, SqlError> {
+    match &stmt.inner {
         Statement::CreateTable(create) => exec_create_table(tx, create, limits),
-        Statement::CreateIndex(_)
-        | Statement::DropIndex(_)
-        | Statement::Join(_)
-        | Statement::DropTable(_)
-        | Statement::AddColumn(_) => {
-            unreachable!()
-        }
+        Statement::CreateIndex(_) => Err(SqlError::Unsupported {
+            feature: "CREATE INDEX inside an explicit transaction (online index DDL must run outside a transaction)".into(),
+            offset: None,
+        }),
+        Statement::DropIndex(_) => Err(SqlError::Unsupported {
+            feature: "DROP INDEX inside an explicit transaction (online index DDL must run outside a transaction)".into(),
+            offset: None,
+        }),
+        Statement::DropTable(_) => Err(SqlError::Unsupported {
+            feature: "DROP TABLE inside an explicit transaction (a large table is dropped in several transactions)".into(),
+            offset: None,
+        }),
+        Statement::AddColumn(add) => super::ddl::add_column_in_tx(tx, add, limits, cache),
+        Statement::Join(join) => super::join::execute_in_tx(tx, join, params, limits, cache),
         Statement::Insert(insert) => exec_insert(tx, stmt.stmt_id, insert, params, limits, cache),
         Statement::Select(select) => exec_select(
             tx,
@@ -174,7 +215,7 @@ pub(crate) fn execute_statement(
             cache,
             force_full_scan,
         ),
-    })
+    }
 }
 
 pub(crate) fn run_tx<T>(
@@ -197,6 +238,13 @@ fn run_tx_with_mode<T>(
             Err(io::Error::other("sql statement aborted"))
         }
     });
+    map_transaction_outcome(outcome, sql_error)
+}
+
+pub(crate) fn map_transaction_outcome<T>(
+    outcome: Result<T, TransactionFailure>,
+    sql_error: Option<SqlError>,
+) -> Result<T, SqlError> {
     match outcome {
         Ok(value) => Ok(value),
         Err(TransactionFailure::Callback(io_err)) => {

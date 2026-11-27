@@ -1138,8 +1138,18 @@ pub(crate) fn execute(
     exec::run_tx(db, |tx| run(tx, statement, params, limits, cache))
 }
 
+pub(crate) fn execute_in_tx(
+    tx: &DocumentTransaction<'_, '_>,
+    statement: &JoinSelect,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    cache: &SqlCache,
+) -> Result<SqlOutcome, SqlError> {
+    run(tx, statement, params, limits, cache)
+}
+
 fn run(
-    tx: &mut DocumentTransaction<'_, '_>,
+    tx: &DocumentTransaction<'_, '_>,
     statement: &JoinSelect,
     params: &[SqlValue],
     limits: &SqlLimits,

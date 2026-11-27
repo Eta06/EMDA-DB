@@ -392,19 +392,19 @@ impl Parser<'_> {
                 "delete" => Statement::Delete(self.parse_delete()?),
                 "begin" | "start" => {
                     return Err(SqlError::Unsupported {
-                        feature: "explicit transactions (BEGIN/START)".into(),
+                        feature: "explicit SQL transactions (BEGIN/START); use SqlDatabase::transaction or SqlDatabase::transaction_with_retry".into(),
                         offset: Some(self.peek().offset),
                     });
                 }
                 "commit" | "end" => {
                     return Err(SqlError::Unsupported {
-                        feature: "explicit transactions (COMMIT)".into(),
+                        feature: "explicit SQL transactions (COMMIT/END); use SqlDatabase::transaction or SqlDatabase::transaction_with_retry".into(),
                         offset: Some(self.peek().offset),
                     });
                 }
                 "rollback" => {
                     return Err(SqlError::Unsupported {
-                        feature: "explicit transactions (ROLLBACK)".into(),
+                        feature: "explicit SQL transactions (ROLLBACK); return Err from SqlDatabase::transaction to roll back".into(),
                         offset: Some(self.peek().offset),
                     });
                 }

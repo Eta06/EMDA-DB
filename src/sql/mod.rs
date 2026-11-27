@@ -12,12 +12,14 @@ mod join;
 mod lexer;
 mod parser;
 mod plan;
+mod transaction;
 mod value;
 
 #[cfg(test)]
 mod tests;
 
 pub use parser::SqlStatement;
+pub use transaction::SqlTransaction;
 pub use value::{
     DEFAULT_SQL_DISTINCT_VALUES, DEFAULT_SQL_GROUPS, DEFAULT_SQL_SORT_ROWS,
     DEFAULT_SQL_VISITED_ROWS, MAX_SQL_BYTES, MAX_SQL_COLUMNS, MAX_SQL_DISTINCT_VALUES,
@@ -100,6 +102,43 @@ impl<'a> SqlDatabase<'a> {
             let stmt = self.prepare(sql)?;
             exec::execute_statement(&self.db, &stmt, params, &self.limits, &self.cache, false)
         }
+    }
+
+    /// Runs a multi-statement serializable transaction in `DocumentTransactionMode::ReadSet`.
+    ///
+    /// Statements executed inside `f` share one `DocumentTransaction`, see each other's
+    /// staged writes, and commit atomically only when `f` returns `Ok` without any prior
+    /// poisoned statement error. Returning `Err` or unwinding on panic rolls back all
+    /// staged SQL and catalog changes.
+    ///
+    /// Confirmed pre-commit conflicts return [`SqlError::Conflict`], uncertain commit
+    /// failures return [`SqlError::OutcomeUnknown`], and exceeding the transaction-wide
+    /// staged-write (`1,024` keys / `16 MiB`) or read-set limits returns [`SqlError::Bounds`].
+    pub fn transaction<T>(
+        &self,
+        f: impl FnOnce(&mut SqlTransaction<'_>) -> Result<T, SqlError>,
+    ) -> Result<T, SqlError> {
+        transaction::run_sql_transaction(&self.db, &self.limits, &self.cache, f)
+    }
+
+    /// Runs [`Self::transaction`] up to `max_attempts` times, retrying **only** confirmed
+    /// pre-commit conflicts ([`SqlError::Conflict`]).
+    ///
+    /// Never retries [`SqlError::OutcomeUnknown`] or non-conflict errors. Because `f` may
+    /// execute multiple times before committing, callers must ensure `f` has no unrolled-back
+    /// external side effects.
+    pub fn transaction_with_retry<T>(
+        &self,
+        max_attempts: usize,
+        f: impl FnMut(&mut SqlTransaction<'_>) -> Result<T, SqlError>,
+    ) -> Result<T, SqlError> {
+        transaction::run_sql_transaction_with_retry(
+            &self.db,
+            &self.limits,
+            &self.cache,
+            max_attempts,
+            f,
+        )
     }
 
     #[doc(hidden)]

@@ -282,6 +282,8 @@ pub enum SqlError {
     Conflict(io::Error),
     /// Commit I/O failure whose persistence outcome is unknown; caller must reconcile.
     OutcomeUnknown(io::Error),
+    /// Transaction was poisoned by an earlier statement error and cannot commit.
+    TransactionAborted(String),
     /// Other storage or I/O failure.
     Io(io::Error),
 }
@@ -330,6 +332,7 @@ impl fmt::Display for SqlError {
             }
             Self::Conflict(err) => write!(f, "transaction conflict: {err}"),
             Self::OutcomeUnknown(err) => write!(f, "transaction outcome unknown: {err}"),
+            Self::TransactionAborted(msg) => write!(f, "transaction aborted: {msg}"),
             Self::Io(err) => write!(f, "storage I/O error: {err}"),
         }
     }

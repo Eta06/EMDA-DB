@@ -336,7 +336,17 @@ pub(crate) fn execute_add_column(
     limits: &SqlLimits,
     cache: &SqlCache,
 ) -> Result<SqlOutcome, SqlError> {
-    exec::run_tx(db, |tx| {
+    exec::run_tx(db, |tx| add_column_in_tx(tx, statement, limits, cache))
+}
+
+/// Adds the column inside the caller's transaction.
+pub(crate) fn add_column_in_tx(
+    tx: &mut crate::document::DocumentTransaction<'_, '_>,
+    statement: &AddColumn,
+    limits: &SqlLimits,
+    cache: &SqlCache,
+) -> Result<SqlOutcome, SqlError> {
+    {
         let table = catalog::load_table_cached(tx, &statement.table, cache.tables())?;
         if table.def.column_index(&statement.column).is_some() {
             return Err(SqlError::Syntax {
@@ -373,5 +383,5 @@ pub(crate) fn execute_add_column(
         updated.validate()?;
         catalog::save_table_def(tx, &table.catalog_key, &updated)?;
         Ok(SqlOutcome::TableAltered)
-    })
+    }
 }
