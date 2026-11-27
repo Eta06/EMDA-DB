@@ -5,6 +5,7 @@ mod bulk;
 mod detailed_mutations;
 mod equality;
 mod filter;
+pub(crate) mod flat;
 mod index;
 mod integrity;
 mod key;
@@ -62,6 +63,7 @@ pub use relationship::{
 pub use schema::{CollectionSchema, FieldRule, FieldType};
 pub use schema_migration::{SchemaMigrationStatus, SchemaStep};
 pub use snapshot::DocumentSnapshot;
+pub(crate) use transaction::StoredDocument;
 pub use transaction::{DocumentReadLimits, DocumentRequestUsage, DocumentTransaction};
 pub use transfer::{MAX_COLLECTION_ARCHIVE_BYTES, MAX_COLLECTION_ARCHIVE_DOCUMENTS};
 pub use update::{DocumentUpdate, FieldCondition, MAX_DOCUMENT_UPDATE_INPUT_BYTES};

@@ -257,6 +257,55 @@ impl CollectionSchema {
         self.validate_fields(document, root)
     }
 
+    /// Checks a flat document against these rules exactly as
+    /// `validate_stored_document` checks its decoded value, or returns `None`
+    /// when a rule names a nested path, which the flat form cannot answer.
+    pub(crate) fn validate_flat(
+        &self,
+        document: &super::flat::FlatDocument<'_>,
+    ) -> Option<io::Result<()>> {
+        use super::flat::FlatScalar;
+        if self.fields.iter().any(|rule| rule.path.len() != 1) {
+            return None;
+        }
+        for rule in &self.fields {
+            match document.get(&rule.path[0]) {
+                None if rule.required => {
+                    return Some(Err(key::invalid("required field is missing")));
+                }
+                None => {}
+                Some(FlatScalar::Null) if rule.nullable => {}
+                Some(FlatScalar::Null) => {
+                    return Some(Err(key::invalid("field does not permit null")));
+                }
+                Some(value) => {
+                    let valid = match rule.field_type {
+                        FieldType::Boolean => matches!(value, FlatScalar::Bool(_)),
+                        FieldType::Integer => value.as_i64().is_some(),
+                        FieldType::IntegerRange { min, max } => value
+                            .as_i64()
+                            .is_some_and(|value| (min..=max).contains(&value)),
+                        FieldType::Number => matches!(
+                            value,
+                            FlatScalar::Int(_) | FlatScalar::UInt(_) | FlatScalar::Float(_)
+                        ),
+                        FieldType::String => matches!(value, FlatScalar::Str(_)),
+                        FieldType::StringBytes { min, max } => match value {
+                            FlatScalar::Str(text) => (min..=max).contains(&text.len()),
+                            _ => false,
+                        },
+                        // A flat member is never an object or array.
+                        FieldType::Object | FieldType::Array => false,
+                    };
+                    if !valid {
+                        return Some(Err(key::invalid("field does not match its schema type")));
+                    }
+                }
+            }
+        }
+        Some(Ok(()))
+    }
+
     fn validate_fields(
         &self,
         document: &Value,

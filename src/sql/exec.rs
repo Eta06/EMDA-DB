@@ -11,9 +11,10 @@ use super::value::{
     MAX_SQL_INDEXES_PER_TABLE, MAX_SQL_TEXT_PK_BYTES, SqlError, SqlLimits, SqlOutcome, SqlType,
     SqlValue, coerce_for_column, compare_i64_f64, encode_i64_pk_bytes, exact_i64_to_f64,
 };
+use crate::document::flat::{FlatDocument, FlatScalar};
 use crate::document::{
     DocumentDatabase, DocumentTransaction, DocumentTransactionMode, IndexBound, IndexQuery,
-    IndexValue,
+    IndexValue, StoredDocument,
 };
 use crate::{MAX_SCAN_ENTRIES, TransactionFailure};
 use parking_lot::RwLock;
@@ -1366,6 +1367,8 @@ enum SelectPlan {
 }
 
 struct BoundSelectPlan {
+    /// Columns a row needs after filtering: projection, ordering and key.
+    wanted_columns: Vec<bool>,
     proj_indices: Vec<usize>,
     proj_is_last: Vec<bool>,
     col_names: Vec<String>,
@@ -1403,6 +1406,8 @@ struct BoundGroupOrderBy {
 }
 
 struct BoundAggregatePlan {
+    /// Columns a row needs after filtering: groups, aggregates and key.
+    wanted_columns: Vec<bool>,
     col_names: Vec<String>,
     outputs: Vec<BoundSelectOutput>,
     group_cols: Vec<usize>,
@@ -2141,7 +2146,16 @@ fn build_simple_select_plan(
         stmt.limit.is_some(),
     );
 
+    let mut wanted_columns = vec![false; table.columns.len()];
+    wanted_columns[table.primary_key_index] = true;
+    for &index in &proj_indices {
+        wanted_columns[index] = true;
+    }
+    for item in &order_by {
+        wanted_columns[item.col_idx] = true;
+    }
     Ok(Arc::new(SelectPlan::Simple(BoundSelectPlan {
+        wanted_columns,
         proj_indices,
         proj_is_last,
         col_names,
@@ -2313,7 +2327,21 @@ fn build_aggregate_select_plan(
         None
     };
 
+    let mut wanted_columns = vec![false; table.columns.len()];
+    wanted_columns[table.primary_key_index] = true;
+    for &index in &group_cols {
+        wanted_columns[index] = true;
+    }
+    for aggregate in &aggregates {
+        if let Some(index) = aggregate.col_idx {
+            wanted_columns[index] = true;
+        }
+    }
+    if let Some(index) = ungrouped_min_col {
+        wanted_columns[index] = true;
+    }
     Ok(Arc::new(SelectPlan::Aggregate(BoundAggregatePlan {
+        wanted_columns,
         col_names,
         outputs,
         group_cols,
@@ -2573,6 +2601,7 @@ fn exec_simple_select(
                     bound_filter,
                     params,
                     limits,
+                    Some(&plan.wanted_columns),
                     None,
                     |_doc_id, verified_pk, obj| {
                         if (ring.len() as u128) == keep_cap {
@@ -2630,6 +2659,7 @@ fn exec_simple_select(
                     bound_filter,
                     params,
                     limits,
+                    Some(&plan.wanted_columns),
                     None,
                     |_doc_id, verified_pk, obj| {
                         if rows.len() >= limits.max_select_rows {
@@ -2688,6 +2718,7 @@ fn exec_simple_select(
                     bound_filter,
                     params,
                     limits,
+                    Some(&plan.wanted_columns),
                     None,
                     |doc_id, verified_pk, obj| {
                         let keys = decode_order_keys(&obj, table, &specs)?;
@@ -2760,6 +2791,7 @@ fn exec_simple_select(
                     bound_filter,
                     params,
                     limits,
+                    Some(&plan.wanted_columns),
                     None,
                     |doc_id, verified_pk, obj| {
                         if collected.len() >= limits.max_select_rows {
@@ -3424,6 +3456,7 @@ fn exec_aggregate_select(
                 bound_filter,
                 params,
                 limits,
+                Some(&plan.wanted_columns),
                 stream_cap,
                 |_doc_id, verified_pk, obj| {
                     update_group_accs(
@@ -3456,6 +3489,7 @@ fn exec_aggregate_select(
                 bound_filter,
                 params,
                 limits,
+                Some(&plan.wanted_columns),
                 None,
                 |_doc_id, verified_pk, obj| {
                     let accs = if plan.group_cols.len() == 1 {
@@ -3626,6 +3660,7 @@ fn exec_streaming_select(
         bound_filter,
         params,
         limits,
+        Some(&plan.wanted_columns),
         stream_cap,
         |_doc_id, verified_pk, obj| {
             if skipped < offset {
@@ -3678,6 +3713,7 @@ fn exec_pk_sorted_select(
             bound_filter,
             params,
             limits,
+            Some(&plan.wanted_columns),
             None,
             |doc_id, verified_pk, obj| {
                 if (heap.len() as u128) < keep_cap {
@@ -3750,6 +3786,7 @@ fn exec_pk_sorted_select(
             bound_filter,
             params,
             limits,
+            Some(&plan.wanted_columns),
             None,
             |doc_id, verified_pk, obj| {
                 let count = usize::from(first.is_some()) + rest.len();
@@ -4028,7 +4065,7 @@ fn visit_matching_rows(
         plan::plan_access(filter, table, &[], false, params)
     };
     visit_access_rows(
-        tx, table, plan, filter, params, limits, stream_cap, on_match,
+        tx, table, plan, filter, params, limits, None, stream_cap, on_match,
     )
 }
 
@@ -4040,6 +4077,7 @@ fn visit_access_rows(
     filter: Option<&BoundExpr>,
     params: &[SqlValue],
     limits: &SqlLimits,
+    wanted: Option<&[bool]>,
     stream_cap: Option<usize>,
     mut on_match: impl FnMut(
         String,
@@ -4076,6 +4114,7 @@ fn visit_access_rows(
             filter,
             params,
             limits,
+            wanted,
             after_id,
             &upper,
             max_exact_rows,
@@ -4109,6 +4148,7 @@ fn visit_access_rows(
             filter,
             params,
             limits,
+            wanted,
             None,
             &UpperBound::Unbounded,
             None,
@@ -4205,6 +4245,7 @@ fn scan_range_rows(
     filter: Option<&BoundExpr>,
     params: &[SqlValue],
     limits: &SqlLimits,
+    wanted: Option<&[bool]>,
     mut after_id: Option<String>,
     upper: &UpperBound,
     max_exact_rows: Option<usize>,
@@ -4229,16 +4270,16 @@ fn scan_range_rows(
             }
             page_limit = page_limit.min(cap);
         }
-        let page = tx
-            .scan_documents(&table.name, after_id.as_deref(), page_limit)
+        let (page, schema) = tx
+            .scan_stored_documents(&table.name, after_id.as_deref(), page_limit)
             .map_err(classify_io_error)?;
         if page.is_empty() {
             return Ok(());
         }
-        after_id = page.last().map(|entry| entry.id.clone());
+        after_id = page.last().map(|(id, _)| id.clone());
 
-        for entry in page {
-            if upper.is_past(&entry.id) {
+        for (id, bytes) in page {
+            if upper.is_past(&id) {
                 return Ok(());
             }
             visited += 1;
@@ -4248,14 +4289,38 @@ fn scan_range_rows(
                     limits.max_visited_rows
                 )));
             }
-            let at_inclusive_end = upper.is_at_inclusive(&entry.id);
-            let obj = doc_into_object(entry.document)?;
-            let verified_pk = verify_doc_pk_id(table, &entry.id, &obj)?;
-            if eval_where_doc(filter, table, &obj, params)? {
+            let at_inclusive_end = upper.is_at_inclusive(&id);
+            // A flat row is checked and filtered from borrowed members; only
+            // a matching row is turned into an owned object.
+            let decoded =
+                DocumentTransaction::decode_stored(&bytes, &schema).map_err(classify_io_error)?;
+            let matched = match decoded {
+                StoredDocument::Flat(doc) => {
+                    let pk_col = &table.columns[table.primary_key_index];
+                    let verified_pk = verify_pk_value(table, &id, decode_flat_col(&doc, pk_col)?)?;
+                    if eval_where_flat(filter, table, &doc, params)? {
+                        let map = match wanted {
+                            Some(wanted) => doc.to_map_where(|name| {
+                                table.column_index(name).is_some_and(|index| wanted[index])
+                            }),
+                            None => doc.to_map(),
+                        };
+                        Some((verified_pk, map))
+                    } else {
+                        None
+                    }
+                }
+                StoredDocument::Full(document) => {
+                    let obj = doc_into_object(document)?;
+                    let verified_pk = verify_doc_pk_id(table, &id, &obj)?;
+                    eval_where_doc(filter, table, &obj, params)?.then_some((verified_pk, obj))
+                }
+            };
+            if let Some((verified_pk, obj)) = matched {
                 if let Some(cap) = &mut stream_cap {
                     *cap = cap.saturating_sub(1);
                 }
-                if on_match(entry.id, verified_pk, obj)?.is_break() {
+                if on_match(id, verified_pk, obj)?.is_break() {
                     return Ok(());
                 }
             }
@@ -4297,7 +4362,16 @@ fn verify_doc_pk_id(
     obj: &Map<String, Value>,
 ) -> Result<Option<i64>, SqlError> {
     let pk_col = &table.columns[table.primary_key_index];
-    let pk_val = decode_col_ref(obj, pk_col)?;
+    verify_pk_value(table, doc_id, decode_col_ref(obj, pk_col)?)
+}
+
+/// Checks that a row's primary-key value encodes to its document ID.
+fn verify_pk_value(
+    table: &TableDef,
+    doc_id: &str,
+    pk_val: SqlValueRef<'_>,
+) -> Result<Option<i64>, SqlError> {
+    let pk_col = &table.columns[table.primary_key_index];
     let (matches, int_pk) = match (pk_col.col_type, pk_val) {
         (SqlType::Integer, SqlValueRef::Integer(n)) => {
             let mut buf = [0u8; 18];
@@ -4323,6 +4397,51 @@ fn verify_doc_pk_id(
         )));
     }
     Ok(int_pk)
+}
+
+/// `decode_col_ref` over a flat document: the same type rules and errors,
+/// applied to borrowed members.
+fn decode_flat_col<'a>(
+    doc: &FlatDocument<'a>,
+    col: &ColumnDef,
+) -> Result<SqlValueRef<'a>, SqlError> {
+    let invalid =
+        |message: String| SqlError::Io(io::Error::new(io::ErrorKind::InvalidData, message));
+    match doc.get(&col.name) {
+        None | Some(FlatScalar::Null) => {
+            if col.not_null {
+                return Err(invalid(format!(
+                    "stored NOT NULL column '{}' is null or missing",
+                    col.name
+                )));
+            }
+            Ok(SqlValueRef::Null)
+        }
+        Some(value) => match col.col_type {
+            SqlType::Integer => value
+                .as_i64()
+                .map(SqlValueRef::Integer)
+                .ok_or_else(|| invalid(format!("stored column '{}' is not an INTEGER", col.name))),
+            SqlType::Real => value
+                .as_f64()
+                .filter(|f| f.is_finite())
+                .map(SqlValueRef::Real)
+                .ok_or_else(|| {
+                    invalid(format!("stored column '{}' is not a finite REAL", col.name))
+                }),
+            SqlType::Text { .. } => match value {
+                FlatScalar::Str(text) => Ok(SqlValueRef::Text(text)),
+                _ => Err(invalid(format!("stored column '{}' is not TEXT", col.name))),
+            },
+            SqlType::Boolean => match value {
+                FlatScalar::Bool(b) => Ok(SqlValueRef::Boolean(b)),
+                _ => Err(invalid(format!(
+                    "stored column '{}' is not BOOLEAN",
+                    col.name
+                ))),
+            },
+        },
+    }
 }
 
 fn decode_col_ref<'a>(
@@ -4489,6 +4608,10 @@ enum EvalContext<'a> {
     Doc {
         table: &'a TableDef,
         obj: &'a Map<String, Value>,
+    },
+    Flat {
+        table: &'a TableDef,
+        doc: &'a FlatDocument<'a>,
     },
     Group {
         keys: &'a [ScalarKey],
@@ -4704,6 +4827,25 @@ fn eval_where_doc(
     }
 }
 
+fn eval_where_flat(
+    filter: Option<&BoundExpr>,
+    table: &TableDef,
+    doc: &FlatDocument<'_>,
+    params: &[SqlValue],
+) -> Result<bool, SqlError> {
+    let Some(expr) = filter else {
+        return Ok(true);
+    };
+    match eval_expr_ref(expr, EvalContext::Flat { table, doc }, params)? {
+        SqlValueRef::Boolean(b) => Ok(b),
+        SqlValueRef::Null => Ok(false),
+        other => Err(SqlError::Type(format!(
+            "WHERE clause must evaluate to BOOLEAN, got {}",
+            other.kind_name()
+        ))),
+    }
+}
+
 fn eval_having_doc(
     having: Option<&BoundExpr>,
     keys: &[ScalarKey],
@@ -4733,6 +4875,7 @@ fn eval_expr_ref<'a>(
         BoundExpr::Param(idx) => Ok(SqlValueRef::from_value(&params[*idx])),
         BoundExpr::Column(idx) => match ctx {
             EvalContext::Doc { table, obj } => decode_col_ref(obj, &table.columns[*idx]),
+            EvalContext::Flat { table, doc } => decode_flat_col(doc, &table.columns[*idx]),
             EvalContext::Group { keys, .. } => Ok(keys[*idx].as_value_ref()),
             EvalContext::None => unreachable!("column expression requires a row or group context"),
         },

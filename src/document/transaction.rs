@@ -22,6 +22,17 @@ const MAX_INDEX_BUILD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_INDEX_DROP_KEYS: usize = 768;
 const MAX_INDEX_DROP_BYTES: usize = 32 * 1024 * 1024;
 
+/// Document IDs with their undecoded stored bytes, in ID order.
+pub(crate) type StoredPage = Vec<(String, Vec<u8>)>;
+
+/// A stored document decoded by `DocumentTransaction::decode_stored`.
+pub(crate) enum StoredDocument<'a> {
+    /// Borrowed members of a flat document.
+    Flat(super::flat::FlatDocument<'a>),
+    /// Any other document, fully decoded.
+    Full(Value),
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Metadata {
@@ -600,6 +611,62 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
                 },
             )
         })
+    }
+
+    /// Decodes a stored document as `decode_document` does, returning
+    /// borrowed fields when the bytes are a flat document the flat reader
+    /// accepts and the schema has only top-level rules. The same size,
+    /// syntax and schema checks apply either way, and the same errors.
+    pub(crate) fn decode_stored<'b>(
+        bytes: &'b [u8],
+        schema: &CollectionSchema,
+    ) -> io::Result<StoredDocument<'b>> {
+        if bytes.len() > MAX_DOCUMENT_BYTES {
+            return Err(invalid_data("stored document exceeds size limit"));
+        }
+        if let Some(flat) = super::flat::parse(bytes) {
+            if let Some(valid) = schema.validate_flat(&flat) {
+                valid.map_err(|_| invalid_data("stored document violates its schema"))?;
+                return Ok(StoredDocument::Flat(flat));
+            }
+        }
+        Self::decode_document(bytes, schema).map(StoredDocument::Full)
+    }
+
+    /// Scans one bounded page of a collection's stored documents in ID order,
+    /// returning each ID with its undecoded bytes and the collection schema to
+    /// decode them with through `decode_stored`. Keys, IDs, size limits,
+    /// value checksums and read-set ranges are handled as `scan_documents`
+    /// handles them.
+    pub(crate) fn scan_stored_documents(
+        &self,
+        collection: &str,
+        after_id: Option<&str>,
+        limit: usize,
+    ) -> io::Result<(StoredPage, CollectionSchema)> {
+        if limit == 0 || limit > crate::MAX_SCAN_ENTRIES {
+            return Err(key::invalid("scan limit must be between 1 and 1024"));
+        }
+        let metadata = self.metadata(collection)?;
+        let prefix = key::collection(b'D', collection)?;
+        let end = key::end(&prefix);
+        let after = match after_id {
+            Some(id) => key::document(collection, id)?,
+            None => prefix.clone(),
+        };
+        let page = self.scan_document_page(&after, &end, limit)?;
+        let mut documents = Vec::with_capacity(page.len());
+        for (entry_key, value) in page {
+            let id = std::str::from_utf8(
+                entry_key
+                    .strip_prefix(prefix.as_slice())
+                    .ok_or_else(|| invalid_data("invalid document key"))?,
+            )
+            .map_err(|_| invalid_data("invalid document ID"))?;
+            key::id(id).map_err(|_| invalid_data("invalid document ID"))?;
+            documents.push((id.to_owned(), value));
+        }
+        Ok((documents, metadata.schema))
     }
 
     pub(super) fn decode_document(bytes: &[u8], schema: &CollectionSchema) -> io::Result<Value> {
