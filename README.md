@@ -98,14 +98,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Milestones
 
-Progress on `main` at `12e6de8f`, from [roadmap progress](docs/ROADMAP_PROGRESS.md):
+Progress on `main` on 2026-11-28, from [roadmap progress](docs/ROADMAP_PROGRESS.md):
 
 | Step | Area | Progress |
 | --- | --- | ---: |
 | 1 | Correctness and foundations | 99% |
 | 2 | Durable storage and core operations | 99% |
 | 3 | Document model and queries | 99% |
-| 4 | SQL | 69% |
+| 4 | SQL | 81% |
 | 5 | Secure service and project isolation | 10% |
 | 6 | Performance and scalability | 60% |
 | 7 | Replication and operations | 20% |
