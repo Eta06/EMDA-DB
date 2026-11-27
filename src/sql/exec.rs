@@ -140,6 +140,9 @@ pub(crate) fn execute_statement(
         Statement::DropIndex(drop_idx) => return exec_drop_index(db, drop_idx, cache),
         Statement::Join(join) => return super::join::execute(db, join, params, limits, cache),
         Statement::DropTable(drop) => return super::ddl::execute(db, drop, cache),
+        Statement::Explain(inner) => {
+            return run_tx(db, |tx| explain(tx, inner, params, limits, cache));
+        }
         Statement::AddColumn(add) => {
             return super::ddl::execute_add_column(db, add, limits, cache);
         }
@@ -186,6 +189,7 @@ fn execute_statement_in_validated_tx(
             offset: None,
         }),
         Statement::AddColumn(add) => super::ddl::add_column_in_tx(tx, add, limits, cache),
+        Statement::Explain(inner) => explain(tx, inner, params, limits, cache),
         Statement::Join(join) => super::join::execute_in_tx(tx, join, params, limits, cache),
         Statement::Insert(insert) => exec_insert(tx, stmt.stmt_id, insert, params, limits, cache),
         Statement::Select(select) => exec_select(
@@ -2344,6 +2348,46 @@ fn exec_select(
     }
 }
 
+/// The access path a simple SELECT reads through, and the WHERE expression
+/// still to be checked on each row (`None` when the index proves it).
+/// Execution and EXPLAIN share it, so EXPLAIN reports the path used.
+fn simple_select_access<'p>(
+    plan: &'p BoundSelectPlan,
+    table: &TableDef,
+    params: &[SqlValue],
+    has_limit: bool,
+    force_full_scan: bool,
+) -> (AccessPlan, Option<&'p BoundExpr>) {
+    let mut bound_filter = plan.filter.as_ref().map(|f| &f.expr);
+    let access = if force_full_scan {
+        AccessPlan::FullScan
+    } else {
+        match &plan.compiled_access {
+            CompiledSelectAccess::Static(cached) => cached.clone(),
+            CompiledSelectAccess::Index(tmpl) => {
+                match plan::resolve_compiled_index_template(tmpl, params) {
+                    ResolvedTemplatePlan::Plan {
+                        access,
+                        skip_filter,
+                    } => {
+                        if skip_filter {
+                            bound_filter = None;
+                        }
+                        access
+                    }
+                    ResolvedTemplatePlan::Fallback => {
+                        plan::plan_access(bound_filter, table, &plan.order_by, has_limit, params)
+                    }
+                }
+            }
+            CompiledSelectAccess::Dynamic => {
+                plan::plan_access(bound_filter, table, &plan.order_by, has_limit, params)
+            }
+        }
+    };
+    (access, bound_filter)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn exec_simple_select(
     tx: &DocumentTransaction<'_, '_>,
@@ -2453,37 +2497,8 @@ fn exec_simple_select(
         }
     }
 
-    let mut bound_filter = plan.filter.as_ref().map(|f| &f.expr);
-    let access = if force_full_scan {
-        AccessPlan::FullScan
-    } else {
-        match &plan.compiled_access {
-            CompiledSelectAccess::Static(cached) => cached.clone(),
-            CompiledSelectAccess::Index(tmpl) => {
-                match plan::resolve_compiled_index_template(tmpl, params) {
-                    ResolvedTemplatePlan::Plan {
-                        access,
-                        skip_filter,
-                    } => {
-                        if skip_filter {
-                            bound_filter = None;
-                        }
-                        access
-                    }
-                    ResolvedTemplatePlan::Fallback => plan::plan_access(
-                        bound_filter,
-                        table,
-                        &plan.order_by,
-                        limit.is_some(),
-                        params,
-                    ),
-                }
-            }
-            CompiledSelectAccess::Dynamic => {
-                plan::plan_access(bound_filter, table, &plan.order_by, limit.is_some(), params)
-            }
-        }
-    };
+    let (access, bound_filter) =
+        simple_select_access(plan, table, params, limit.is_some(), force_full_scan);
     if matches!(access, AccessPlan::Empty) {
         return Ok(SqlOutcome::Rows {
             columns: plan.col_names.clone(),
@@ -4791,4 +4806,169 @@ fn compare_non_null(left: SqlValueRef<'_>, right: SqlValueRef<'_>) -> Result<Ord
             right.kind_name()
         ))),
     }
+}
+
+/// Columns of an EXPLAIN result.
+const EXPLAIN_COLUMNS: [&str; 4] = ["step", "table", "access", "detail"];
+
+fn explain_row(step: &str, table: &str, access: String, detail: String) -> Vec<SqlValue> {
+    vec![
+        SqlValue::Text(step.into()),
+        SqlValue::Text(table.into()),
+        SqlValue::Text(access),
+        SqlValue::Text(detail),
+    ]
+}
+
+fn describe_access(access: &AccessPlan, table: &TableDef) -> String {
+    match access {
+        AccessPlan::Empty => "none: the WHERE clause cannot match a row".into(),
+        AccessPlan::PkPoint { .. } => "primary-key lookup".into(),
+        AccessPlan::PkRange {
+            max_exact_rows: Some(rows),
+            ..
+        } => format!("primary-key range of at most {rows} keys"),
+        AccessPlan::PkRange { .. } => "primary-key range".into(),
+        AccessPlan::Index {
+            index_idx,
+            equal,
+            lower,
+            upper,
+            unique_equality,
+            ..
+        } => {
+            let name = &table.indexes[*index_idx].name;
+            if *unique_equality {
+                format!("unique index {name} lookup")
+            } else {
+                let range = if lower.is_some() || upper.is_some() {
+                    " and a range on the next column"
+                } else {
+                    ""
+                };
+                format!("index {name}: equality on {} column(s){range}", equal.len())
+            }
+        }
+        AccessPlan::FullScan => "full scan in primary-key order".into(),
+    }
+}
+
+/// Describes how a SELECT would run, without reading rows. The access path
+/// comes from the same planning functions execution uses.
+fn explain(
+    tx: &DocumentTransaction<'_, '_>,
+    inner: &SqlStatement,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    cache: &SqlCache,
+) -> Result<SqlOutcome, SqlError> {
+    let rows = match &inner.inner {
+        Statement::Join(join) => super::join::explain(tx, join, params, limits, cache)?,
+        Statement::Select(select) => {
+            let cached_table = catalog::load_table_cached(tx, &select.table, &cache.tables)?;
+            let plan =
+                get_or_build_select_plan(inner.stmt_id, select, &cached_table, limits, cache)?;
+            let table = &cached_table.def;
+            let limit = resolve_limit_value(select.limit, params, "LIMIT")?;
+            match plan.as_ref() {
+                SelectPlan::Simple(simple) => {
+                    validate_filter_params(simple.filter.as_ref(), params)?;
+                    let (access, residual) =
+                        simple_select_access(simple, table, params, limit.is_some(), false);
+                    let access_text = if simple.simple_pk_eq.is_some() {
+                        "primary-key lookup".to_owned()
+                    } else {
+                        describe_access(&access, table)
+                    };
+                    let filter = match (&simple.filter, residual) {
+                        (None, _) => "no WHERE",
+                        (Some(_), None) => "WHERE answered by the index",
+                        (Some(_), Some(_)) => "WHERE checked on each row read",
+                    };
+                    let streams = !matches!(
+                        access,
+                        AccessPlan::Index {
+                            preserves_pk_asc: false,
+                            satisfies_order_by: false,
+                            ..
+                        }
+                    );
+                    let order = match (&simple.order_strategy, limit.is_some()) {
+                        (OrderStrategy::PkAsc, true) if streams => {
+                            "rows stream in key order and reading stops at OFFSET + LIMIT"
+                        }
+                        (OrderStrategy::PkAsc, false) if streams => "rows stream in key order",
+                        (OrderStrategy::PkAsc, _) => "rows are sorted by primary key",
+                        (OrderStrategy::PkDesc, _) => "rows are returned in descending key order",
+                        (OrderStrategy::General, true) => {
+                            "top OFFSET + LIMIT rows kept while reading"
+                        }
+                        (OrderStrategy::General, false) => "rows are sorted by ORDER BY",
+                    };
+                    vec![explain_row(
+                        "scan",
+                        &table.name,
+                        access_text,
+                        format!("{filter}; {order}"),
+                    )]
+                }
+                SelectPlan::Aggregate(aggregate) => {
+                    validate_filter_params(aggregate.filter.as_ref(), params)?;
+                    let access = plan::plan_access(
+                        aggregate.filter.as_ref().map(|f| &f.expr),
+                        table,
+                        &[],
+                        false,
+                        params,
+                    );
+                    let grouping = if aggregate.group_cols.is_empty() {
+                        "one group".to_owned()
+                    } else {
+                        format!("groups by {} column(s)", aggregate.group_cols.len())
+                    };
+                    let shortcut = if aggregate.ungrouped_min_col.is_some() {
+                        "; MIN may stop at the first ordered row"
+                    } else {
+                        ""
+                    };
+                    vec![
+                        explain_row(
+                            "scan",
+                            &table.name,
+                            describe_access(&access, table),
+                            if aggregate.filter.is_some() {
+                                "WHERE checked on each row read".into()
+                            } else {
+                                "no WHERE".into()
+                            },
+                        ),
+                        explain_row(
+                            "aggregate",
+                            &table.name,
+                            grouping,
+                            format!(
+                                "{} aggregate(s){}{shortcut}",
+                                aggregate.aggregates.len(),
+                                if aggregate.having.is_some() {
+                                    ", HAVING after grouping"
+                                } else {
+                                    ""
+                                }
+                            ),
+                        ),
+                    ]
+                }
+            }
+        }
+        _ => {
+            return Err(SqlError::Unsupported {
+                feature: "EXPLAIN of a statement other than SELECT".into(),
+                offset: None,
+            });
+        }
+    };
+    Ok(SqlOutcome::Rows {
+        columns: EXPLAIN_COLUMNS.iter().map(|c| (*c).to_owned()).collect(),
+        rows,
+    })
 }

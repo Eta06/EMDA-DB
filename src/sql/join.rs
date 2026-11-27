@@ -1148,13 +1148,25 @@ pub(crate) fn execute_in_tx(
     run(tx, statement, params, limits, cache)
 }
 
-fn run(
+/// Bound tables, per-table access and the clauses of one join statement.
+struct JoinPlan {
+    defs: Vec<Arc<TableDef>>,
+    aliases: Vec<String>,
+    steps: Vec<Step>,
+    early: Vec<BExpr>,
+    late: Vec<BExpr>,
+    order: Vec<(Slot, bool, bool)>,
+    projection: Vec<Slot>,
+    names: Vec<String>,
+}
+
+fn plan(
     tx: &DocumentTransaction<'_, '_>,
     statement: &JoinSelect,
     params: &[SqlValue],
     limits: &SqlLimits,
     cache: &SqlCache,
-) -> Result<SqlOutcome, SqlError> {
+) -> Result<JoinPlan, SqlError> {
     let cached: Vec<Arc<CachedTable>> = statement
         .tables
         .iter()
@@ -1243,6 +1255,35 @@ fn run(
             limits.max_columns
         )));
     }
+    Ok(JoinPlan {
+        defs,
+        aliases,
+        steps,
+        early,
+        late,
+        order,
+        projection,
+        names,
+    })
+}
+
+fn run(
+    tx: &DocumentTransaction<'_, '_>,
+    statement: &JoinSelect,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    cache: &SqlCache,
+) -> Result<SqlOutcome, SqlError> {
+    let JoinPlan {
+        defs,
+        steps,
+        early,
+        late,
+        order,
+        projection,
+        names,
+        ..
+    } = plan(tx, statement, params, limits, cache)?;
     let limit = limit_value(statement.limit, params)?;
     let offset = limit_value(statement.offset, params)?.unwrap_or(0);
     if limit == Some(0) {
@@ -1601,4 +1642,80 @@ impl Context<'_, '_, '_, '_> {
         }
         Ok(())
     }
+}
+
+/// Describes a join's plan, one row per table and one for ordering, without
+/// reading rows: the same binding and access choice as execution.
+pub(crate) fn explain(
+    tx: &DocumentTransaction<'_, '_>,
+    statement: &JoinSelect,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    cache: &SqlCache,
+) -> Result<Vec<Vec<SqlValue>>, SqlError> {
+    let plan = plan(tx, statement, params, limits, cache)?;
+    let first = choose_access(0, &plan.defs[0], &plan.early);
+    let text = |value: String| SqlValue::Text(value);
+    let mut rows = Vec::new();
+    for (index, def) in plan.defs.iter().enumerate() {
+        let access = if index == 0 {
+            &first
+        } else {
+            &plan.steps[index - 1].access
+        };
+        let column = |column: usize| def.columns[column].name.clone();
+        let description = match access {
+            Access::Point(_) => "primary-key lookup".to_owned(),
+            Access::Index { name, .. } => format!("index {name} lookup"),
+            Access::Hash { column: c, .. } if index > 0 => {
+                format!("hash table on {} built once", column(*c))
+            }
+            Access::Loop if index > 0 => "nested loop over every row".to_owned(),
+            Access::Hash { .. } | Access::Loop => "full scan in primary-key order".to_owned(),
+        };
+        let detail = if index == 0 {
+            match plan.early.len() {
+                0 => "first table".to_owned(),
+                n => format!("first table; {n} WHERE condition(s) checked while reading"),
+            }
+        } else {
+            let kind = match plan.steps[index - 1].kind {
+                JoinKind::Inner => "INNER JOIN",
+                JoinKind::Left => "LEFT JOIN",
+            };
+            format!("{kind}; ON checked on every candidate")
+        };
+        let step = if index == 0 { "scan" } else { "join" };
+        rows.push(vec![
+            text(step.into()),
+            text(format!("{} ({})", def.name, plan.aliases[index])),
+            text(description),
+            text(detail),
+        ]);
+    }
+    let first_key = Slot {
+        table: 0,
+        column: plan.defs[0].primary_key_index,
+    };
+    let sorted = !(plan.order.is_empty()
+        || matches!(plan.order.as_slice(), [(slot, false, _)] if *slot == first_key));
+    let order = if sorted {
+        "rows are sorted by ORDER BY"
+    } else if statement.limit.is_some() {
+        "rows stream in the first table's key order and reading stops at OFFSET + LIMIT"
+    } else {
+        "rows stream in the first table's key order"
+    };
+    let late = plan.late.len();
+    rows.push(vec![
+        text("order".into()),
+        text(String::new()),
+        text(order.into()),
+        text(if late == 0 {
+            "no other WHERE conditions".into()
+        } else {
+            format!("{late} WHERE condition(s) checked on each joined row")
+        }),
+    ]);
+    Ok(rows)
 }

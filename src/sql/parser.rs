@@ -41,6 +41,7 @@ pub(crate) enum Statement {
     Join(Box<super::join::JoinSelect>),
     DropTable(super::ddl::DropTable),
     AddColumn(super::ddl::AddColumn),
+    Explain(Box<SqlStatement>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -235,6 +236,31 @@ pub(crate) enum Expr {
 
 pub(crate) fn parse_statement(sql: &str, limits: &SqlLimits) -> Result<SqlStatement, SqlError> {
     let tokens = tokenize(sql, limits)?;
+    let is_explain = matches!(
+        tokens.first().map(|token| &token.kind),
+        Some(TokenKind::Ident { text, quoted: false }) if text == "explain"
+    );
+    if is_explain {
+        let rest = tokens.get(1).map_or(sql.len(), |token| token.offset);
+        let inner = parse_statement(&sql[rest..], limits).map_err(|error| match error {
+            SqlError::Syntax { offset, message } => SqlError::Syntax {
+                offset: offset + rest,
+                message,
+            },
+            other => other,
+        })?;
+        if !matches!(inner.inner, Statement::Select(_) | Statement::Join(_)) {
+            return Err(SqlError::Unsupported {
+                feature: "EXPLAIN of a statement other than SELECT".into(),
+                offset: Some(0),
+            });
+        }
+        return Ok(SqlStatement {
+            param_count: inner.param_count,
+            inner: Statement::Explain(Box::new(inner)),
+            stmt_id: NEXT_STMT_ID.fetch_add(1, Ordering::Relaxed),
+        });
+    }
     if super::ddl::is_alter_table(&tokens) {
         return Ok(SqlStatement {
             inner: Statement::AddColumn(super::ddl::parse_alter_table(&tokens, limits)?),
