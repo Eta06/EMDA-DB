@@ -734,9 +734,9 @@ impl Parser<'_> {
                     })?;
                 indices.push(idx);
             }
-            if !(indices.len() == 1 && indices[0] == primary_key_index)
-                && !unique_constraints.contains(&indices)
-            {
+            // The primary key is already unique; skip it and repeats.
+            let is_primary_key = indices.len() == 1 && indices[0] == primary_key_index;
+            if !(is_primary_key || unique_constraints.contains(&indices)) {
                 unique_constraints.push(indices);
             }
         }
