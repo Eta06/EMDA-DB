@@ -1291,6 +1291,532 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
     pub fn indexes(&self, collection: &str) -> io::Result<Vec<IndexDefinition>> {
         Ok(self.metadata(collection)?.indexes.clone())
     }
+
+    /// Loads and validates metadata for each listed collection once, coalescing
+    /// nearby metadata reads through a shared point reader. Repeated collection
+    /// names share the same metadata read and handle.
+    pub(crate) fn load_stored_metadata_batch(
+        &self,
+        collections: &[&str],
+    ) -> io::Result<Vec<Arc<dyn std::any::Any + Send + Sync>>> {
+        const INLINE: usize = 8;
+        if collections.len() <= INLINE {
+            let mut unique_names = [""; INLINE];
+            let mut unique_len = 0_usize;
+            let mut mapping = [0_usize; INLINE];
+            for (idx, &name) in collections.iter().enumerate() {
+                key::name(name)?;
+                if let Some(pos) = unique_names[..unique_len]
+                    .iter()
+                    .position(|&existing| existing == name)
+                {
+                    mapping[idx] = pos;
+                } else {
+                    mapping[idx] = unique_len;
+                    unique_names[unique_len] = name;
+                    unique_len += 1;
+                }
+            }
+            let mut loaded: [Option<Arc<dyn std::any::Any + Send + Sync>>; INLINE] =
+                [const { None }; INLINE];
+            match unique_len {
+                0 => {}
+                1 => {
+                    loaded[0] = Some(self.metadata(unique_names[0])?);
+                }
+                _ => {
+                    let mut key_bufs = [[0u8; 160]; INLINE];
+                    let mut key_lens = [0_usize; INLINE];
+                    for i in 0..unique_len {
+                        key_lens[i] =
+                            write_collection_key(&mut key_bufs[i], b'M', unique_names[i])?;
+                    }
+                    let mut raw_entries: [Option<Vec<u8>>; INLINE] = [const { None }; INLINE];
+                    self.with_point_reader(|reader| {
+                        for i in 0..unique_len {
+                            let bytes = reader.read_admitted_with_peek(
+                                &key_bufs[i][..key_lens[i]],
+                                |_| Ok(()),
+                                |push| {
+                                    for j in (i + 1)..unique_len {
+                                        if !push(&key_bufs[j][..key_lens[j]]) {
+                                            break;
+                                        }
+                                    }
+                                },
+                            )?;
+                            raw_entries[i] = bytes;
+                        }
+                        Ok(())
+                    })?;
+                    for i in 0..unique_len {
+                        let meta = Self::decode_metadata(unique_names[i], raw_entries[i].take())?;
+                        loaded[i] = Some(meta);
+                    }
+                }
+            }
+            let mut out = Vec::with_capacity(collections.len());
+            for &m in &mapping[..collections.len()] {
+                out.push(Arc::clone(loaded[m].as_ref().expect("loaded metadata")));
+            }
+            return Ok(out);
+        }
+
+        let mut unique_names: Vec<&str> = Vec::with_capacity(collections.len());
+        let mut mapping: Vec<usize> = Vec::with_capacity(collections.len());
+        for &name in collections {
+            key::name(name)?;
+            if let Some(pos) = unique_names.iter().position(|&existing| existing == name) {
+                mapping.push(pos);
+            } else {
+                mapping.push(unique_names.len());
+                unique_names.push(name);
+            }
+        }
+        let mut loaded: Vec<Arc<dyn std::any::Any + Send + Sync>> =
+            Vec::with_capacity(unique_names.len());
+        match unique_names.len() {
+            0 => {}
+            1 => {
+                let meta = self.metadata(unique_names[0])?;
+                loaded.push(meta);
+            }
+            _ => {
+                let mut key_bufs: Vec<([u8; 160], usize)> = Vec::with_capacity(unique_names.len());
+                for &name in &unique_names {
+                    let mut buf = [0u8; 160];
+                    let len = write_collection_key(&mut buf, b'M', name)?;
+                    key_bufs.push((buf, len));
+                }
+                let mut raw_entries: Vec<Option<Vec<u8>>> = Vec::with_capacity(unique_names.len());
+                self.with_point_reader(|reader| {
+                    for i in 0..key_bufs.len() {
+                        let (ref buf, len) = key_bufs[i];
+                        let bytes = reader.read_admitted_with_peek(
+                            &buf[..len],
+                            |_| Ok(()),
+                            |push| {
+                                for (next_buf, next_len) in &key_bufs[i + 1..] {
+                                    if !push(&next_buf[..*next_len]) {
+                                        break;
+                                    }
+                                }
+                            },
+                        )?;
+                        raw_entries.push(bytes);
+                    }
+                    Ok(())
+                })?;
+                for (name, bytes) in unique_names.into_iter().zip(raw_entries) {
+                    let meta = Self::decode_metadata(name, bytes)?;
+                    loaded.push(meta);
+                }
+            }
+        }
+        Ok(mapping
+            .into_iter()
+            .map(|i| Arc::clone(&loaded[i]))
+            .collect())
+    }
+
+    /// Reads one stored document using previously loaded collection metadata
+    /// and lends its decoded form (flat when possible) to `visit`. Returns
+    /// whether the document existed.
+    pub(crate) fn read_stored_document_with_meta(
+        &self,
+        collection: &str,
+        meta: &dyn std::any::Any,
+        id: &str,
+        visit: impl FnOnce(StoredDocument<'_>),
+    ) -> io::Result<bool> {
+        let metadata = meta
+            .downcast_ref::<Metadata>()
+            .ok_or_else(|| key::invalid("invalid collection metadata handle"))?;
+        let mut key_buf = [0u8; 416];
+        let key_len = write_document_key(&mut key_buf, collection, id)?;
+        let Some(bytes) = self.read_document_bytes(&key_buf[..key_len], |_| Ok(()))? else {
+            return Ok(false);
+        };
+        let stored = Self::decode_stored(&bytes, &metadata.schema)?;
+        visit(stored);
+        Ok(true)
+    }
+
+    /// Reads a batch of stored documents by ID in one point-reader session,
+    /// coalescing nearby log reads and lending each decoded document to
+    /// `visit`. `visit` returns false to stop early and must not call back
+    /// into this transaction.
+    pub(crate) fn read_stored_documents_batch_with_meta(
+        &self,
+        collection: &str,
+        meta: &dyn std::any::Any,
+        ids: &[&str],
+        mut visit: impl FnMut(usize, &str, Option<StoredDocument<'_>>) -> bool,
+    ) -> io::Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let metadata = meta
+            .downcast_ref::<Metadata>()
+            .ok_or_else(|| key::invalid("invalid collection metadata handle"))?;
+        if ids.len() == 1 {
+            let id = ids[0];
+            let mut key_buf = [0u8; 416];
+            let key_len = write_document_key(&mut key_buf, collection, id)?;
+            let bytes = self.read_document_bytes(&key_buf[..key_len], |_| Ok(()))?;
+            let stored = bytes
+                .as_deref()
+                .map(|b| Self::decode_stored(b, &metadata.schema))
+                .transpose()?;
+            visit(0, id, stored);
+            return Ok(());
+        }
+        let mut prefix_buf = [0u8; 160];
+        let prefix_len = write_collection_key(&mut prefix_buf, b'D', collection)?;
+        let prefix = &prefix_buf[..prefix_len];
+        self.with_point_reader(|reader| {
+            let mut key_buf = [0u8; 416];
+            let mut peek_buf = [0u8; 416];
+            key_buf[..prefix_len].copy_from_slice(prefix);
+            peek_buf[..prefix_len].copy_from_slice(prefix);
+            let mut consecutive_misses: usize = 0;
+            for (index, &id) in ids.iter().enumerate() {
+                key::id(id)?;
+                let key_len = prefix_len + id.len();
+                key_buf[prefix_len..key_len].copy_from_slice(id.as_bytes());
+                let mut peeked = false;
+                let bytes = reader.read_document_bytes_with_peek(
+                    &key_buf[..key_len],
+                    |_| Ok(()),
+                    |push_key| {
+                        peeked = true;
+                        if consecutive_misses >= 2 && (index & 31) != 0 {
+                            return;
+                        }
+                        let end = ids.len().min(index + 1 + 64);
+                        for &next_id in &ids[index + 1..end] {
+                            if key::id(next_id).is_err() {
+                                break;
+                            }
+                            let next_len = prefix_len + next_id.len();
+                            peek_buf[prefix_len..next_len].copy_from_slice(next_id.as_bytes());
+                            if !push_key(&peek_buf[..next_len]) {
+                                break;
+                            }
+                        }
+                    },
+                )?;
+                if peeked {
+                    consecutive_misses += 1;
+                } else {
+                    consecutive_misses = 0;
+                }
+                let stored = bytes
+                    .as_deref()
+                    .map(|b| Self::decode_stored(b, &metadata.schema))
+                    .transpose()?;
+                if !visit(index, id, stored) {
+                    break;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Visits one bounded page of stored documents using previously loaded
+    /// collection metadata, lending each ID and decoded `StoredDocument`.
+    /// `visit` runs while the backend snapshot is borrowed and must not call
+    /// back into this transaction.
+    pub(crate) fn visit_stored_documents_with_meta(
+        &self,
+        collection: &str,
+        meta: &dyn std::any::Any,
+        after_id: Option<&str>,
+        limit: usize,
+        mut visit: impl FnMut(&str, StoredDocument<'_>) -> bool,
+    ) -> io::Result<(usize, Option<String>)> {
+        if limit == 0 || limit > crate::MAX_SCAN_ENTRIES {
+            return Err(key::invalid("scan limit must be between 1 and 1024"));
+        }
+        let metadata = meta
+            .downcast_ref::<Metadata>()
+            .ok_or_else(|| key::invalid("invalid collection metadata handle"))?;
+        let mut prefix_buf = [0u8; 160];
+        let prefix_len = write_collection_key(&mut prefix_buf, b'D', collection)?;
+        let prefix = &prefix_buf[..prefix_len];
+        let mut end_buf = [0u8; 160];
+        let end_len = write_prefix_end(&mut end_buf, prefix);
+        let mut after_buf = [0u8; 416];
+        let after_len = match after_id {
+            Some(id) => {
+                key::id(id)?;
+                after_buf[..prefix_len].copy_from_slice(prefix);
+                after_buf[prefix_len..prefix_len + id.len()].copy_from_slice(id.as_bytes());
+                prefix_len + id.len()
+            }
+            None => {
+                after_buf[..prefix_len].copy_from_slice(prefix);
+                prefix_len
+            }
+        };
+        let mut oversized = false;
+        let mut error = None;
+        let mut count = 0;
+        let mut last_id = [0u8; key::MAX_ID_BYTES];
+        let mut last_id_len = 0;
+        self.visit_admitted(
+            &after_buf[..after_len],
+            &end_buf[..end_len],
+            limit,
+            |_, len| {
+                oversized = len > MAX_DOCUMENT_BYTES;
+                !oversized
+            },
+            |entry_key, value| {
+                let Some(id_bytes) = entry_key.strip_prefix(prefix) else {
+                    error = Some(invalid_data("invalid document key"));
+                    return false;
+                };
+                let Some(id) = std::str::from_utf8(id_bytes)
+                    .ok()
+                    .filter(|id| key::id(id).is_ok())
+                else {
+                    error = Some(invalid_data("invalid document ID"));
+                    return false;
+                };
+                count += 1;
+                last_id_len = id.len();
+                last_id[..last_id_len].copy_from_slice(id.as_bytes());
+                match Self::decode_stored(value, &metadata.schema) {
+                    Ok(stored) => visit(id, stored),
+                    Err(err) => {
+                        error = Some(err);
+                        false
+                    }
+                }
+            },
+        )?;
+        if oversized {
+            return Err(invalid_data("stored document exceeds size limit"));
+        }
+        if let Some(error) = error {
+            return Err(error);
+        }
+        let last_id = (count > 0)
+            .then(|| String::from_utf8(last_id[..last_id_len].to_vec()).expect("checked as UTF-8"));
+        Ok((count, last_id))
+    }
+
+    /// Reads one bounded page of a leading-column equality lookup on a ready
+    /// secondary index using previously loaded collection metadata, lending
+    /// each ID and decoded `StoredDocument` without building JSON values or
+    /// cursor scope digests. Applies the same index consistency, unique-owner,
+    /// response-size, and schema checks as `query_index`.
+    pub(crate) fn visit_index_stored_eq_with_meta(
+        &self,
+        (collection, meta): (&str, &dyn std::any::Any),
+        index_name: &str,
+        equal: &index::IndexValue,
+        after: Option<&[u8]>,
+        limit: usize,
+        mut visit: impl FnMut(&str, StoredDocument<'_>) -> bool,
+    ) -> io::Result<(usize, Option<Vec<u8>>)> {
+        const MAX_INDEX_PAGE: usize = 256;
+        const MAX_INDEX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+        if limit == 0 || limit > MAX_INDEX_PAGE {
+            return Err(key::invalid("query limit must be between 1 and 256"));
+        }
+        let metadata = meta
+            .downcast_ref::<Metadata>()
+            .ok_or_else(|| key::invalid("invalid collection metadata handle"))?;
+        let definition = metadata
+            .indexes
+            .iter()
+            .find(|index| index.name == index_name)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "index does not exist"))?;
+        if definition.fields.is_empty() {
+            return Err(key::invalid("query bounds exceed the index field count"));
+        }
+        let mut index_prefix_buf = [0u8; 300];
+        let index_prefix_len =
+            write_index_key(&mut index_prefix_buf, b'I', collection, &definition.name)?;
+        let index_prefix = &index_prefix_buf[..index_prefix_len];
+        // A single-value encoded index prefix is at most 276 + 515 = 791 bytes,
+        // so it fits on the stack without allocating.
+        let mut equal_prefix_buf = [0u8; 832];
+        let equal_prefix_len =
+            write_index_equal_prefix(&mut equal_prefix_buf, index_prefix, equal)?;
+        let equal_prefix = &equal_prefix_buf[..equal_prefix_len];
+        let mut before_buf = [0u8; 1024];
+        let mut before_len = write_prefix_end_slice(&mut before_buf, equal_prefix);
+        let after_slice = if let Some(cursor) = after {
+            if !cursor.starts_with(equal_prefix)
+                || cursor >= &before_buf[..before_len]
+                || cursor < equal_prefix
+            {
+                return Err(key::invalid("cursor is outside the query bounds"));
+            }
+            cursor
+        } else {
+            equal_prefix
+        };
+        let after_slice = &after_slice[..after_slice.len().min(crate::record::MAX_KEY)];
+        if before_len > crate::record::MAX_KEY {
+            let mut tmp = [0u8; 1024];
+            tmp[..crate::record::MAX_KEY].copy_from_slice(&before_buf[..crate::record::MAX_KEY]);
+            before_len = write_prefix_end_slice(&mut before_buf, &tmp[..crate::record::MAX_KEY]);
+        }
+        let before = &before_buf[..before_len];
+        if after_slice >= before {
+            return Ok((0, None));
+        }
+
+        let mut nonempty_entry = false;
+        let mut entry_bytes: Vec<u8> = Vec::new();
+        let mut entry_ranges: Vec<(usize, usize)> = Vec::new();
+        self.visit_admitted(
+            after_slice,
+            before,
+            limit,
+            |_, len| {
+                nonempty_entry = len != 0;
+                !nonempty_entry
+            },
+            |entry_key, _| {
+                let start = entry_bytes.len();
+                entry_bytes.extend_from_slice(entry_key);
+                entry_ranges.push((start, entry_bytes.len()));
+                true
+            },
+        )?;
+        let entries_read = entry_ranges.len();
+        if entries_read == 0 {
+            if nonempty_entry {
+                return Err(invalid_data("invalid index entry value"));
+            }
+            return Ok((0, None));
+        }
+
+        let single_field_fast =
+            definition.fields.len() == 1 && equal_prefix.len() <= crate::record::MAX_KEY;
+        let flat_verify_ok =
+            definition.partial.is_none() && definition.fields.iter().all(|path| path.len() == 1);
+        let mut doc_prefix_buf = [0u8; 160];
+        let doc_prefix_len = write_collection_key(&mut doc_prefix_buf, b'D', collection)?;
+        let doc_prefix = &doc_prefix_buf[..doc_prefix_len];
+        let mut unique_prefix_buf = [0u8; 300];
+        let unique_prefix_len = if definition.unique {
+            write_index_key(&mut unique_prefix_buf, b'U', collection, &definition.name)?
+        } else {
+            0
+        };
+
+        let mut returned = 0_usize;
+        let mut used = 0_usize;
+        let mut cursor_index: Option<usize> = None;
+        let mut stopped_by_caller = false;
+        let mut stopped_by_response_limit = false;
+
+        self.with_point_reader(|reader| {
+            let mut key_buf = [0u8; 416];
+            let mut peek_buf = [0u8; 416];
+            key_buf[..doc_prefix_len].copy_from_slice(doc_prefix);
+            peek_buf[..doc_prefix_len].copy_from_slice(doc_prefix);
+            let mut unique_buf = [0u8; 1024];
+            let mut consecutive_misses: usize = 0;
+
+            for (index, &(start, end)) in entry_ranges.iter().enumerate() {
+                let entry = &entry_bytes[start..end];
+                let id = extract_index_entry_id(
+                    entry,
+                    index_prefix,
+                    equal_prefix,
+                    definition.fields.len(),
+                    single_field_fast,
+                )?;
+                let key_len = doc_prefix_len + id.len();
+                key_buf[doc_prefix_len..key_len].copy_from_slice(id.as_bytes());
+                let mut peeked = false;
+                let encoded = reader
+                    .read_document_bytes_with_peek(
+                        &key_buf[..key_len],
+                        |_| Ok(()),
+                        |push_key| {
+                            peeked = true;
+                            if consecutive_misses >= 2 && (index & 31) != 0 {
+                                return;
+                            }
+                            let peek_end = entry_ranges.len().min(index + 1 + 64);
+                            for &(ns, ne) in &entry_ranges[index + 1..peek_end] {
+                                let Ok(next_id) = extract_index_entry_id(
+                                    &entry_bytes[ns..ne],
+                                    index_prefix,
+                                    equal_prefix,
+                                    definition.fields.len(),
+                                    single_field_fast,
+                                ) else {
+                                    break;
+                                };
+                                let next_len = doc_prefix_len + next_id.len();
+                                peek_buf[doc_prefix_len..next_len]
+                                    .copy_from_slice(next_id.as_bytes());
+                                if !push_key(&peek_buf[..next_len]) {
+                                    break;
+                                }
+                            }
+                        },
+                    )?
+                    .ok_or_else(|| invalid_data("index references a missing document"))?;
+                if peeked {
+                    consecutive_misses += 1;
+                } else {
+                    consecutive_misses = 0;
+                }
+                let next_used = used
+                    .checked_add(id.len())
+                    .and_then(|n| n.checked_add(encoded.len()))
+                    .ok_or_else(|| key::invalid("query response size overflow"))?;
+                if next_used > MAX_INDEX_RESPONSE_BYTES {
+                    stopped_by_response_limit = true;
+                    break;
+                }
+                let stored = Self::decode_stored(&encoded, &metadata.schema)?;
+                verify_stored_index_entry(
+                    collection,
+                    definition,
+                    index_prefix,
+                    &unique_prefix_buf[..unique_prefix_len],
+                    flat_verify_ok,
+                    id,
+                    entry,
+                    &stored,
+                    reader,
+                    &mut unique_buf,
+                )?;
+                used = next_used;
+                returned += 1;
+                cursor_index = Some(index);
+                if !visit(id, stored) {
+                    stopped_by_caller = true;
+                    break;
+                }
+            }
+            Ok(())
+        })?;
+
+        if nonempty_entry && returned == entries_read {
+            return Err(invalid_data("invalid index entry value"));
+        }
+        let next = if !stopped_by_caller && (entries_read == limit || stopped_by_response_limit) {
+            cursor_index.map(|i| {
+                let (s, e) = entry_ranges[i];
+                entry_bytes[s..e].to_vec()
+            })
+        } else {
+            None
+        };
+        Ok((returned, next))
+    }
 }
 
 enum PointReaderBackend<'r, 's> {
@@ -1384,6 +1910,320 @@ impl PointReader<'_, '_, '_, '_> {
 
 fn invalid_data(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+fn write_collection_key(buf: &mut [u8; 160], kind: u8, name: &str) -> io::Result<usize> {
+    key::name(name)?;
+    let p = key::PREFIX.len();
+    buf[..p].copy_from_slice(key::PREFIX);
+    buf[p] = kind;
+    buf[p + 1..p + 3].copy_from_slice(&(name.len() as u16).to_be_bytes());
+    let start = p + 3;
+    let end = start + name.len();
+    buf[start..end].copy_from_slice(name.as_bytes());
+    Ok(end)
+}
+
+fn write_document_key(buf: &mut [u8; 416], collection: &str, id: &str) -> io::Result<usize> {
+    key::id(id)?;
+    key::name(collection)?;
+    let p = key::PREFIX.len();
+    buf[..p].copy_from_slice(key::PREFIX);
+    buf[p] = b'D';
+    buf[p + 1..p + 3].copy_from_slice(&(collection.len() as u16).to_be_bytes());
+    let c_start = p + 3;
+    let c_end = c_start + collection.len();
+    buf[c_start..c_end].copy_from_slice(collection.as_bytes());
+    let end = c_end + id.len();
+    buf[c_end..end].copy_from_slice(id.as_bytes());
+    Ok(end)
+}
+
+fn write_index_key(
+    buf: &mut [u8; 300],
+    kind: u8,
+    collection: &str,
+    index_name: &str,
+) -> io::Result<usize> {
+    key::name(collection)?;
+    key::name(index_name)?;
+    let p = key::PREFIX.len();
+    buf[..p].copy_from_slice(key::PREFIX);
+    buf[p] = kind;
+    buf[p + 1..p + 3].copy_from_slice(&(collection.len() as u16).to_be_bytes());
+    let c_end = p + 3 + collection.len();
+    buf[p + 3..c_end].copy_from_slice(collection.as_bytes());
+    buf[c_end..c_end + 2].copy_from_slice(&(index_name.len() as u16).to_be_bytes());
+    let end = c_end + 2 + index_name.len();
+    buf[c_end + 2..end].copy_from_slice(index_name.as_bytes());
+    Ok(end)
+}
+
+fn write_prefix_end(buf: &mut [u8; 160], prefix: &[u8]) -> usize {
+    write_prefix_end_slice(buf, prefix)
+}
+
+fn write_prefix_end_slice(buf: &mut [u8], prefix: &[u8]) -> usize {
+    let mut len = prefix.len();
+    buf[..len].copy_from_slice(prefix);
+    while len > 0 {
+        if buf[len - 1] != u8::MAX {
+            buf[len - 1] += 1;
+            return len;
+        }
+        len -= 1;
+    }
+    unreachable!("reserved prefixes contain non-0xff bytes")
+}
+
+fn write_index_equal_prefix(
+    buf: &mut [u8; 832],
+    index_prefix: &[u8],
+    value: &index::IndexValue,
+) -> io::Result<usize> {
+    let mut len = index_prefix.len();
+    buf[..len].copy_from_slice(index_prefix);
+    match value {
+        index::IndexValue::Null => {
+            buf[len] = 0x10;
+            len += 1;
+        }
+        index::IndexValue::Boolean(b) => {
+            buf[len] = 0x20;
+            buf[len + 1] = u8::from(*b);
+            len += 2;
+        }
+        index::IndexValue::Integer(n) => {
+            buf[len] = 0x30;
+            buf[len + 1..len + 9].copy_from_slice(&((*n as u64) ^ (1_u64 << 63)).to_be_bytes());
+            len += 9;
+        }
+        index::IndexValue::String(s) => {
+            if s.len() > 256 {
+                return Err(key::invalid("indexed string exceeds 256 bytes"));
+            }
+            buf[len] = 0x40;
+            len += 1;
+            for byte in s.bytes() {
+                if byte == 0 {
+                    buf[len] = 0;
+                    buf[len + 1] = 0xff;
+                    len += 2;
+                } else {
+                    buf[len] = byte;
+                    len += 1;
+                }
+            }
+            buf[len] = 0;
+            buf[len + 1] = 0;
+            len += 2;
+        }
+    }
+    Ok(len)
+}
+
+fn consume_index_value(bytes: &[u8]) -> io::Result<usize> {
+    match bytes.first() {
+        Some(0x10) => Ok(1),
+        Some(0x20) if matches!(bytes.get(1), Some(0 | 1)) => Ok(2),
+        Some(0x30) if bytes.len() >= 9 => Ok(9),
+        Some(0x40) => {
+            let mut offset = 1;
+            let mut decoded = [0u8; 256];
+            let mut decoded_len = 0_usize;
+            loop {
+                let byte = *bytes
+                    .get(offset)
+                    .ok_or_else(|| invalid_data("truncated index string"))?;
+                offset += 1;
+                if byte != 0 {
+                    if decoded_len >= 256 {
+                        return Err(invalid_data("index string is too long"));
+                    }
+                    decoded[decoded_len] = byte;
+                    decoded_len += 1;
+                } else {
+                    let escaped = *bytes
+                        .get(offset)
+                        .ok_or_else(|| invalid_data("truncated index escape"))?;
+                    offset += 1;
+                    match escaped {
+                        0 => break,
+                        0xff => {
+                            if decoded_len >= 256 {
+                                return Err(invalid_data("index string is too long"));
+                            }
+                            decoded[decoded_len] = 0;
+                            decoded_len += 1;
+                        }
+                        _ => return Err(invalid_data("invalid index escape")),
+                    }
+                }
+            }
+            std::str::from_utf8(&decoded[..decoded_len])
+                .map_err(|_| invalid_data("invalid UTF-8 index string"))?;
+            Ok(offset)
+        }
+        _ => Err(invalid_data("invalid index tuple")),
+    }
+}
+
+fn extract_index_entry_id<'b>(
+    entry: &'b [u8],
+    index_prefix: &[u8],
+    equal_prefix: &[u8],
+    fields: usize,
+    single_field_fast: bool,
+) -> io::Result<&'b str> {
+    let remaining = if single_field_fast {
+        entry
+            .strip_prefix(equal_prefix)
+            .ok_or_else(|| invalid_data("invalid index prefix"))?
+    } else {
+        let mut rem = entry
+            .strip_prefix(index_prefix)
+            .ok_or_else(|| invalid_data("invalid index prefix"))?;
+        for _ in 0..fields {
+            let len = consume_index_value(rem)?;
+            rem = &rem[len..];
+        }
+        rem
+    };
+    let id =
+        std::str::from_utf8(remaining).map_err(|_| invalid_data("invalid document ID in index"))?;
+    key::id(id).map_err(|_| invalid_data("invalid document ID in index"))?;
+    Ok(id)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_stored_index_entry(
+    collection: &str,
+    definition: &IndexDefinition,
+    index_prefix: &[u8],
+    unique_prefix: &[u8],
+    flat_verify_ok: bool,
+    id: &str,
+    entry: &[u8],
+    stored: &StoredDocument<'_>,
+    reader: &mut PointReader<'_, '_, '_, '_>,
+    unique_buf: &mut [u8; 1024],
+) -> io::Result<()> {
+    use super::flat::FlatScalar;
+    if flat_verify_ok {
+        if let StoredDocument::Flat(flat) = stored {
+            let mut matched = entry.starts_with(index_prefix);
+            let mut pos = index_prefix.len();
+            for path in &definition.fields {
+                let Some(scalar) = flat.get(&path[0]) else {
+                    return Err(invalid_data("document does not belong to its index"));
+                };
+                match scalar {
+                    FlatScalar::Null => {
+                        if matched && entry.get(pos) == Some(&0x10) {
+                            pos += 1;
+                        } else {
+                            matched = false;
+                        }
+                    }
+                    FlatScalar::Bool(b) => {
+                        let enc = [0x20, u8::from(b)];
+                        if matched && entry.get(pos..pos + 2) == Some(enc.as_slice()) {
+                            pos += 2;
+                        } else {
+                            matched = false;
+                        }
+                    }
+                    FlatScalar::Int(n) => {
+                        let enc = ((n as u64) ^ (1_u64 << 63)).to_be_bytes();
+                        if matched
+                            && entry.get(pos) == Some(&0x30)
+                            && entry.get(pos + 1..pos + 9) == Some(enc.as_slice())
+                        {
+                            pos += 9;
+                        } else {
+                            matched = false;
+                        }
+                    }
+                    FlatScalar::Str(s) if s.len() <= 256 => {
+                        if matched && entry.get(pos) == Some(&0x40) {
+                            pos += 1;
+                            for byte in s.bytes() {
+                                if byte == 0 {
+                                    if entry.get(pos..pos + 2) == Some(&[0, 0xff][..]) {
+                                        pos += 2;
+                                    } else {
+                                        matched = false;
+                                        break;
+                                    }
+                                } else if entry.get(pos) == Some(&byte) {
+                                    pos += 1;
+                                } else {
+                                    matched = false;
+                                    break;
+                                }
+                            }
+                            if matched && entry.get(pos..pos + 2) == Some(&[0, 0][..]) {
+                                pos += 2;
+                            } else {
+                                matched = false;
+                            }
+                        } else {
+                            matched = false;
+                        }
+                    }
+                    _ => {
+                        return Err(invalid_data("document cannot be represented by its index"));
+                    }
+                }
+            }
+            let tuple_end = pos;
+            if !matched || entry.get(pos..) != Some(id.as_bytes()) {
+                return Err(invalid_data(
+                    "document index entry does not match the document",
+                ));
+            }
+            crate::record::validate_key(entry)
+                .map_err(|_| invalid_data("document cannot be represented by its index"))?;
+            if definition.unique {
+                let tuple = &entry[index_prefix.len()..tuple_end];
+                let u_len = unique_prefix.len() + tuple.len();
+                if u_len > unique_buf.len() {
+                    return Err(invalid_data("document cannot be represented by its index"));
+                }
+                unique_buf[..unique_prefix.len()].copy_from_slice(unique_prefix);
+                unique_buf[unique_prefix.len()..u_len].copy_from_slice(tuple);
+                crate::record::validate_key(&unique_buf[..u_len])
+                    .map_err(|_| invalid_data("document cannot be represented by its index"))?;
+                if reader.read_unique_owner(&unique_buf[..u_len])?.as_deref() != Some(id.as_bytes())
+                {
+                    return Err(invalid_data("invalid unique index entry"));
+                }
+            }
+            return Ok(());
+        }
+    }
+    let owned_value;
+    let document = match stored {
+        StoredDocument::Full(value) => value,
+        StoredDocument::Flat(flat) => {
+            owned_value = Value::Object(flat.to_map());
+            &owned_value
+        }
+    };
+    let expected = index::keys(collection, definition, document, id)
+        .map_err(|_| invalid_data("document cannot be represented by its index"))?
+        .ok_or_else(|| invalid_data("document does not belong to its index"))?;
+    if expected.entry != entry {
+        return Err(invalid_data(
+            "document index entry does not match the document",
+        ));
+    }
+    if let Some(unique) = expected.unique {
+        if reader.read_unique_owner(&unique)?.as_deref() != Some(id.as_bytes()) {
+            return Err(invalid_data("invalid unique index entry"));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

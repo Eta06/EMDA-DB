@@ -14,24 +14,23 @@ use super::exec::{self, SqlCache};
 use super::lexer::{Token, TokenKind};
 use super::parser::{CompareOp, LimitValue};
 use super::value::{
-    MAX_SQL_TEXT_PK_BYTES, SqlError, SqlLimits, SqlOutcome, SqlType, SqlValue, compare_i64_f64,
-    encode_i64_pk,
+    MAX_SQL_COLUMNS, MAX_SQL_TEXT_PK_BYTES, SqlError, SqlLimits, SqlOutcome, SqlType, SqlValue,
+    compare_i64_f64, encode_i64_pk_bytes,
 };
 use crate::MAX_SCAN_ENTRIES;
 use crate::document::flat::FlatScalar;
-use crate::document::{
-    DocumentDatabase, DocumentTransaction, IndexQuery, IndexValue, StoredDocument,
-};
+use crate::document::{DocumentDatabase, DocumentTransaction, IndexValue, StoredDocument};
+use parking_lot::RwLock;
 use serde_json::Value;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{BinaryHeap, HashMap};
 use std::io;
 use std::sync::Arc;
 
 /// Tables in one join statement, including the first.
 pub(crate) const MAX_JOIN_TABLES: usize = 8;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct JoinSelect {
     items: Vec<SelectItem>,
     tables: Vec<TableRef>,
@@ -41,6 +40,34 @@ pub(crate) struct JoinSelect {
     order_by: Vec<OrderItem>,
     limit: Option<LimitValue>,
     offset: Option<LimitValue>,
+    cached_plan: RwLock<Option<Arc<JoinPlan>>>,
+}
+
+impl Clone for JoinSelect {
+    fn clone(&self) -> Self {
+        Self {
+            items: self.items.clone(),
+            tables: self.tables.clone(),
+            joins: self.joins.clone(),
+            filter: self.filter.clone(),
+            order_by: self.order_by.clone(),
+            limit: self.limit,
+            offset: self.offset,
+            cached_plan: RwLock::new(None),
+        }
+    }
+}
+
+impl PartialEq for JoinSelect {
+    fn eq(&self, other: &Self) -> bool {
+        self.items == other.items
+            && self.tables == other.tables
+            && self.joins == other.joins
+            && self.filter == other.filter
+            && self.order_by == other.order_by
+            && self.limit == other.limit
+            && self.offset == other.offset
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -326,6 +353,7 @@ impl JoinParser<'_> {
             order_by,
             limit,
             offset,
+            cached_plan: RwLock::new(None),
         })
     }
 
@@ -599,6 +627,88 @@ enum BExpr {
 enum Ty {
     Null,
     Typed(SqlType),
+    Param(usize),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ParamCheck {
+    Boolean {
+        index: usize,
+        what: &'static str,
+    },
+    Predicate {
+        index: usize,
+        what: &'static str,
+    },
+    CompareWith {
+        index: usize,
+        other: SqlType,
+        param_first: bool,
+    },
+    CompareParams {
+        left: usize,
+        right: usize,
+    },
+}
+
+impl ParamCheck {
+    fn check(self, params: &[SqlValue]) -> Result<(), SqlError> {
+        match self {
+            Self::Boolean { index, what } => match value_type(&params[index]) {
+                Ty::Null | Ty::Typed(SqlType::Boolean) => Ok(()),
+                Ty::Typed(other) => Err(SqlError::Type(format!(
+                    "{what} requires BOOLEAN operands, got {}",
+                    other.display_name()
+                ))),
+                Ty::Param(_) => unreachable!(),
+            },
+            Self::Predicate { index, what } => match value_type(&params[index]) {
+                Ty::Null | Ty::Typed(SqlType::Boolean) => Ok(()),
+                Ty::Typed(other) => Err(SqlError::Type(format!(
+                    "{what} must evaluate to BOOLEAN, got {}",
+                    other.display_name()
+                ))),
+                Ty::Param(_) => unreachable!(),
+            },
+            Self::CompareWith {
+                index,
+                other,
+                param_first,
+            } => {
+                if let Ty::Typed(param_ty) = value_type(&params[index]) {
+                    if !(param_ty.matches_base(other)
+                        || (param_ty.is_numeric() && other.is_numeric()))
+                    {
+                        let (a, b) = if param_first {
+                            (param_ty, other)
+                        } else {
+                            (other, param_ty)
+                        };
+                        return Err(SqlError::Type(format!(
+                            "cannot compare {} and {}",
+                            a.display_name(),
+                            b.display_name()
+                        )));
+                    }
+                }
+                Ok(())
+            }
+            Self::CompareParams { left, right } => {
+                if let (Ty::Typed(a), Ty::Typed(b)) =
+                    (value_type(&params[left]), value_type(&params[right]))
+                {
+                    if !(a.matches_base(b) || (a.is_numeric() && b.is_numeric())) {
+                        return Err(SqlError::Type(format!(
+                            "cannot compare {} and {}",
+                            a.display_name(),
+                            b.display_name()
+                        )));
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 impl BExpr {
@@ -612,14 +722,31 @@ impl BExpr {
             Self::And(items) | Self::Or(items) => items.iter().filter_map(Self::max_table).max(),
         }
     }
+
+    fn mark_needed(&self, needed: &mut [Vec<bool>]) {
+        match self {
+            Self::Literal(_) | Self::Param(_) => {}
+            Self::Column(slot) => needed[slot.table][slot.column] = true,
+            Self::IsNull(inner, _) | Self::Not(inner) => inner.mark_needed(needed),
+            Self::Compare(_, left, right) => {
+                left.mark_needed(needed);
+                right.mark_needed(needed);
+            }
+            Self::And(items) | Self::Or(items) => {
+                for item in items {
+                    item.mark_needed(needed);
+                }
+            }
+        }
+    }
 }
 
 struct Binder<'a> {
     defs: &'a [Arc<TableDef>],
     aliases: &'a [String],
-    params: &'a [SqlValue],
     /// Tables visible to the expression being bound.
     visible: usize,
+    param_checks: &'a mut Vec<ParamCheck>,
 }
 
 impl Binder<'_> {
@@ -671,17 +798,24 @@ impl Binder<'_> {
         }
     }
 
-    fn bind(&self, expr: &JExpr) -> Result<(BExpr, Ty), SqlError> {
-        let boolean = |ty: Ty, what: &str| match ty {
+    fn require_boolean(&mut self, ty: Ty, what: &'static str) -> Result<(), SqlError> {
+        match ty {
             Ty::Null | Ty::Typed(SqlType::Boolean) => Ok(()),
+            Ty::Param(index) => {
+                self.param_checks.push(ParamCheck::Boolean { index, what });
+                Ok(())
+            }
             Ty::Typed(other) => Err(SqlError::Type(format!(
                 "{what} requires BOOLEAN operands, got {}",
                 other.display_name()
             ))),
-        };
+        }
+    }
+
+    fn bind(&mut self, expr: &JExpr) -> Result<(BExpr, Ty), SqlError> {
         Ok(match expr {
             JExpr::Literal(value) => (BExpr::Literal(value.clone()), value_type(value)),
-            JExpr::Param(index) => (BExpr::Param(*index), value_type(&self.params[*index])),
+            JExpr::Param(index) => (BExpr::Param(*index), Ty::Param(*index)),
             JExpr::Column(column) => {
                 let slot = self.resolve(column)?;
                 let ty = self.defs[slot.table].columns[slot.column].col_type;
@@ -693,7 +827,7 @@ impl Binder<'_> {
             ),
             JExpr::Not(inner) => {
                 let (bound, ty) = self.bind(inner)?;
-                boolean(ty, "NOT")?;
+                self.require_boolean(ty, "NOT")?;
                 (BExpr::Not(Box::new(bound)), Ty::Typed(SqlType::Boolean))
             }
             JExpr::And(items) | JExpr::Or(items) => {
@@ -705,7 +839,7 @@ impl Binder<'_> {
                 let mut bound = Vec::with_capacity(items.len());
                 for item in items {
                     let (b, ty) = self.bind(item)?;
-                    boolean(ty, what)?;
+                    self.require_boolean(ty, what)?;
                     bound.push(b);
                 }
                 let node = if matches!(expr, JExpr::And(_)) {
@@ -718,14 +852,35 @@ impl Binder<'_> {
             JExpr::Compare(op, left, right) => {
                 let (l, lt) = self.bind(left)?;
                 let (r, rt) = self.bind(right)?;
-                if let (Ty::Typed(a), Ty::Typed(b)) = (lt, rt) {
-                    if !(a.matches_base(b) || (a.is_numeric() && b.is_numeric())) {
-                        return Err(SqlError::Type(format!(
-                            "cannot compare {} and {}",
-                            a.display_name(),
-                            b.display_name()
-                        )));
+                match (lt, rt) {
+                    (Ty::Typed(a), Ty::Typed(b)) => {
+                        if !(a.matches_base(b) || (a.is_numeric() && b.is_numeric())) {
+                            return Err(SqlError::Type(format!(
+                                "cannot compare {} and {}",
+                                a.display_name(),
+                                b.display_name()
+                            )));
+                        }
                     }
+                    (Ty::Param(index), Ty::Typed(other)) => {
+                        self.param_checks.push(ParamCheck::CompareWith {
+                            index,
+                            other,
+                            param_first: true,
+                        });
+                    }
+                    (Ty::Typed(other), Ty::Param(index)) => {
+                        self.param_checks.push(ParamCheck::CompareWith {
+                            index,
+                            other,
+                            param_first: false,
+                        });
+                    }
+                    (Ty::Param(left), Ty::Param(right)) => {
+                        self.param_checks
+                            .push(ParamCheck::CompareParams { left, right });
+                    }
+                    (Ty::Null, _) | (_, Ty::Null) => {}
                 }
                 (
                     BExpr::Compare(*op, Box::new(l), Box::new(r)),
@@ -735,10 +890,15 @@ impl Binder<'_> {
         })
     }
 
-    fn bind_predicate(&self, expr: &JExpr, what: &str) -> Result<BExpr, SqlError> {
+    fn bind_predicate(&mut self, expr: &JExpr, what: &'static str) -> Result<BExpr, SqlError> {
         let (bound, ty) = self.bind(expr)?;
         match ty {
             Ty::Null | Ty::Typed(SqlType::Boolean) => Ok(bound),
+            Ty::Param(index) => {
+                self.param_checks
+                    .push(ParamCheck::Predicate { index, what });
+                Ok(bound)
+            }
             Ty::Typed(other) => Err(SqlError::Type(format!(
                 "{what} must evaluate to BOOLEAN, got {}",
                 other.display_name()
@@ -766,6 +926,7 @@ fn conjuncts(expr: BExpr) -> Vec<BExpr> {
 
 /// How each table finds candidate rows for one combined row of the tables
 /// before it. For the first table, keys are constants or parameters.
+#[derive(Debug)]
 enum Access {
     /// `table.pk = key`, where `key` uses only earlier tables.
     Point(BExpr),
@@ -774,6 +935,7 @@ enum Access {
     Index {
         name: String,
         column: usize,
+        single_column: bool,
         key: BExpr,
     },
     /// `table.column = key` through a hash table built once per statement.
@@ -782,10 +944,117 @@ enum Access {
     Loop,
 }
 
+#[derive(Debug)]
 struct Step {
     kind: JoinKind,
-    on: Vec<BExpr>,
+    on: Vec<FastPred>,
     access: Access,
+}
+
+#[derive(Debug)]
+enum FastPred {
+    SlotCmpSlot {
+        left: Slot,
+        op: CompareOp,
+        right: Slot,
+    },
+    SlotCmpParam {
+        slot: Slot,
+        op: CompareOp,
+        param: usize,
+    },
+    SlotCmpLit {
+        slot: Slot,
+        op: CompareOp,
+        lit: SqlValue,
+    },
+    SlotIsNull {
+        slot: Slot,
+        negated: bool,
+    },
+    Expr(BExpr),
+}
+
+#[inline]
+fn flip_op(op: CompareOp) -> CompareOp {
+    match op {
+        CompareOp::Eq => CompareOp::Eq,
+        CompareOp::Ne => CompareOp::Ne,
+        CompareOp::Lt => CompareOp::Gt,
+        CompareOp::Le => CompareOp::Ge,
+        CompareOp::Gt => CompareOp::Lt,
+        CompareOp::Ge => CompareOp::Le,
+    }
+}
+
+impl FastPred {
+    fn compile(expr: BExpr) -> Self {
+        match expr {
+            BExpr::Compare(op, left, right) => match (left.as_ref(), right.as_ref()) {
+                (BExpr::Column(l), BExpr::Column(r)) => Self::SlotCmpSlot {
+                    left: *l,
+                    op,
+                    right: *r,
+                },
+                (BExpr::Column(slot), BExpr::Param(param)) => Self::SlotCmpParam {
+                    slot: *slot,
+                    op,
+                    param: *param,
+                },
+                (BExpr::Param(param), BExpr::Column(slot)) => Self::SlotCmpParam {
+                    slot: *slot,
+                    op: flip_op(op),
+                    param: *param,
+                },
+                (BExpr::Column(slot), BExpr::Literal(lit)) => Self::SlotCmpLit {
+                    slot: *slot,
+                    op,
+                    lit: lit.clone(),
+                },
+                (BExpr::Literal(lit), BExpr::Column(slot)) => Self::SlotCmpLit {
+                    slot: *slot,
+                    op: flip_op(op),
+                    lit: lit.clone(),
+                },
+                _ => Self::Expr(BExpr::Compare(op, left, right)),
+            },
+            BExpr::IsNull(inner, negated) => match inner.as_ref() {
+                BExpr::Column(slot) => Self::SlotIsNull {
+                    slot: *slot,
+                    negated,
+                },
+                _ => Self::Expr(BExpr::IsNull(inner, negated)),
+            },
+            other => Self::Expr(other),
+        }
+    }
+
+    fn mark_needed(&self, needed: &mut [Vec<bool>]) {
+        match self {
+            Self::SlotCmpSlot { left, right, .. } => {
+                needed[left.table][left.column] = true;
+                needed[right.table][right.column] = true;
+            }
+            Self::SlotCmpParam { slot, .. }
+            | Self::SlotCmpLit { slot, .. }
+            | Self::SlotIsNull { slot, .. } => {
+                needed[slot.table][slot.column] = true;
+            }
+            Self::Expr(expr) => expr.mark_needed(needed),
+        }
+    }
+}
+
+#[inline]
+fn eval_cmp_op(op: CompareOp, ordering: Ordering) -> bool {
+    match op {
+        CompareOp::Eq => ordering == Ordering::Equal,
+        CompareOp::Ne => ordering != Ordering::Equal,
+        CompareOp::Lt => ordering == Ordering::Less,
+        CompareOp::Le => ordering != Ordering::Greater,
+        CompareOp::Gt => ordering == Ordering::Greater,
+        CompareOp::Ge => ordering != Ordering::Less,
+    }
 }
 
 fn choose_access(table: usize, def: &TableDef, on: &[BExpr]) -> Access {
@@ -837,6 +1106,7 @@ fn choose_access(table: usize, def: &TableDef, on: &[BExpr]) -> Access {
         Some(index) => Access::Index {
             name: index.name.clone(),
             column,
+            single_column: index.columns.len() == 1,
             key,
         },
         None => Access::Hash { column, key },
@@ -861,61 +1131,165 @@ fn clone_expr(expr: &BExpr) -> BExpr {
 // ---------------------------------------------------------------------------
 // Evaluation
 
-/// One combined row: a value vector per table, or `None` when a LEFT JOIN
-/// extended the row with NULLs.
-type Combined = Vec<Option<Arc<Vec<SqlValue>>>>;
+type RowIdx = u32;
+const NULL_ROW: RowIdx = u32::MAX;
+const NO_NEXT: RowIdx = u32::MAX;
 
-fn eval(expr: &BExpr, row: &Combined, params: &[SqlValue]) -> Result<SqlValue, SqlError> {
-    Ok(match expr {
-        BExpr::Literal(value) => value.clone(),
-        BExpr::Param(index) => params[*index].clone(),
-        BExpr::Column(slot) => row
-            .get(slot.table)
-            .and_then(Option::as_ref)
-            .map_or(SqlValue::Null, |values| values[slot.column].clone()),
-        BExpr::IsNull(inner, negated) => {
-            let is_null = matches!(eval(inner, row, params)?, SqlValue::Null);
-            SqlValue::Boolean(is_null != *negated)
+/// One combined row: an arena index per table, or `NULL_ROW` when a LEFT JOIN
+/// extended the row with NULLs.
+type Combined = [RowIdx; MAX_JOIN_TABLES];
+
+/// Contiguous row storage for one table, avoiding a heap `Vec` and `Arc` per row.
+struct TableArena {
+    stride: usize,
+    data: Vec<SqlValue>,
+}
+
+impl TableArena {
+    fn new(stride: usize) -> Self {
+        Self {
+            stride,
+            data: Vec::new(),
         }
-        BExpr::Not(inner) => match eval(inner, row, params)? {
-            SqlValue::Boolean(b) => SqlValue::Boolean(!b),
-            _ => SqlValue::Null,
+    }
+
+    fn clear(&mut self) {
+        self.data.clear();
+    }
+
+    fn len(&self) -> usize {
+        self.data.len().checked_div(self.stride).unwrap_or(0)
+    }
+
+    #[inline]
+    fn row(&self, idx: RowIdx) -> &[SqlValue] {
+        let start = idx as usize * self.stride;
+        &self.data[start..start + self.stride]
+    }
+
+    #[inline]
+    fn push_borrowed(&mut self, vals: &[ValRef<'_>], needed: &[bool]) -> RowIdx {
+        let idx = self.len() as RowIdx;
+        self.data.reserve(self.stride);
+        for (val, &need) in vals.iter().zip(needed) {
+            self.data.push(if need {
+                val.to_sql_value()
+            } else {
+                SqlValue::Null
+            });
+        }
+        idx
+    }
+}
+
+/// Borrowed SQL scalar value for zero-allocation evaluation, comparison, and hashing.
+#[derive(Clone, Copy, Debug)]
+enum ValRef<'a> {
+    Null,
+    Integer(i64),
+    Real(f64),
+    Text(&'a str),
+    Boolean(bool),
+}
+
+impl<'a> ValRef<'a> {
+    #[inline]
+    fn from_sql(value: &'a SqlValue) -> Self {
+        match value {
+            SqlValue::Null => Self::Null,
+            SqlValue::Integer(n) => Self::Integer(*n),
+            SqlValue::Real(f) => Self::Real(*f),
+            SqlValue::Text(s) => Self::Text(s.as_str()),
+            SqlValue::Boolean(b) => Self::Boolean(*b),
+        }
+    }
+
+    #[inline]
+    fn to_sql_value(self) -> SqlValue {
+        match self {
+            Self::Null => SqlValue::Null,
+            Self::Integer(n) => SqlValue::Integer(n),
+            Self::Real(f) => SqlValue::Real(f),
+            Self::Text(s) => SqlValue::Text(s.to_owned()),
+            Self::Boolean(b) => SqlValue::Boolean(b),
+        }
+    }
+
+    fn kind_name(self) -> &'static str {
+        match self {
+            Self::Null => "NULL",
+            Self::Integer(_) => "INTEGER",
+            Self::Real(_) => "REAL",
+            Self::Text(_) => "TEXT",
+            Self::Boolean(_) => "BOOLEAN",
+        }
+    }
+}
+
+#[inline]
+fn slot_val<'a>(row: &Combined, arenas: &'a [TableArena], slot: Slot) -> ValRef<'a> {
+    let idx = row[slot.table];
+    if idx == NULL_ROW {
+        ValRef::Null
+    } else {
+        ValRef::from_sql(&arenas[slot.table].row(idx)[slot.column])
+    }
+}
+
+fn eval_ref<'a>(
+    expr: &'a BExpr,
+    row: &Combined,
+    arenas: &'a [TableArena],
+    params: &'a [SqlValue],
+) -> Result<ValRef<'a>, SqlError> {
+    Ok(match expr {
+        BExpr::Literal(value) => ValRef::from_sql(value),
+        BExpr::Param(index) => ValRef::from_sql(&params[*index]),
+        BExpr::Column(slot) => slot_val(row, arenas, *slot),
+        BExpr::IsNull(inner, negated) => {
+            let is_null = matches!(eval_ref(inner, row, arenas, params)?, ValRef::Null);
+            ValRef::Boolean(is_null != *negated)
+        }
+        BExpr::Not(inner) => match eval_ref(inner, row, arenas, params)? {
+            ValRef::Boolean(b) => ValRef::Boolean(!b),
+            _ => ValRef::Null,
         },
         BExpr::And(items) => {
             let mut unknown = false;
             for item in items {
-                match eval(item, row, params)? {
-                    SqlValue::Boolean(false) => return Ok(SqlValue::Boolean(false)),
-                    SqlValue::Boolean(true) => {}
+                match eval_ref(item, row, arenas, params)? {
+                    ValRef::Boolean(false) => return Ok(ValRef::Boolean(false)),
+                    ValRef::Boolean(true) => {}
                     _ => unknown = true,
                 }
             }
             if unknown {
-                SqlValue::Null
+                ValRef::Null
             } else {
-                SqlValue::Boolean(true)
+                ValRef::Boolean(true)
             }
         }
         BExpr::Or(items) => {
             let mut unknown = false;
             for item in items {
-                match eval(item, row, params)? {
-                    SqlValue::Boolean(true) => return Ok(SqlValue::Boolean(true)),
-                    SqlValue::Boolean(false) => {}
+                match eval_ref(item, row, arenas, params)? {
+                    ValRef::Boolean(true) => return Ok(ValRef::Boolean(true)),
+                    ValRef::Boolean(false) => {}
                     _ => unknown = true,
                 }
             }
             if unknown {
-                SqlValue::Null
+                ValRef::Null
             } else {
-                SqlValue::Boolean(false)
+                ValRef::Boolean(false)
             }
         }
         BExpr::Compare(op, left, right) => {
-            let (l, r) = (eval(left, row, params)?, eval(right, row, params)?);
-            match compare(&l, &r)? {
-                None => SqlValue::Null,
-                Some(ordering) => SqlValue::Boolean(match op {
+            let l = eval_ref(left, row, arenas, params)?;
+            let r = eval_ref(right, row, arenas, params)?;
+            match compare_ref(l, r)? {
+                None => ValRef::Null,
+                Some(ordering) => ValRef::Boolean(match op {
                     CompareOp::Eq => ordering == Ordering::Equal,
                     CompareOp::Ne => ordering != Ordering::Equal,
                     CompareOp::Lt => ordering == Ordering::Less,
@@ -928,20 +1302,151 @@ fn eval(expr: &BExpr, row: &Combined, params: &[SqlValue]) -> Result<SqlValue, S
     })
 }
 
-fn truthy(expr: &BExpr, row: &Combined, params: &[SqlValue]) -> Result<bool, SqlError> {
-    Ok(matches!(eval(expr, row, params)?, SqlValue::Boolean(true)))
+/// Evaluates an expression referencing only table 0 against a borrowed row slice.
+fn eval_table0_ref<'a>(
+    expr: &'a BExpr,
+    vals: &'a [ValRef<'a>],
+    params: &'a [SqlValue],
+) -> Result<ValRef<'a>, SqlError> {
+    Ok(match expr {
+        BExpr::Literal(value) => ValRef::from_sql(value),
+        BExpr::Param(index) => ValRef::from_sql(&params[*index]),
+        BExpr::Column(slot) => vals[slot.column],
+        BExpr::IsNull(inner, negated) => {
+            let is_null = matches!(eval_table0_ref(inner, vals, params)?, ValRef::Null);
+            ValRef::Boolean(is_null != *negated)
+        }
+        BExpr::Not(inner) => match eval_table0_ref(inner, vals, params)? {
+            ValRef::Boolean(b) => ValRef::Boolean(!b),
+            _ => ValRef::Null,
+        },
+        BExpr::And(items) => {
+            let mut unknown = false;
+            for item in items {
+                match eval_table0_ref(item, vals, params)? {
+                    ValRef::Boolean(false) => return Ok(ValRef::Boolean(false)),
+                    ValRef::Boolean(true) => {}
+                    _ => unknown = true,
+                }
+            }
+            if unknown {
+                ValRef::Null
+            } else {
+                ValRef::Boolean(true)
+            }
+        }
+        BExpr::Or(items) => {
+            let mut unknown = false;
+            for item in items {
+                match eval_table0_ref(item, vals, params)? {
+                    ValRef::Boolean(true) => return Ok(ValRef::Boolean(true)),
+                    ValRef::Boolean(false) => {}
+                    _ => unknown = true,
+                }
+            }
+            if unknown {
+                ValRef::Null
+            } else {
+                ValRef::Boolean(false)
+            }
+        }
+        BExpr::Compare(op, left, right) => {
+            let l = eval_table0_ref(left, vals, params)?;
+            let r = eval_table0_ref(right, vals, params)?;
+            match compare_ref(l, r)? {
+                None => ValRef::Null,
+                Some(ordering) => ValRef::Boolean(match op {
+                    CompareOp::Eq => ordering == Ordering::Equal,
+                    CompareOp::Ne => ordering != Ordering::Equal,
+                    CompareOp::Lt => ordering == Ordering::Less,
+                    CompareOp::Le => ordering != Ordering::Greater,
+                    CompareOp::Gt => ordering == Ordering::Greater,
+                    CompareOp::Ge => ordering != Ordering::Less,
+                }),
+            }
+        }
+    })
+}
+
+#[inline]
+fn truthy_fast_pred(
+    pred: &FastPred,
+    row: &Combined,
+    arenas: &[TableArena],
+    params: &[SqlValue],
+) -> Result<bool, SqlError> {
+    match pred {
+        FastPred::SlotCmpSlot { left, op, right } => {
+            let l = slot_val(row, arenas, *left);
+            let r = slot_val(row, arenas, *right);
+            Ok(compare_ref(l, r)?.is_some_and(|ord| eval_cmp_op(*op, ord)))
+        }
+        FastPred::SlotCmpParam { slot, op, param } => {
+            let l = slot_val(row, arenas, *slot);
+            let r = ValRef::from_sql(&params[*param]);
+            Ok(compare_ref(l, r)?.is_some_and(|ord| eval_cmp_op(*op, ord)))
+        }
+        FastPred::SlotCmpLit { slot, op, lit } => {
+            let l = slot_val(row, arenas, *slot);
+            let r = ValRef::from_sql(lit);
+            Ok(compare_ref(l, r)?.is_some_and(|ord| eval_cmp_op(*op, ord)))
+        }
+        FastPred::SlotIsNull { slot, negated } => {
+            let is_null = matches!(slot_val(row, arenas, *slot), ValRef::Null);
+            Ok(is_null != *negated)
+        }
+        FastPred::Expr(expr) => Ok(matches!(
+            eval_ref(expr, row, arenas, params)?,
+            ValRef::Boolean(true)
+        )),
+    }
+}
+
+#[inline]
+fn passes_early(
+    early: &[FastPred],
+    vals: &[ValRef<'_>],
+    params: &[SqlValue],
+) -> Result<bool, SqlError> {
+    for pred in early {
+        let matched = match pred {
+            FastPred::SlotCmpSlot { left, op, right } => {
+                compare_ref(vals[left.column], vals[right.column])?
+                    .is_some_and(|ord| eval_cmp_op(*op, ord))
+            }
+            FastPred::SlotCmpParam { slot, op, param } => {
+                compare_ref(vals[slot.column], ValRef::from_sql(&params[*param]))?
+                    .is_some_and(|ord| eval_cmp_op(*op, ord))
+            }
+            FastPred::SlotCmpLit { slot, op, lit } => {
+                compare_ref(vals[slot.column], ValRef::from_sql(lit))?
+                    .is_some_and(|ord| eval_cmp_op(*op, ord))
+            }
+            FastPred::SlotIsNull { slot, negated } => {
+                matches!(vals[slot.column], ValRef::Null) != *negated
+            }
+            FastPred::Expr(expr) => {
+                matches!(eval_table0_ref(expr, vals, params)?, ValRef::Boolean(true))
+            }
+        };
+        if !matched {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// SQL comparison; `None` when either side is NULL.
-fn compare(left: &SqlValue, right: &SqlValue) -> Result<Option<Ordering>, SqlError> {
+#[inline]
+fn compare_ref(left: ValRef<'_>, right: ValRef<'_>) -> Result<Option<Ordering>, SqlError> {
     Ok(Some(match (left, right) {
-        (SqlValue::Null, _) | (_, SqlValue::Null) => return Ok(None),
-        (SqlValue::Integer(a), SqlValue::Integer(b)) => a.cmp(b),
-        (SqlValue::Real(a), SqlValue::Real(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
-        (SqlValue::Integer(a), SqlValue::Real(b)) => compare_i64_f64(*a, *b),
-        (SqlValue::Real(a), SqlValue::Integer(b)) => compare_i64_f64(*b, *a).reverse(),
-        (SqlValue::Text(a), SqlValue::Text(b)) => a.as_bytes().cmp(b.as_bytes()),
-        (SqlValue::Boolean(a), SqlValue::Boolean(b)) => a.cmp(b),
+        (ValRef::Null, _) | (_, ValRef::Null) => return Ok(None),
+        (ValRef::Integer(a), ValRef::Integer(b)) => a.cmp(&b),
+        (ValRef::Real(a), ValRef::Real(b)) => a.partial_cmp(&b).unwrap_or(Ordering::Equal),
+        (ValRef::Integer(a), ValRef::Real(b)) => compare_i64_f64(a, b),
+        (ValRef::Real(a), ValRef::Integer(b)) => compare_i64_f64(b, a).reverse(),
+        (ValRef::Text(a), ValRef::Text(b)) => a.as_bytes().cmp(b.as_bytes()),
+        (ValRef::Boolean(a), ValRef::Boolean(b)) => a.cmp(&b),
         _ => {
             return Err(SqlError::Type(format!(
                 "cannot compare {} and {}",
@@ -952,31 +1457,32 @@ fn compare(left: &SqlValue, right: &SqlValue) -> Result<Option<Ordering>, SqlErr
     }))
 }
 
-/// A hash key under which values that compare equal collide. Numbers that
-/// are exact integers hash as integers; other REAL values by their bits
-/// (`-0.0` is normalized). NULL has no key and never matches.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum HashKey {
-    Integer(i64),
-    Real(u64),
-    Text(String),
-    Boolean(bool),
+#[inline]
+fn real_as_exact_i64(f: f64) -> Option<i64> {
+    let f = if f == 0.0 { 0.0 } else { f };
+    let n = f as i64;
+    (f.fract() == 0.0 && compare_i64_f64(n, f) == Ordering::Equal).then_some(n)
 }
 
-fn hash_key(value: &SqlValue) -> Option<HashKey> {
+/// Hash key for REAL build columns so equal INTEGER and REAL values collide.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum NumHashKey {
+    Integer(i64),
+    Real(u64),
+}
+
+#[inline]
+fn num_hash_key(value: ValRef<'_>) -> Option<NumHashKey> {
     Some(match value {
-        SqlValue::Null => return None,
-        SqlValue::Integer(n) => HashKey::Integer(*n),
-        SqlValue::Real(f) => {
-            let f = if *f == 0.0 { 0.0 } else { *f };
-            if f.fract() == 0.0 && compare_i64_f64(f as i64, f) == Ordering::Equal {
-                HashKey::Integer(f as i64)
-            } else {
-                HashKey::Real(f.to_bits())
+        ValRef::Integer(n) => NumHashKey::Integer(n),
+        ValRef::Real(f) => {
+            let f = if f == 0.0 { 0.0 } else { f };
+            match real_as_exact_i64(f) {
+                Some(n) => NumHashKey::Integer(n),
+                None => NumHashKey::Real(f.to_bits()),
             }
         }
-        SqlValue::Text(s) => HashKey::Text(s.clone()),
-        SqlValue::Boolean(b) => HashKey::Boolean(*b),
+        _ => return None,
     })
 }
 
@@ -990,6 +1496,7 @@ struct Budget<'a> {
 }
 
 impl Budget<'_> {
+    #[inline]
     fn visit(&mut self, rows: usize) -> Result<(), SqlError> {
         self.visited += rows;
         if self.visited > self.limits.max_visited_rows {
@@ -1001,6 +1508,7 @@ impl Budget<'_> {
         Ok(())
     }
 
+    #[inline]
     fn combine(&mut self) -> Result<(), SqlError> {
         self.combined += 1;
         if self.combined > self.limits.max_visited_rows {
@@ -1013,26 +1521,70 @@ impl Budget<'_> {
     }
 }
 
-/// The document ID of a primary-key value, or `None` if no row can have it.
-fn pk_id(value: &SqlValue) -> Option<String> {
-    match value {
-        SqlValue::Integer(n) => Some(encode_i64_pk(*n)),
-        SqlValue::Text(s) if s.len() <= MAX_SQL_TEXT_PK_BYTES => Some(format!("t:{s}")),
+#[derive(Clone, Copy)]
+enum PkKey<'a> {
+    Int(i64),
+    Text(&'a str),
+}
+
+/// Coerce a key to the primary-key column's domain. `None` means no row can
+/// match (NULL, a fractional REAL for an INTEGER key, an oversized TEXT key,
+/// or a type that cannot equal the key column).
+#[inline]
+fn coerce_pk_key(value: ValRef<'_>, pk_type: SqlType) -> Option<PkKey<'_>> {
+    match (pk_type, value) {
+        (SqlType::Integer, ValRef::Integer(n)) => Some(PkKey::Int(n)),
+        (SqlType::Integer, ValRef::Real(f)) => real_as_exact_i64(f).map(PkKey::Int),
+        (SqlType::Text { .. }, ValRef::Text(s)) if s.len() <= MAX_SQL_TEXT_PK_BYTES => {
+            Some(PkKey::Text(s))
+        }
         _ => None,
+    }
+}
+
+#[inline]
+fn write_pk_id<'b>(key: PkKey<'_>, buf: &'b mut [u8; 256]) -> &'b str {
+    match key {
+        PkKey::Int(n) => {
+            let mut tmp = [0u8; 18];
+            encode_i64_pk_bytes(n, &mut tmp);
+            buf[..18].copy_from_slice(&tmp);
+            std::str::from_utf8(&buf[..18]).expect("ASCII hex PK")
+        }
+        PkKey::Text(s) => {
+            buf[0] = b't';
+            buf[1] = b':';
+            let end = 2 + s.len();
+            buf[2..end].copy_from_slice(s.as_bytes());
+            std::str::from_utf8(&buf[..end]).expect("valid UTF-8 PK")
+        }
+    }
+}
+
+#[inline]
+fn pk_val_matches_id(value: ValRef<'_>, id: &str) -> bool {
+    match value {
+        ValRef::Integer(n) => {
+            let mut buf = [0u8; 18];
+            encode_i64_pk_bytes(n, &mut buf);
+            id.as_bytes() == buf
+        }
+        ValRef::Text(s) if s.len() <= MAX_SQL_TEXT_PK_BYTES => id.strip_prefix("t:") == Some(s),
+        _ => false,
     }
 }
 
 /// A stored member as a row decoder sees it: a JSON value, or a borrowed
 /// flat scalar, which answers each question as the JSON value would.
-trait Member {
+trait Member<'a> {
     fn is_null(&self) -> bool;
     fn as_i64(&self) -> Option<i64>;
     fn as_f64(&self) -> Option<f64>;
-    fn as_str(&self) -> Option<&str>;
+    fn as_str(&self) -> Option<&'a str>;
     fn as_bool(&self) -> Option<bool>;
 }
 
-impl Member for &Value {
+impl<'a> Member<'a> for &'a Value {
     fn is_null(&self) -> bool {
         Value::is_null(self)
     }
@@ -1042,7 +1594,7 @@ impl Member for &Value {
     fn as_f64(&self) -> Option<f64> {
         Value::as_f64(self)
     }
-    fn as_str(&self) -> Option<&str> {
+    fn as_str(&self) -> Option<&'a str> {
         Value::as_str(self)
     }
     fn as_bool(&self) -> Option<bool> {
@@ -1050,7 +1602,7 @@ impl Member for &Value {
     }
 }
 
-impl Member for FlatScalar<'_> {
+impl<'a> Member<'a> for FlatScalar<'a> {
     fn is_null(&self) -> bool {
         matches!(self, FlatScalar::Null)
     }
@@ -1060,7 +1612,7 @@ impl Member for FlatScalar<'_> {
     fn as_f64(&self) -> Option<f64> {
         FlatScalar::as_f64(self)
     }
-    fn as_str(&self) -> Option<&str> {
+    fn as_str(&self) -> Option<&'a str> {
         match self {
             FlatScalar::Str(text) => Some(text),
             _ => None,
@@ -1078,37 +1630,19 @@ fn corrupt(message: String) -> SqlError {
     SqlError::Io(io::Error::new(io::ErrorKind::InvalidData, message))
 }
 
-fn decode(def: &TableDef, id: &str, document: &Value) -> Result<Vec<SqlValue>, SqlError> {
-    let object = document
-        .as_object()
-        .ok_or_else(|| corrupt(format!("stored row in '{}' is not an object", def.name)))?;
-    decode_members(def, id, |name| object.get(name))
-}
-
-fn decode_stored(
-    def: &TableDef,
-    id: &str,
-    stored: StoredDocument<'_>,
-) -> Result<Vec<SqlValue>, SqlError> {
-    match stored {
-        StoredDocument::Flat(document) => decode_members(def, id, |name| document.get(name)),
-        StoredDocument::Full(document) => decode(def, id, &document),
-    }
-}
-
-fn decode_members<M: Member>(
+fn decode_borrowed_members<'a, M: Member<'a>>(
     def: &TableDef,
     id: &str,
     get: impl Fn(&str) -> Option<M>,
-) -> Result<Vec<SqlValue>, SqlError> {
-    let mut row = Vec::with_capacity(def.columns.len());
-    for column in &def.columns {
+    out: &mut [ValRef<'a>],
+) -> Result<(), SqlError> {
+    for (index, column) in def.columns.iter().enumerate() {
         let value = match get(&column.name) {
             None => None,
             Some(value) if value.is_null() => None,
             Some(value) => Some(value),
         };
-        let value = match value {
+        out[index] = match value {
             None => {
                 if column.not_null {
                     return Err(corrupt(format!(
@@ -1116,13 +1650,13 @@ fn decode_members<M: Member>(
                         def.name, column.name
                     )));
                 }
-                SqlValue::Null
+                ValRef::Null
             }
             Some(value) => match column.col_type {
-                SqlType::Integer => value.as_i64().map(SqlValue::Integer),
-                SqlType::Real => value.as_f64().filter(|f| f.is_finite()).map(SqlValue::Real),
-                SqlType::Text { .. } => value.as_str().map(|s| SqlValue::Text(s.to_owned())),
-                SqlType::Boolean => value.as_bool().map(SqlValue::Boolean),
+                SqlType::Integer => value.as_i64().map(ValRef::Integer),
+                SqlType::Real => value.as_f64().filter(|f| f.is_finite()).map(ValRef::Real),
+                SqlType::Text { .. } => value.as_str().map(ValRef::Text),
+                SqlType::Boolean => value.as_bool().map(ValRef::Boolean),
             }
             .ok_or_else(|| {
                 corrupt(format!(
@@ -1131,87 +1665,61 @@ fn decode_members<M: Member>(
                 ))
             })?,
         };
-        row.push(value);
     }
-    if pk_id(&row[def.primary_key_index]).as_deref() != Some(id) {
+    if !pk_val_matches_id(out[def.primary_key_index], id) {
         return Err(corrupt(format!(
             "row ID does not match its primary key in table '{}'",
             def.name
         )));
     }
-    Ok(row)
+    Ok(())
 }
 
-fn scan_table(
-    tx: &DocumentTransaction<'_, '_>,
+fn decode_borrowed_stored<'a>(
     def: &TableDef,
-    budget: &mut Budget<'_>,
-    mut each: impl FnMut(Vec<SqlValue>, &mut Budget<'_>) -> Result<bool, SqlError>,
+    id: &str,
+    stored: &'a StoredDocument<'a>,
+    out: &mut [ValRef<'a>],
 ) -> Result<(), SqlError> {
-    let mut after: Option<String> = None;
-    // Pages grow from 64 rows so a scan that stops early under LIMIT reads
-    // little, while long scans still use full pages.
-    let mut page_size = 64;
-    let mut rows = Vec::new();
-    loop {
-        // Rows are decoded in place from the page, then handed out after
-        // it, since `each` may read through `tx`.
-        let mut failure = None;
-        let (count, last) = tx
-            .visit_stored_documents(
-                &def.name,
-                after.as_deref(),
-                page_size,
-                |schema, id, bytes| {
-                    let row = DocumentTransaction::decode_stored(bytes, schema)
-                        .map_err(exec::classify_io_error)
-                        .and_then(|stored| decode_stored(def, id, stored));
-                    match row {
-                        Ok(row) => {
-                            rows.push(row);
-                            true
-                        }
-                        Err(error) => {
-                            failure = Some(error);
-                            false
-                        }
-                    }
-                },
-            )
-            .map_err(exec::classify_io_error)?;
-        page_size = (page_size * 2).min(MAX_SCAN_ENTRIES);
-        if count == 0 {
-            return Ok(());
+    match stored {
+        StoredDocument::Flat(document) => {
+            decode_borrowed_members(def, id, |name| document.get(name), out)
         }
-        // A stored row that fails to decode is reported before the visit
-        // bound, as when the page was decoded while it was read.
-        if let Some(error) = failure {
-            return Err(error);
-        }
-        budget.visit(count)?;
-        after = last;
-        for row in rows.drain(..) {
-            if !each(row, budget)? {
-                return Ok(());
-            }
+        StoredDocument::Full(document) => {
+            let object = document
+                .as_object()
+                .ok_or_else(|| corrupt(format!("stored row in '{}' is not an object", def.name)))?;
+            decode_borrowed_members(def, id, |name| object.get(name), out)
         }
     }
 }
 
-/// Coerce a key to the primary-key column's domain. `None` means no row can
-/// match (NULL, a fractional REAL for an INTEGER key, or a type that cannot
-/// equal the key column).
-fn point_key(value: SqlValue, pk_type: SqlType) -> Option<SqlValue> {
-    match (pk_type, value) {
-        (_, SqlValue::Null) => None,
-        (SqlType::Integer, SqlValue::Integer(n)) => Some(SqlValue::Integer(n)),
-        (SqlType::Integer, SqlValue::Real(f)) => {
-            let n = f as i64;
-            (f.fract() == 0.0 && compare_i64_f64(n, f) == Ordering::Equal)
-                .then_some(SqlValue::Integer(n))
-        }
-        (SqlType::Text { .. }, SqlValue::Text(s)) => Some(SqlValue::Text(s)),
-        _ => None,
+/// Decodes a stored document into a right-sized stack buffer (avoiding zeroing
+/// all 64 column slots for narrow tables) and passes the borrowed slice to `f`.
+#[inline]
+fn with_decoded_stored<R>(
+    def: &TableDef,
+    id: &str,
+    stored: &StoredDocument<'_>,
+    f: impl FnOnce(&[ValRef<'_>]) -> Result<R, SqlError>,
+) -> Result<R, SqlError> {
+    let cols = def.columns.len();
+    if cols <= 4 {
+        let mut vals = [ValRef::Null; 4];
+        decode_borrowed_stored(def, id, stored, &mut vals[..cols])?;
+        f(&vals[..cols])
+    } else if cols <= 8 {
+        let mut vals = [ValRef::Null; 8];
+        decode_borrowed_stored(def, id, stored, &mut vals[..cols])?;
+        f(&vals[..cols])
+    } else if cols <= 16 {
+        let mut vals = [ValRef::Null; 16];
+        decode_borrowed_stored(def, id, stored, &mut vals[..cols])?;
+        f(&vals[..cols])
+    } else {
+        let mut vals = [ValRef::Null; MAX_SQL_COLUMNS];
+        decode_borrowed_stored(def, id, stored, &mut vals[..cols])?;
+        f(&vals[..cols])
     }
 }
 
@@ -1257,15 +1765,42 @@ pub(crate) fn execute_in_tx(
 }
 
 /// Bound tables, per-table access and the clauses of one join statement.
+#[derive(Debug)]
 struct JoinPlan {
     defs: Vec<Arc<TableDef>>,
     aliases: Vec<String>,
+    first: Access,
     steps: Vec<Step>,
-    early: Vec<BExpr>,
-    late: Vec<BExpr>,
+    early: Vec<FastPred>,
+    late: Vec<FastPred>,
     order: Vec<(Slot, bool, bool)>,
+    sorted: bool,
     projection: Vec<Slot>,
     names: Vec<String>,
+    needed: Vec<Vec<bool>>,
+    all_steps_point_from: [bool; MAX_JOIN_TABLES + 1],
+    prefix_all_point: [bool; MAX_JOIN_TABLES],
+    proj_unique: bool,
+    param_checks: Vec<ParamCheck>,
+}
+
+fn load_tables(
+    tx: &DocumentTransaction<'_, '_>,
+    statement: &JoinSelect,
+    cache: &SqlCache,
+) -> Result<Vec<Arc<CachedTable>>, SqlError> {
+    let mut cached: Vec<Arc<CachedTable>> = Vec::with_capacity(statement.tables.len());
+    for (index, table) in statement.tables.iter().enumerate() {
+        if let Some(prev) = statement.tables[..index]
+            .iter()
+            .position(|other| other.name == table.name)
+        {
+            cached.push(Arc::clone(&cached[prev]));
+        } else {
+            cached.push(catalog::load_table_cached(tx, &table.name, cache.tables())?);
+        }
+    }
+    Ok(cached)
 }
 
 fn plan(
@@ -1274,12 +1809,32 @@ fn plan(
     params: &[SqlValue],
     limits: &SqlLimits,
     cache: &SqlCache,
-) -> Result<JoinPlan, SqlError> {
-    let cached: Vec<Arc<CachedTable>> = statement
-        .tables
-        .iter()
-        .map(|table| catalog::load_table_cached(tx, &table.name, cache.tables()))
-        .collect::<Result<_, _>>()?;
+) -> Result<Arc<JoinPlan>, SqlError> {
+    let cached = load_tables(tx, statement, cache)?;
+    {
+        let guard = statement.cached_plan.read();
+        if let Some(existing) = guard.as_ref() {
+            if existing.defs.len() == cached.len()
+                && existing
+                    .defs
+                    .iter()
+                    .zip(&cached)
+                    .all(|(a, b)| Arc::ptr_eq(a, &b.def))
+            {
+                if existing.projection.len() > limits.max_columns {
+                    return Err(SqlError::Bounds(format!(
+                        "join result has more than max_columns ({}) columns",
+                        limits.max_columns
+                    )));
+                }
+                for check in &existing.param_checks {
+                    check.check(params)?;
+                }
+                return Ok(Arc::clone(existing));
+            }
+        }
+    }
+
     let defs: Vec<Arc<TableDef>> = cached.iter().map(|entry| Arc::clone(&entry.def)).collect();
     let aliases: Vec<String> = statement.tables.iter().map(|t| t.alias.clone()).collect();
     for (index, alias) in aliases.iter().enumerate() {
@@ -1291,69 +1846,95 @@ fn plan(
         }
     }
     let all = defs.len();
-    let binder = |visible| Binder {
-        defs: &defs,
-        aliases: &aliases,
-        params,
-        visible,
-    };
+    let mut param_checks = Vec::new();
 
     // ON clauses see the tables joined so far; WHERE, ORDER BY and the
     // select list see all of them.
     let mut steps = Vec::with_capacity(statement.joins.len());
     for (index, join) in statement.joins.iter().enumerate() {
         let table = index + 1;
-        let on = conjuncts(binder(table + 1).bind_predicate(&join.on, "ON")?);
+        let on = {
+            let mut binder = Binder {
+                defs: &defs,
+                aliases: &aliases,
+                visible: table + 1,
+                param_checks: &mut param_checks,
+            };
+            conjuncts(binder.bind_predicate(&join.on, "ON")?)
+        };
         let access = choose_access(table, &defs[table], &on);
         steps.push(Step {
             kind: join.kind,
-            on,
+            on: on.into_iter().map(FastPred::compile).collect(),
             access,
         });
     }
-    let (early, late): (Vec<BExpr>, Vec<BExpr>) = match &statement.filter {
-        Some(filter) => conjuncts(binder(all).bind_predicate(filter, "WHERE")?)
-            .into_iter()
-            .partition(|conjunct| conjunct.max_table().is_none_or(|max| max == 0)),
+    let (early_exprs, late_exprs): (Vec<BExpr>, Vec<BExpr>) = match &statement.filter {
+        Some(filter) => {
+            let mut binder = Binder {
+                defs: &defs,
+                aliases: &aliases,
+                visible: all,
+                param_checks: &mut param_checks,
+            };
+            conjuncts(binder.bind_predicate(filter, "WHERE")?)
+                .into_iter()
+                .partition(|conjunct| conjunct.max_table().is_none_or(|max| max == 0))
+        }
         None => (Vec::new(), Vec::new()),
     };
-    let order: Vec<(Slot, bool, bool)> = statement
-        .order_by
-        .iter()
-        .map(|item| {
-            let slot = binder(all).resolve(&item.column)?;
-            Ok((
-                slot,
-                item.descending,
-                item.nulls_first.unwrap_or(!item.descending),
-            ))
-        })
-        .collect::<Result<_, SqlError>>()?;
+    let order: Vec<(Slot, bool, bool)> = {
+        let binder = Binder {
+            defs: &defs,
+            aliases: &aliases,
+            visible: all,
+            param_checks: &mut param_checks,
+        };
+        statement
+            .order_by
+            .iter()
+            .map(|item| {
+                let slot = binder.resolve(&item.column)?;
+                Ok((
+                    slot,
+                    item.descending,
+                    item.nulls_first.unwrap_or(!item.descending),
+                ))
+            })
+            .collect::<Result<_, SqlError>>()?
+    };
     let mut projection: Vec<Slot> = Vec::new();
     let mut names = Vec::new();
-    for item in &statement.items {
-        let tables: Vec<usize> = match item {
-            SelectItem::All => (0..all).collect(),
-            SelectItem::TableAll(alias, offset) => vec![
-                aliases
-                    .iter()
-                    .position(|a| a == alias)
-                    .ok_or_else(|| SqlError::Syntax {
-                        offset: *offset,
-                        message: format!("unknown table or alias '{alias}'"),
-                    })?,
-            ],
-            SelectItem::Column(column) => {
-                let slot = binder(all).resolve(column)?;
-                projection.push(slot);
-                names.push(column.column.clone());
-                continue;
-            }
+    {
+        let binder = Binder {
+            defs: &defs,
+            aliases: &aliases,
+            visible: all,
+            param_checks: &mut param_checks,
         };
-        for table in tables {
-            for (column, def) in defs[table].columns.iter().enumerate() {
-                projection.push(Slot { table, column });
-                names.push(def.name.clone());
+        for item in &statement.items {
+            let tables: Vec<usize> = match item {
+                SelectItem::All => (0..all).collect(),
+                SelectItem::TableAll(alias, offset) => {
+                    vec![aliases.iter().position(|a| a == alias).ok_or_else(|| {
+                        SqlError::Syntax {
+                            offset: *offset,
+                            message: format!("unknown table or alias '{alias}'"),
+                        }
+                    })?]
+                }
+                SelectItem::Column(column) => {
+                    let slot = binder.resolve(column)?;
+                    projection.push(slot);
+                    names.push(column.column.clone());
+                    continue;
+                }
+            };
+            for table in tables {
+                for (column, def) in defs[table].columns.iter().enumerate() {
+                    projection.push(Slot { table, column });
+                    names.push(def.name.clone());
+                }
             }
         }
     }
@@ -1363,16 +1944,1322 @@ fn plan(
             limits.max_columns
         )));
     }
-    Ok(JoinPlan {
+    for check in &param_checks {
+        check.check(params)?;
+    }
+
+    let first = choose_access(0, &defs[0], &early_exprs);
+    let early: Vec<FastPred> = early_exprs.into_iter().map(FastPred::compile).collect();
+    let late: Vec<FastPred> = late_exprs.into_iter().map(FastPred::compile).collect();
+    let mut all_steps_point_from = [false; MAX_JOIN_TABLES + 1];
+    all_steps_point_from[steps.len()] = true;
+    for i in (0..steps.len()).rev() {
+        all_steps_point_from[i] =
+            all_steps_point_from[i + 1] && matches!(steps[i].access, Access::Point(_));
+    }
+    let mut prefix_all_point = [false; MAX_JOIN_TABLES];
+    prefix_all_point[0] = true;
+    for t in 1..all {
+        let prev_point = if t == 1 {
+            matches!(first, Access::Point(_))
+        } else {
+            matches!(steps[t - 2].access, Access::Point(_))
+        };
+        prefix_all_point[t] = prefix_all_point[t - 1] && prev_point;
+    }
+
+    // Rows come out in the first table's primary-key order when the first
+    // table is read by PK lookup, full scan, or single-column equality index.
+    // `ORDER BY` on that key alone is therefore already satisfied, as is any
+    // trailing tie-breaker when every join step matches at most one row.
+    let first_pk_ordered = match &first {
+        Access::Point(_) | Access::Hash { .. } | Access::Loop => true,
+        Access::Index { single_column, .. } => *single_column,
+    };
+    let first_key = Slot {
+        table: 0,
+        column: defs[0].primary_key_index,
+    };
+    let order_satisfied = order.is_empty()
+        || (first_pk_ordered
+            && (matches!(order.as_slice(), [(slot, false, _)] if *slot == first_key)
+                || (all_steps_point_from[0]
+                    && matches!(order.first(), Some((slot, false, _)) if *slot == first_key))));
+    let sorted = !order_satisfied;
+
+    let mut needed: Vec<Vec<bool>> = defs
+        .iter()
+        .map(|def| vec![false; def.columns.len()])
+        .collect();
+    for expr in &early {
+        expr.mark_needed(&mut needed);
+    }
+    for expr in &late {
+        expr.mark_needed(&mut needed);
+    }
+    for (idx, step) in steps.iter().enumerate() {
+        for expr in &step.on {
+            expr.mark_needed(&mut needed);
+        }
+        match &step.access {
+            Access::Point(key) => {
+                needed[idx + 1][defs[idx + 1].primary_key_index] = true;
+                key.mark_needed(&mut needed);
+            }
+            Access::Index { column, key, .. } | Access::Hash { column, key } => {
+                needed[idx + 1][*column] = true;
+                key.mark_needed(&mut needed);
+            }
+            Access::Loop => {}
+        }
+    }
+    for &(slot, _, _) in &order {
+        needed[slot.table][slot.column] = true;
+    }
+    for &slot in &projection {
+        needed[slot.table][slot.column] = true;
+    }
+    let proj_unique = (0..projection.len()).all(|i| !projection[..i].contains(&projection[i]));
+
+    let built_plan = Arc::new(JoinPlan {
         defs,
         aliases,
+        first,
         steps,
         early,
         late,
         order,
+        sorted,
         projection,
         names,
-    })
+        needed,
+        all_steps_point_from,
+        prefix_all_point,
+        proj_unique,
+        param_checks,
+    });
+    *statement.cached_plan.write() = Some(Arc::clone(&built_plan));
+    Ok(built_plan)
+}
+
+// ---------------------------------------------------------------------------
+// Hash tables, point/index caches, and output sinks
+
+enum HashBuckets {
+    Integer(HashMap<i64, (RowIdx, RowIdx)>),
+    Real(HashMap<NumHashKey, (RowIdx, RowIdx)>),
+    Text(HashMap<String, (RowIdx, RowIdx)>),
+    Boolean([Option<(RowIdx, RowIdx)>; 2]),
+}
+
+struct BuiltHash {
+    buckets: HashBuckets,
+    next: Vec<RowIdx>,
+}
+
+impl BuiltHash {
+    fn new(col_type: SqlType) -> Self {
+        let buckets = match col_type {
+            SqlType::Integer => HashBuckets::Integer(HashMap::new()),
+            SqlType::Real => HashBuckets::Real(HashMap::new()),
+            SqlType::Text { .. } => HashBuckets::Text(HashMap::new()),
+            SqlType::Boolean => HashBuckets::Boolean([None, None]),
+        };
+        Self {
+            buckets,
+            next: Vec::new(),
+        }
+    }
+
+    fn insert(&mut self, key: ValRef<'_>, idx: RowIdx) {
+        debug_assert_eq!(idx as usize, self.next.len());
+        self.next.push(NO_NEXT);
+        let next = &mut self.next;
+        let mut append = |entry: &mut (RowIdx, RowIdx)| {
+            next[entry.1 as usize] = idx;
+            entry.1 = idx;
+        };
+        match (&mut self.buckets, key) {
+            (HashBuckets::Integer(map), ValRef::Integer(n)) => {
+                map.entry(n).and_modify(append).or_insert((idx, idx));
+            }
+            (HashBuckets::Real(map), ValRef::Real(_) | ValRef::Integer(_)) => {
+                if let Some(k) = num_hash_key(key) {
+                    map.entry(k).and_modify(append).or_insert((idx, idx));
+                }
+            }
+            (HashBuckets::Text(map), ValRef::Text(s)) => {
+                if let Some(entry) = map.get_mut(s) {
+                    append(entry);
+                } else {
+                    map.insert(s.to_owned(), (idx, idx));
+                }
+            }
+            (HashBuckets::Boolean(slots), ValRef::Boolean(b)) => {
+                let slot = &mut slots[usize::from(b)];
+                match slot {
+                    Some(entry) => append(entry),
+                    None => *slot = Some((idx, idx)),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[inline]
+    fn probe(&self, key: ValRef<'_>) -> Option<RowIdx> {
+        match (&self.buckets, key) {
+            (HashBuckets::Integer(map), ValRef::Integer(n)) => map.get(&n).map(|&(head, _)| head),
+            (HashBuckets::Integer(map), ValRef::Real(f)) => {
+                real_as_exact_i64(f).and_then(|n| map.get(&n).map(|&(head, _)| head))
+            }
+            (HashBuckets::Real(map), ValRef::Integer(_) | ValRef::Real(_)) => {
+                num_hash_key(key).and_then(|k| map.get(&k).map(|&(head, _)| head))
+            }
+            (HashBuckets::Text(map), ValRef::Text(s)) => map.get(s).map(|&(head, _)| head),
+            (HashBuckets::Boolean(slots), ValRef::Boolean(b)) => {
+                slots[usize::from(b)].map(|(head, _)| head)
+            }
+            _ => None,
+        }
+    }
+}
+
+enum Built {
+    Hash(BuiltHash),
+    Loop(RowIdx),
+}
+
+const MAX_POINT_CACHE_ENTRIES: usize = 4096;
+
+#[derive(Clone, Copy)]
+enum CacheSlot {
+    Pending,
+    Absent,
+    Present(RowIdx),
+}
+
+enum PointCache {
+    Disabled,
+    Integer(HashMap<i64, CacheSlot>),
+    Text(HashMap<String, CacheSlot>),
+}
+
+impl PointCache {
+    fn new(enabled: bool, pk_type: SqlType) -> Self {
+        if !enabled {
+            return Self::Disabled;
+        }
+        match pk_type {
+            SqlType::Integer => Self::Integer(HashMap::new()),
+            SqlType::Text { .. } => Self::Text(HashMap::new()),
+            _ => Self::Disabled,
+        }
+    }
+}
+
+const MAX_INDEX_CACHE_KEYS: usize = 1024;
+const MAX_INDEX_CACHE_ROWS: usize = 8192;
+
+enum IndexCache {
+    Disabled,
+    Integer {
+        map: HashMap<i64, (RowIdx, u32)>,
+        cached_rows: usize,
+    },
+    Text {
+        map: HashMap<String, (RowIdx, u32)>,
+        cached_rows: usize,
+    },
+    Boolean {
+        slots: [Option<(RowIdx, u32)>; 2],
+    },
+}
+
+impl IndexCache {
+    fn new(enabled: bool, col_type: SqlType) -> Self {
+        if !enabled {
+            return Self::Disabled;
+        }
+        match col_type {
+            SqlType::Integer => Self::Integer {
+                map: HashMap::new(),
+                cached_rows: 0,
+            },
+            SqlType::Text { .. } => Self::Text {
+                map: HashMap::new(),
+                cached_rows: 0,
+            },
+            SqlType::Boolean => Self::Boolean {
+                slots: [None, None],
+            },
+            SqlType::Real => Self::Disabled,
+        }
+    }
+
+    fn get(&self, value: &IndexValue) -> Option<(RowIdx, u32)> {
+        match (self, value) {
+            (Self::Integer { map, .. }, IndexValue::Integer(n)) => map.get(n).copied(),
+            (Self::Text { map, .. }, IndexValue::String(s)) => map.get(s.as_str()).copied(),
+            (Self::Boolean { slots }, IndexValue::Boolean(b)) => slots[usize::from(*b)],
+            _ => None,
+        }
+    }
+
+    fn insert(&mut self, value: IndexValue, start: RowIdx, count: u32) {
+        let add = count as usize;
+        match (self, value) {
+            (Self::Integer { map, cached_rows }, IndexValue::Integer(n)) => {
+                if map.len() < MAX_INDEX_CACHE_KEYS && *cached_rows + add <= MAX_INDEX_CACHE_ROWS {
+                    map.insert(n, (start, count));
+                    *cached_rows += add;
+                }
+            }
+            (Self::Text { map, cached_rows }, IndexValue::String(s)) => {
+                if map.len() < MAX_INDEX_CACHE_KEYS && *cached_rows + add <= MAX_INDEX_CACHE_ROWS {
+                    map.insert(s, (start, count));
+                    *cached_rows += add;
+                }
+            }
+            (Self::Boolean { slots }, IndexValue::Boolean(b)) => {
+                slots[usize::from(b)] = Some((start, count));
+            }
+            _ => {}
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum OrderSource {
+    Projected(usize),
+    Extra(usize),
+}
+
+struct HeapRow {
+    projected: Vec<SqlValue>,
+    extra: Vec<SqlValue>,
+    seq: usize,
+    spec: Arc<[(OrderSource, bool, bool)]>,
+}
+
+impl HeapRow {
+    #[inline]
+    fn order_val(&self, source: OrderSource) -> ValRef<'_> {
+        match source {
+            OrderSource::Projected(i) => ValRef::from_sql(&self.projected[i]),
+            OrderSource::Extra(i) => ValRef::from_sql(&self.extra[i]),
+        }
+    }
+}
+
+#[inline]
+fn compare_order_pair(
+    x: ValRef<'_>,
+    y: ValRef<'_>,
+    descending: bool,
+    nulls_first: bool,
+) -> Ordering {
+    match (x, y) {
+        (ValRef::Null, ValRef::Null) => Ordering::Equal,
+        (ValRef::Null, _) => {
+            if nulls_first {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        }
+        (_, ValRef::Null) => {
+            if nulls_first {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        }
+        _ => match compare_ref(x, y) {
+            Ok(Some(ordering)) if descending => ordering.reverse(),
+            Ok(Some(ordering)) => ordering,
+            _ => Ordering::Equal,
+        },
+    }
+}
+
+impl PartialEq for HeapRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for HeapRow {}
+
+impl PartialOrd for HeapRow {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for HeapRow {
+    fn cmp(&self, other: &Self) -> Ordering {
+        for &(source, descending, nulls_first) in self.spec.iter() {
+            let ord = compare_order_pair(
+                self.order_val(source),
+                other.order_val(source),
+                descending,
+                nulls_first,
+            );
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        }
+        self.seq.cmp(&other.seq)
+    }
+}
+
+enum OutputSink {
+    Stream {
+        rows: Vec<Vec<SqlValue>>,
+        offset: usize,
+        skipped: usize,
+        cap: usize,
+        limited: bool,
+        move_unique: bool,
+    },
+    TopK {
+        heap: BinaryHeap<HeapRow>,
+        cap: usize,
+        seq: usize,
+        extra_slots: Vec<Slot>,
+        spec: Arc<[(OrderSource, bool, bool)]>,
+    },
+    SortAll {
+        rows: Vec<Combined>,
+        max_sort_rows: usize,
+    },
+}
+
+impl OutputSink {
+    fn new(plan: &JoinPlan, wanted: Option<usize>, offset: usize, limits: &SqlLimits) -> Self {
+        if !plan.sorted {
+            let (cap, limited) = match wanted {
+                Some(w) if w <= limits.max_select_rows.saturating_add(offset) => (w, true),
+                _ => (limits.max_select_rows.saturating_add(offset), false),
+            };
+            let single_possible_row =
+                matches!(plan.first, Access::Point(_)) && plan.all_steps_point_from[0];
+            Self::Stream {
+                rows: Vec::with_capacity(if limited {
+                    cap.saturating_sub(offset).min(64)
+                } else {
+                    0
+                }),
+                offset,
+                skipped: 0,
+                cap,
+                limited,
+                move_unique: single_possible_row && plan.proj_unique,
+            }
+        } else if let Some(k) = wanted.filter(|&k| k <= limits.max_sort_rows) {
+            let mut extra_slots = Vec::new();
+            let mut spec = Vec::with_capacity(plan.order.len());
+            for &(slot, descending, nulls_first) in &plan.order {
+                let source = if let Some(pos) = plan.projection.iter().position(|&p| p == slot) {
+                    OrderSource::Projected(pos)
+                } else if let Some(pos) = extra_slots.iter().position(|&p| p == slot) {
+                    OrderSource::Extra(pos)
+                } else {
+                    let pos = extra_slots.len();
+                    extra_slots.push(slot);
+                    OrderSource::Extra(pos)
+                };
+                spec.push((source, descending, nulls_first));
+            }
+            Self::TopK {
+                heap: BinaryHeap::with_capacity(k.min(256)),
+                cap: k,
+                seq: 0,
+                extra_slots,
+                spec: Arc::from(spec),
+            }
+        } else {
+            Self::SortAll {
+                rows: Vec::new(),
+                max_sort_rows: limits.max_sort_rows,
+            }
+        }
+    }
+
+    #[inline]
+    fn is_done(&self) -> bool {
+        match self {
+            Self::Stream {
+                rows,
+                skipped,
+                cap,
+                limited,
+                ..
+            } => *limited && *skipped + rows.len() >= *cap,
+            Self::TopK { .. } | Self::SortAll { .. } => false,
+        }
+    }
+
+    #[inline]
+    fn remaining_wanted(&self) -> Option<usize> {
+        match self {
+            Self::Stream {
+                rows,
+                skipped,
+                cap,
+                limited: true,
+                ..
+            } => Some(cap.saturating_sub(*skipped + rows.len())),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    fn can_clear_unshared_arena(&self) -> bool {
+        !matches!(self, Self::SortAll { .. })
+    }
+
+    fn push(
+        &mut self,
+        comb: Combined,
+        arenas: &mut [TableArena],
+        plan: &JoinPlan,
+    ) -> Result<(), SqlError> {
+        match self {
+            Self::Stream {
+                rows,
+                offset,
+                skipped,
+                cap,
+                limited,
+                move_unique,
+            } => {
+                if *skipped + rows.len() >= *cap {
+                    if *limited {
+                        return Ok(());
+                    }
+                    return Err(SqlError::Bounds(format!(
+                        "join result exceeds its row bound ({}; see max_select_rows and max_sort_rows)",
+                        *cap
+                    )));
+                }
+                if *skipped < *offset {
+                    *skipped += 1;
+                    return Ok(());
+                }
+                let mut out_row = Vec::with_capacity(plan.projection.len());
+                if *move_unique {
+                    for &slot in &plan.projection {
+                        let idx = comb[slot.table];
+                        if idx == NULL_ROW {
+                            out_row.push(SqlValue::Null);
+                        } else {
+                            let stride = arenas[slot.table].stride;
+                            let pos = idx as usize * stride + slot.column;
+                            out_row.push(std::mem::replace(
+                                &mut arenas[slot.table].data[pos],
+                                SqlValue::Null,
+                            ));
+                        }
+                    }
+                } else {
+                    for &slot in &plan.projection {
+                        let idx = comb[slot.table];
+                        if idx == NULL_ROW {
+                            out_row.push(SqlValue::Null);
+                        } else {
+                            out_row.push(arenas[slot.table].row(idx)[slot.column].clone());
+                        }
+                    }
+                }
+                rows.push(out_row);
+                Ok(())
+            }
+            Self::TopK {
+                heap,
+                cap,
+                seq,
+                extra_slots,
+                spec,
+            } => {
+                let my_seq = *seq;
+                *seq += 1;
+                if heap.len() == *cap {
+                    if let Some(worst) = heap.peek() {
+                        let mut ord = Ordering::Equal;
+                        for (i, &(slot, descending, nulls_first)) in plan.order.iter().enumerate() {
+                            let cand_val = slot_val(&comb, arenas, slot);
+                            let worst_val = worst.order_val(spec[i].0);
+                            ord = compare_order_pair(cand_val, worst_val, descending, nulls_first);
+                            if ord != Ordering::Equal {
+                                break;
+                            }
+                        }
+                        if ord == Ordering::Equal {
+                            ord = my_seq.cmp(&worst.seq);
+                        }
+                        if ord != Ordering::Less {
+                            return Ok(());
+                        }
+                    }
+                    heap.pop();
+                }
+                let mut projected = Vec::with_capacity(plan.projection.len());
+                for &slot in &plan.projection {
+                    let idx = comb[slot.table];
+                    if idx == NULL_ROW {
+                        projected.push(SqlValue::Null);
+                    } else {
+                        projected.push(arenas[slot.table].row(idx)[slot.column].clone());
+                    }
+                }
+                let mut extra = Vec::with_capacity(extra_slots.len());
+                for &slot in extra_slots.iter() {
+                    let idx = comb[slot.table];
+                    if idx == NULL_ROW {
+                        extra.push(SqlValue::Null);
+                    } else {
+                        extra.push(arenas[slot.table].row(idx)[slot.column].clone());
+                    }
+                }
+                heap.push(HeapRow {
+                    projected,
+                    extra,
+                    seq: my_seq,
+                    spec: Arc::clone(spec),
+                });
+                Ok(())
+            }
+            Self::SortAll {
+                rows,
+                max_sort_rows,
+            } => {
+                if rows.len() >= *max_sort_rows {
+                    return Err(SqlError::Bounds(format!(
+                        "join result exceeds its row bound ({}; see max_select_rows and max_sort_rows)",
+                        *max_sort_rows
+                    )));
+                }
+                rows.push(comb);
+                Ok(())
+            }
+        }
+    }
+
+    fn finish(
+        self,
+        arenas: &mut [TableArena],
+        plan: &JoinPlan,
+        wanted: Option<usize>,
+        offset: usize,
+        limits: &SqlLimits,
+    ) -> Result<Vec<Vec<SqlValue>>, SqlError> {
+        let rows = match self {
+            Self::Stream { rows, .. } => rows,
+            Self::TopK { heap, .. } => {
+                let sorted = heap.into_sorted_vec();
+                let start = offset.min(sorted.len());
+                sorted
+                    .into_iter()
+                    .skip(start)
+                    .map(|row| row.projected)
+                    .collect()
+            }
+            Self::SortAll { mut rows, .. } => {
+                let mut failure = None;
+                // A stable sort keeps the join order for ties, so results are
+                // deterministic.
+                if let &[(slot, descending, nulls_first)] = plan.order.as_slice() {
+                    rows.sort_by(|a, b| {
+                        let x = slot_val(a, arenas, slot);
+                        let y = slot_val(b, arenas, slot);
+                        match (x, y) {
+                            (ValRef::Null, ValRef::Null) => Ordering::Equal,
+                            (ValRef::Null, _) => {
+                                if nulls_first {
+                                    Ordering::Less
+                                } else {
+                                    Ordering::Greater
+                                }
+                            }
+                            (_, ValRef::Null) => {
+                                if nulls_first {
+                                    Ordering::Greater
+                                } else {
+                                    Ordering::Less
+                                }
+                            }
+                            _ => match compare_ref(x, y) {
+                                Ok(Some(ordering)) if descending => ordering.reverse(),
+                                Ok(Some(ordering)) => ordering,
+                                Ok(None) => Ordering::Equal,
+                                Err(error) => {
+                                    failure.get_or_insert(error);
+                                    Ordering::Equal
+                                }
+                            },
+                        }
+                    });
+                } else {
+                    rows.sort_by(|a, b| {
+                        for &(slot, descending, nulls_first) in &plan.order {
+                            let x = slot_val(a, arenas, slot);
+                            let y = slot_val(b, arenas, slot);
+                            let ordering = match (x, y) {
+                                (ValRef::Null, ValRef::Null) => Ordering::Equal,
+                                (ValRef::Null, _) => {
+                                    if nulls_first {
+                                        Ordering::Less
+                                    } else {
+                                        Ordering::Greater
+                                    }
+                                }
+                                (_, ValRef::Null) => {
+                                    if nulls_first {
+                                        Ordering::Greater
+                                    } else {
+                                        Ordering::Less
+                                    }
+                                }
+                                _ => match compare_ref(x, y) {
+                                    Ok(Some(ordering)) if descending => ordering.reverse(),
+                                    Ok(Some(ordering)) => ordering,
+                                    Ok(None) => Ordering::Equal,
+                                    Err(error) => {
+                                        failure.get_or_insert(error);
+                                        Ordering::Equal
+                                    }
+                                },
+                            };
+                            if ordering != Ordering::Equal {
+                                return ordering;
+                            }
+                        }
+                        Ordering::Equal
+                    });
+                }
+                if let Some(error) = failure {
+                    return Err(error);
+                }
+                let end = wanted.unwrap_or(usize::MAX).min(rows.len());
+                let start = offset.min(end);
+                // When every join step matches at most one row, each table-0
+                // row appears at most once in `rows`, so unique projections
+                // can move table-0 values out without cloning Strings.
+                let move_table0 = plan.all_steps_point_from[0] && plan.proj_unique;
+                rows[start..end]
+                    .iter()
+                    .map(|comb| {
+                        let mut out_row = Vec::with_capacity(plan.projection.len());
+                        for &slot in &plan.projection {
+                            let idx = comb[slot.table];
+                            if idx == NULL_ROW {
+                                out_row.push(SqlValue::Null);
+                            } else if move_table0 && slot.table == 0 {
+                                let stride = arenas[0].stride;
+                                let pos = idx as usize * stride + slot.column;
+                                out_row.push(std::mem::replace(
+                                    &mut arenas[0].data[pos],
+                                    SqlValue::Null,
+                                ));
+                            } else {
+                                out_row.push(arenas[slot.table].row(idx)[slot.column].clone());
+                            }
+                        }
+                        out_row
+                    })
+                    .collect()
+            }
+        };
+        if rows.len() > limits.max_select_rows {
+            return Err(SqlError::Bounds(format!(
+                "SELECT result exceeds max_select_rows ({})",
+                limits.max_select_rows
+            )));
+        }
+        Ok(rows)
+    }
+}
+
+/// The index value a key must equal, or `None` if no indexed value can equal
+/// it. Indexed TEXT values are at most 256 bytes; REAL columns are not
+/// indexable, and an INTEGER column matches only integral numbers.
+#[inline]
+fn index_value_ref(key: ValRef<'_>, column_type: SqlType) -> Option<IndexValue> {
+    match (column_type, key) {
+        (_, ValRef::Null) => None,
+        (SqlType::Integer, ValRef::Integer(n)) => Some(IndexValue::Integer(n)),
+        (SqlType::Integer, ValRef::Real(f)) => real_as_exact_i64(f).map(IndexValue::Integer),
+        (SqlType::Text { .. }, ValRef::Text(s)) if s.len() <= 256 => {
+            Some(IndexValue::String(s.to_owned()))
+        }
+        (SqlType::Boolean, ValRef::Boolean(b)) => Some(IndexValue::Boolean(b)),
+        _ => None,
+    }
+}
+
+struct Executor<'a, 'b, 'tx, 'store> {
+    tx: &'a DocumentTransaction<'tx, 'store>,
+    plan: &'a JoinPlan,
+    metas: &'a [Arc<dyn std::any::Any + Send + Sync>],
+    built: &'a [Option<Built>],
+    params: &'b [SqlValue],
+    wanted: Option<usize>,
+    arenas: [TableArena; MAX_JOIN_TABLES],
+    point_caches: [PointCache; MAX_JOIN_TABLES],
+    index_caches: [IndexCache; MAX_JOIN_TABLES],
+    budget: Budget<'a>,
+    sink: OutputSink,
+}
+
+impl Executor<'_, '_, '_, '_> {
+    fn lookup_point_one(
+        &mut self,
+        table: usize,
+        pk: PkKey<'_>,
+    ) -> Result<Option<RowIdx>, SqlError> {
+        self.budget.visit(1)?;
+        match (&self.point_caches[table - 1], pk) {
+            (PointCache::Integer(map), PkKey::Int(n)) => {
+                if let Some(&slot) = map.get(&n) {
+                    return Ok(match slot {
+                        CacheSlot::Present(idx) => Some(idx),
+                        CacheSlot::Absent | CacheSlot::Pending => None,
+                    });
+                }
+            }
+            (PointCache::Text(map), PkKey::Text(s)) => {
+                if let Some(&slot) = map.get(s) {
+                    return Ok(match slot {
+                        CacheSlot::Present(idx) => Some(idx),
+                        CacheSlot::Absent | CacheSlot::Pending => None,
+                    });
+                }
+            }
+            _ => {}
+        }
+
+        let def = &self.plan.defs[table];
+        let needed = &self.plan.needed[table];
+        let mut id_buf = [0u8; 256];
+        let id = write_pk_id(pk, &mut id_buf);
+        let mut decode_result: Option<Result<RowIdx, SqlError>> = None;
+        let arena = &mut self.arenas[table];
+        self.tx
+            .read_stored_document_with_meta(&def.name, self.metas[table].as_ref(), id, |stored| {
+                decode_result = Some(with_decoded_stored(def, id, &stored, |vals| {
+                    Ok(arena.push_borrowed(vals, needed))
+                }));
+            })
+            .map_err(exec::classify_io_error)?;
+        let row_idx = decode_result.transpose()?;
+        let cache_slot = match row_idx {
+            Some(idx) => CacheSlot::Present(idx),
+            None => CacheSlot::Absent,
+        };
+        match (&mut self.point_caches[table - 1], pk) {
+            (PointCache::Integer(map), PkKey::Int(n)) if map.len() < MAX_POINT_CACHE_ENTRIES => {
+                map.insert(n, cache_slot);
+            }
+            (PointCache::Text(map), PkKey::Text(s)) if map.len() < MAX_POINT_CACHE_ENTRIES => {
+                map.insert(s.to_owned(), cache_slot);
+            }
+            _ => {}
+        }
+        Ok(row_idx)
+    }
+
+    fn process_table0_batch(&mut self, batch: Vec<Combined>) -> Result<(), SqlError> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        if !self.plan.sorted && self.wanted.is_some() && self.plan.all_steps_point_from[0] {
+            let mut offset = 0;
+            while offset < batch.len() && !self.sink.is_done() {
+                let rem = self.sink.remaining_wanted().unwrap_or(batch.len() - offset);
+                if rem == 0 {
+                    break;
+                }
+                let end = (offset + rem).min(batch.len());
+                self.extend_batch(0, batch[offset..end].to_vec())?;
+                offset = end;
+            }
+            return Ok(());
+        }
+        self.extend_batch(0, batch)
+    }
+
+    fn extend_batch(&mut self, done: usize, batch: Vec<Combined>) -> Result<(), SqlError> {
+        if batch.is_empty() || self.sink.is_done() {
+            return Ok(());
+        }
+        let Some(step) = self.plan.steps.get(done) else {
+            for comb in batch {
+                let mut keep = true;
+                for conjunct in &self.plan.late {
+                    if !truthy_fast_pred(conjunct, &comb, &self.arenas, self.params)? {
+                        keep = false;
+                        break;
+                    }
+                }
+                if keep {
+                    self.sink.push(comb, &mut self.arenas, self.plan)?;
+                    if self.sink.is_done() {
+                        return Ok(());
+                    }
+                }
+            }
+            return Ok(());
+        };
+
+        let table = done + 1;
+        let can_batch_point = batch.len() > 1
+            && matches!(step.access, Access::Point(_))
+            && (self.plan.sorted || self.wanted.is_none() || self.plan.all_steps_point_from[done])
+            && !matches!(self.point_caches[done], PointCache::Disabled);
+
+        if can_batch_point {
+            if let Access::Point(key_expr) = &step.access {
+                let def = &self.plan.defs[table];
+                let pk_type = def.columns[def.primary_key_index].col_type;
+                let mut n_visits = 0_usize;
+                for comb in &batch {
+                    let val = eval_ref(key_expr, comb, &self.arenas, self.params)?;
+                    if coerce_pk_key(val, pk_type).is_some() {
+                        n_visits += 1;
+                    }
+                }
+                if self.budget.visited + n_visits <= self.budget.limits.max_visited_rows {
+                    self.prefetch_point_batch(done, table, key_expr, pk_type, &batch)?;
+                    let mut next_batch = Vec::with_capacity(batch.len());
+                    for mut comb in batch {
+                        let pk = {
+                            let val = eval_ref(key_expr, &comb, &self.arenas, self.params)?;
+                            match coerce_pk_key(val, pk_type) {
+                                Some(PkKey::Int(n)) => Some((true, n, None)),
+                                Some(PkKey::Text(s)) => Some((false, 0, Some(s.to_owned()))),
+                                None => None,
+                            }
+                        };
+                        let mut matched = false;
+                        if let Some((is_int, n, text)) = pk {
+                            self.budget.visit(1)?;
+                            let cached = if is_int {
+                                match &self.point_caches[done] {
+                                    PointCache::Integer(map) => map.get(&n).copied(),
+                                    _ => None,
+                                }
+                            } else {
+                                match (&self.point_caches[done], text.as_deref()) {
+                                    (PointCache::Text(map), Some(s)) => map.get(s).copied(),
+                                    _ => None,
+                                }
+                            };
+                            if let Some(CacheSlot::Present(row_idx)) = cached {
+                                self.budget.combine()?;
+                                comb[table] = row_idx;
+                                let mut keep = true;
+                                for conjunct in &step.on {
+                                    if !truthy_fast_pred(
+                                        conjunct,
+                                        &comb,
+                                        &self.arenas,
+                                        self.params,
+                                    )? {
+                                        keep = false;
+                                        break;
+                                    }
+                                }
+                                if keep {
+                                    matched = true;
+                                    next_batch.push(comb);
+                                }
+                            }
+                        }
+                        if !matched && step.kind == JoinKind::Left {
+                            self.budget.combine()?;
+                            comb[table] = NULL_ROW;
+                            next_batch.push(comb);
+                        }
+                    }
+                    return self.extend_batch(table, next_batch);
+                }
+            }
+        }
+
+        for comb in batch {
+            self.extend_one(done, comb)?;
+            if self.sink.is_done() {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    fn prefetch_point_batch(
+        &mut self,
+        done: usize,
+        table: usize,
+        key_expr: &BExpr,
+        pk_type: SqlType,
+        batch: &[Combined],
+    ) -> Result<(), SqlError> {
+        let def = &self.plan.defs[table];
+        let needed = &self.plan.needed[table];
+        match pk_type {
+            SqlType::Integer => {
+                if let PointCache::Integer(map) = &mut self.point_caches[done] {
+                    if map.len() + batch.len() > MAX_POINT_CACHE_ENTRIES {
+                        map.clear();
+                    }
+                    let mut to_fetch: Vec<i64> = Vec::new();
+                    for comb in batch {
+                        let val = eval_ref(key_expr, comb, &self.arenas, self.params)?;
+                        if let Some(PkKey::Int(n)) = coerce_pk_key(val, pk_type) {
+                            if let std::collections::hash_map::Entry::Vacant(e) = map.entry(n) {
+                                e.insert(CacheSlot::Pending);
+                                to_fetch.push(n);
+                            }
+                        }
+                    }
+                    if to_fetch.is_empty() {
+                        return Ok(());
+                    }
+                    let mut raw_ids: Vec<[u8; 18]> = Vec::with_capacity(to_fetch.len());
+                    for &n in &to_fetch {
+                        let mut buf = [0u8; 18];
+                        encode_i64_pk_bytes(n, &mut buf);
+                        raw_ids.push(buf);
+                    }
+                    let id_refs: Vec<&str> = raw_ids
+                        .iter()
+                        .map(|b| std::str::from_utf8(b).expect("ASCII hex PK"))
+                        .collect();
+                    let mut results = vec![CacheSlot::Absent; to_fetch.len()];
+                    let mut failure: Option<SqlError> = None;
+                    let arena = &mut self.arenas[table];
+                    self.tx
+                        .read_stored_documents_batch_with_meta(
+                            &def.name,
+                            self.metas[table].as_ref(),
+                            &id_refs,
+                            |i, id, stored| {
+                                if let Some(stored) = stored {
+                                    match with_decoded_stored(def, id, &stored, |vals| {
+                                        Ok(arena.push_borrowed(vals, needed))
+                                    }) {
+                                        Ok(row_idx) => results[i] = CacheSlot::Present(row_idx),
+                                        Err(err) => {
+                                            failure = Some(err);
+                                            return false;
+                                        }
+                                    }
+                                }
+                                true
+                            },
+                        )
+                        .map_err(exec::classify_io_error)?;
+                    if let Some(err) = failure {
+                        return Err(err);
+                    }
+                    for (n, slot) in to_fetch.into_iter().zip(results) {
+                        map.insert(n, slot);
+                    }
+                }
+            }
+            SqlType::Text { .. } => {
+                if let PointCache::Text(map) = &mut self.point_caches[done] {
+                    if map.len() + batch.len() > MAX_POINT_CACHE_ENTRIES {
+                        map.clear();
+                    }
+                    let mut to_fetch: Vec<String> = Vec::new();
+                    for comb in batch {
+                        let val = eval_ref(key_expr, comb, &self.arenas, self.params)?;
+                        if let Some(PkKey::Text(s)) = coerce_pk_key(val, pk_type) {
+                            if !map.contains_key(s) {
+                                let owned = s.to_owned();
+                                map.insert(owned.clone(), CacheSlot::Pending);
+                                to_fetch.push(owned);
+                            }
+                        }
+                    }
+                    if to_fetch.is_empty() {
+                        return Ok(());
+                    }
+                    let mut id_bytes: Vec<u8> = Vec::new();
+                    let mut id_ranges: Vec<(usize, usize)> = Vec::with_capacity(to_fetch.len());
+                    for s in &to_fetch {
+                        let start = id_bytes.len();
+                        id_bytes.extend_from_slice(b"t:");
+                        id_bytes.extend_from_slice(s.as_bytes());
+                        id_ranges.push((start, id_bytes.len()));
+                    }
+                    let id_refs: Vec<&str> = id_ranges
+                        .iter()
+                        .map(|&(s, e)| std::str::from_utf8(&id_bytes[s..e]).expect("valid UTF-8"))
+                        .collect();
+                    let mut results = vec![CacheSlot::Absent; to_fetch.len()];
+                    let mut failure: Option<SqlError> = None;
+                    let arena = &mut self.arenas[table];
+                    self.tx
+                        .read_stored_documents_batch_with_meta(
+                            &def.name,
+                            self.metas[table].as_ref(),
+                            &id_refs,
+                            |i, id, stored| {
+                                if let Some(stored) = stored {
+                                    match with_decoded_stored(def, id, &stored, |vals| {
+                                        Ok(arena.push_borrowed(vals, needed))
+                                    }) {
+                                        Ok(row_idx) => results[i] = CacheSlot::Present(row_idx),
+                                        Err(err) => {
+                                            failure = Some(err);
+                                            return false;
+                                        }
+                                    }
+                                }
+                                true
+                            },
+                        )
+                        .map_err(exec::classify_io_error)?;
+                    if let Some(err) = failure {
+                        return Err(err);
+                    }
+                    for (s, slot) in to_fetch.into_iter().zip(results) {
+                        map.insert(s, slot);
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn extend_one(&mut self, done: usize, mut comb: Combined) -> Result<(), SqlError> {
+        let Some(step) = self.plan.steps.get(done) else {
+            for conjunct in &self.plan.late {
+                if !truthy_fast_pred(conjunct, &comb, &self.arenas, self.params)? {
+                    return Ok(());
+                }
+            }
+            self.sink.push(comb, &mut self.arenas, self.plan)?;
+            return Ok(());
+        };
+        let table = done + 1;
+        let def = &self.plan.defs[table];
+        let mut matched = false;
+        match (&step.access, &self.built[done]) {
+            (Access::Point(key_expr), _) => {
+                let pk_type = def.columns[def.primary_key_index].col_type;
+                let pk_owned = {
+                    let val = eval_ref(key_expr, &comb, &self.arenas, self.params)?;
+                    match coerce_pk_key(val, pk_type) {
+                        Some(PkKey::Int(n)) => Some((true, n, String::new())),
+                        Some(PkKey::Text(s)) => Some((false, 0, s.to_owned())),
+                        None => None,
+                    }
+                };
+                if let Some((is_int, n, text)) = pk_owned {
+                    let pk = if is_int {
+                        PkKey::Int(n)
+                    } else {
+                        PkKey::Text(text.as_str())
+                    };
+                    if let Some(row_idx) = self.lookup_point_one(table, pk)? {
+                        self.budget.combine()?;
+                        comb[table] = row_idx;
+                        let mut keep = true;
+                        for conjunct in &step.on {
+                            if !truthy_fast_pred(conjunct, &comb, &self.arenas, self.params)? {
+                                keep = false;
+                                break;
+                            }
+                        }
+                        if keep {
+                            matched = true;
+                            self.extend_one(table, comb)?;
+                            if self.sink.is_done() {
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+            (
+                Access::Index {
+                    name, column, key, ..
+                },
+                _,
+            ) => {
+                let index_val = {
+                    let val = eval_ref(key, &comb, &self.arenas, self.params)?;
+                    index_value_ref(val, def.columns[*column].col_type)
+                };
+                if let Some(index_val) = index_val {
+                    if let Some((start, count)) = self.index_caches[done].get(&index_val) {
+                        self.budget.visit(count as usize)?;
+                        for offset in 0..count {
+                            self.budget.combine()?;
+                            comb[table] = start + offset;
+                            let mut keep = true;
+                            for conjunct in &step.on {
+                                if !truthy_fast_pred(conjunct, &comb, &self.arenas, self.params)? {
+                                    keep = false;
+                                    break;
+                                }
+                            }
+                            if keep {
+                                matched = true;
+                                self.extend_one(table, comb)?;
+                                if self.sink.is_done() {
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    } else {
+                        let start_idx = self.arenas[table].len() as RowIdx;
+                        let can_cache = !matches!(self.index_caches[done], IndexCache::Disabled);
+                        let mut cursor: Option<Vec<u8>> = None;
+                        let mut total_fetched: u32 = 0;
+                        let mut completed_all = true;
+                        loop {
+                            let page_start = self.arenas[table].len() as RowIdx;
+                            let mut failure: Option<SqlError> = None;
+                            let needed = &self.plan.needed[table];
+                            let arena = &mut self.arenas[table];
+                            let (count, next) = self
+                                .tx
+                                .visit_index_stored_eq_with_meta(
+                                    (&def.name, self.metas[table].as_ref()),
+                                    name,
+                                    &index_val,
+                                    cursor.as_deref(),
+                                    256,
+                                    |id, stored| match with_decoded_stored(
+                                        def,
+                                        id,
+                                        &stored,
+                                        |vals| {
+                                            arena.push_borrowed(vals, needed);
+                                            Ok(())
+                                        },
+                                    ) {
+                                        Ok(()) => true,
+                                        Err(err) => {
+                                            failure = Some(err);
+                                            false
+                                        }
+                                    },
+                                )
+                                .map_err(exec::classify_io_error)?;
+                            if let Some(err) = failure {
+                                return Err(err);
+                            }
+                            if count == 0 {
+                                break;
+                            }
+                            self.budget.visit(count)?;
+                            total_fetched += count as u32;
+                            for offset in 0..count as u32 {
+                                self.budget.combine()?;
+                                comb[table] = page_start + offset;
+                                let mut keep = true;
+                                for conjunct in &step.on {
+                                    if !truthy_fast_pred(
+                                        conjunct,
+                                        &comb,
+                                        &self.arenas,
+                                        self.params,
+                                    )? {
+                                        keep = false;
+                                        break;
+                                    }
+                                }
+                                if keep {
+                                    matched = true;
+                                    self.extend_one(table, comb)?;
+                                    if self.sink.is_done() {
+                                        completed_all = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if !completed_all {
+                                break;
+                            }
+                            match next {
+                                Some(next_cursor) => cursor = Some(next_cursor),
+                                None => break,
+                            }
+                        }
+                        if completed_all && can_cache {
+                            self.index_caches[done].insert(index_val, start_idx, total_fetched);
+                        } else if !can_cache && self.sink.can_clear_unshared_arena() {
+                            self.arenas[table].clear();
+                        }
+                        if self.sink.is_done() {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            (Access::Hash { key, .. }, Some(Built::Hash(hash))) => {
+                let head = {
+                    let val = eval_ref(key, &comb, &self.arenas, self.params)?;
+                    hash.probe(val)
+                };
+                if let Some(mut cur) = head {
+                    while cur != NO_NEXT {
+                        self.budget.combine()?;
+                        comb[table] = cur;
+                        let mut keep = true;
+                        for conjunct in &step.on {
+                            if !truthy_fast_pred(conjunct, &comb, &self.arenas, self.params)? {
+                                keep = false;
+                                break;
+                            }
+                        }
+                        if keep {
+                            matched = true;
+                            self.extend_one(table, comb)?;
+                            if self.sink.is_done() {
+                                return Ok(());
+                            }
+                        }
+                        cur = hash.next[cur as usize];
+                    }
+                }
+            }
+            (Access::Loop, Some(Built::Loop(count))) => {
+                for row_idx in 0..*count {
+                    self.budget.combine()?;
+                    comb[table] = row_idx;
+                    let mut keep = true;
+                    for conjunct in &step.on {
+                        if !truthy_fast_pred(conjunct, &comb, &self.arenas, self.params)? {
+                            keep = false;
+                            break;
+                        }
+                    }
+                    if keep {
+                        matched = true;
+                        self.extend_one(table, comb)?;
+                        if self.sink.is_done() {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            _ => unreachable!("join step without its built side"),
+        }
+        if !matched && step.kind == JoinKind::Left {
+            self.budget.combine()?;
+            comb[table] = NULL_ROW;
+            self.extend_one(table, comb)?;
+        }
+        Ok(())
+    }
 }
 
 fn run(
@@ -1382,374 +3269,338 @@ fn run(
     limits: &SqlLimits,
     cache: &SqlCache,
 ) -> Result<SqlOutcome, SqlError> {
-    let JoinPlan {
-        defs,
-        steps,
-        early,
-        late,
-        order,
-        projection,
-        names,
-        ..
-    } = plan(tx, statement, params, limits, cache)?;
+    let join_plan = plan(tx, statement, params, limits, cache)?;
     let limit = limit_value(statement.limit, params)?;
     let offset = limit_value(statement.offset, params)?.unwrap_or(0);
     if limit == Some(0) {
         return Ok(SqlOutcome::Rows {
-            columns: names,
+            columns: join_plan.names.clone(),
             rows: Vec::new(),
         });
     }
 
+    let n_tables = join_plan.defs.len();
+    let mut table_names = [""; MAX_JOIN_TABLES];
+    for (i, def) in join_plan.defs.iter().enumerate() {
+        table_names[i] = def.name.as_str();
+    }
+    let metas = tx
+        .load_stored_metadata_batch(&table_names[..n_tables])
+        .map_err(exec::classify_io_error)?;
+
+    let mut arenas: [TableArena; MAX_JOIN_TABLES] = std::array::from_fn(|i| {
+        TableArena::new(join_plan.defs.get(i).map_or(0, |d| d.columns.len()))
+    });
     let mut budget = Budget {
         visited: 0,
         combined: 0,
         limits,
     };
+
     // Build sides: hash tables and loop tables are read once.
-    let mut built: Vec<Option<Built>> = Vec::with_capacity(steps.len());
-    for (index, step) in steps.iter().enumerate() {
-        let def = &defs[index + 1];
-        built.push(match &step.access {
+    let mut built: [Option<Built>; MAX_JOIN_TABLES] = [const { None }; MAX_JOIN_TABLES];
+    for (index, step) in join_plan.steps.iter().enumerate() {
+        let table = index + 1;
+        let def = &join_plan.defs[table];
+        let needed = &join_plan.needed[table];
+        built[index] = match &step.access {
             Access::Point(_) | Access::Index { .. } => None,
             Access::Hash { column, .. } => {
-                let mut map: HashMap<HashKey, Vec<Arc<Vec<SqlValue>>>> = HashMap::new();
-                scan_table(tx, def, &mut budget, |row, _| {
-                    if let Some(key) = hash_key(&row[*column]) {
-                        map.entry(key).or_default().push(Arc::new(row));
+                let mut hash = BuiltHash::new(def.columns[*column].col_type);
+                let mut after: Option<String> = None;
+                let mut page_size = 256;
+                loop {
+                    let rem_visit = limits.max_visited_rows.saturating_sub(budget.visited);
+                    let fetch = page_size
+                        .min(rem_visit.saturating_add(1))
+                        .clamp(1, MAX_SCAN_ENTRIES);
+                    let mut failure: Option<SqlError> = None;
+                    let arena = &mut arenas[table];
+                    let (count, last) = tx
+                        .visit_stored_documents_with_meta(
+                            &def.name,
+                            metas[table].as_ref(),
+                            after.as_deref(),
+                            fetch,
+                            |id, stored| match with_decoded_stored(def, id, &stored, |vals| {
+                                let key_val = vals[*column];
+                                if !matches!(key_val, ValRef::Null) {
+                                    let row_idx = arena.push_borrowed(vals, needed);
+                                    hash.insert(key_val, row_idx);
+                                }
+                                Ok(())
+                            }) {
+                                Ok(()) => true,
+                                Err(err) => {
+                                    failure = Some(err);
+                                    false
+                                }
+                            },
+                        )
+                        .map_err(exec::classify_io_error)?;
+                    page_size = (page_size * 2).min(MAX_SCAN_ENTRIES);
+                    if let Some(err) = failure {
+                        return Err(err);
                     }
-                    Ok(true)
-                })?;
-                Some(Built::Hash(map))
+                    if count == 0 {
+                        break;
+                    }
+                    budget.visit(count)?;
+                    after = last;
+                }
+                Some(Built::Hash(hash))
             }
             Access::Loop => {
-                let mut rows = Vec::new();
-                scan_table(tx, def, &mut budget, |row, _| {
-                    rows.push(Arc::new(row));
-                    Ok(true)
-                })?;
-                Some(Built::Rows(rows))
+                let mut after: Option<String> = None;
+                let mut page_size = 256;
+                loop {
+                    let rem_visit = limits.max_visited_rows.saturating_sub(budget.visited);
+                    let fetch = page_size
+                        .min(rem_visit.saturating_add(1))
+                        .clamp(1, MAX_SCAN_ENTRIES);
+                    let mut failure: Option<SqlError> = None;
+                    let arena = &mut arenas[table];
+                    let (count, last) = tx
+                        .visit_stored_documents_with_meta(
+                            &def.name,
+                            metas[table].as_ref(),
+                            after.as_deref(),
+                            fetch,
+                            |id, stored| match with_decoded_stored(def, id, &stored, |vals| {
+                                arena.push_borrowed(vals, needed);
+                                Ok(())
+                            }) {
+                                Ok(()) => true,
+                                Err(err) => {
+                                    failure = Some(err);
+                                    false
+                                }
+                            },
+                        )
+                        .map_err(exec::classify_io_error)?;
+                    page_size = (page_size * 2).min(MAX_SCAN_ENTRIES);
+                    if let Some(err) = failure {
+                        return Err(err);
+                    }
+                    if count == 0 {
+                        break;
+                    }
+                    budget.visit(count)?;
+                    after = last;
+                }
+                Some(Built::Loop(arenas[table].len() as RowIdx))
             }
-        });
+        };
     }
 
-    // Rows come out in the first table's primary-key order: scans and
-    // point or equality lookups read it in key order, and each joined table
-    // only appends its matches. `ORDER BY` on that key alone is therefore
-    // already satisfied and can stop early under LIMIT.
-    let first_key = Slot {
-        table: 0,
-        column: defs[0].primary_key_index,
-    };
-    let sorted =
-        !(order.is_empty() || matches!(order.as_slice(), [(slot, false, _)] if *slot == first_key));
     let wanted = limit.map(|limit| limit.saturating_add(offset));
-    let mut out: Vec<Combined> = Vec::new();
-    let context = Context {
+    let mut point_caches: [PointCache; MAX_JOIN_TABLES] =
+        [const { PointCache::Disabled }; MAX_JOIN_TABLES];
+    let mut index_caches: [IndexCache; MAX_JOIN_TABLES] =
+        [const { IndexCache::Disabled }; MAX_JOIN_TABLES];
+    for (idx, step) in join_plan.steps.iter().enumerate() {
+        let table = idx + 1;
+        let def = &join_plan.defs[table];
+        if matches!(step.access, Access::Point(_)) && !join_plan.prefix_all_point[table] {
+            point_caches[idx] = PointCache::new(true, def.columns[def.primary_key_index].col_type);
+        } else if let Access::Index { column, .. } = &step.access {
+            if !join_plan.prefix_all_point[table] {
+                index_caches[idx] = IndexCache::new(true, def.columns[*column].col_type);
+            }
+        }
+    }
+    let sink = OutputSink::new(&join_plan, wanted, offset, limits);
+
+    let mut executor = Executor {
         tx,
-        defs: &defs,
-        steps: &steps,
-        built: &built,
-        late: &late,
+        plan: &join_plan,
+        metas: &metas,
+        built: &built[..join_plan.steps.len()],
         params,
+        wanted,
+        arenas,
+        point_caches,
+        index_caches,
+        budget,
+        sink,
     };
-    // Without ORDER BY, rows come out in join order, so reading stops once
-    // OFFSET + LIMIT rows exist. Sorted output keeps at most max_sort_rows.
-    let cap = match (sorted, wanted) {
-        (true, _) => Cap {
-            rows: limits.max_sort_rows,
-            limited: false,
-        },
-        (false, Some(wanted)) if wanted <= limits.max_select_rows.saturating_add(offset) => Cap {
-            rows: wanted,
-            limited: true,
-        },
-        (false, _) => Cap {
-            rows: limits.max_select_rows.saturating_add(offset),
-            limited: false,
-        },
-    };
-    // The first table uses a key from WHERE when a conjunct compares its
-    // primary key or an indexed column with a constant or parameter. The
-    // complete WHERE is still evaluated on every row.
-    let first = choose_access(0, &defs[0], &early);
-    let mut seed = |row: Arc<Vec<SqlValue>>, budget: &mut Budget<'_>| -> Result<bool, SqlError> {
-        let mut combined: Combined = vec![Some(row)];
-        for conjunct in &early {
-            if !truthy(conjunct, &combined, params)? {
-                return Ok(true);
+
+    let def0 = &join_plan.defs[0];
+    let needed0 = &join_plan.needed[0];
+    let empty_comb = [NULL_ROW; MAX_JOIN_TABLES];
+
+    match &join_plan.first {
+        Access::Point(key_expr) => {
+            let pk_type = def0.columns[def0.primary_key_index].col_type;
+            let val = eval_ref(key_expr, &empty_comb, &executor.arenas, params)?;
+            if let Some(pk) = coerce_pk_key(val, pk_type) {
+                executor.budget.visit(1)?;
+                let mut id_buf = [0u8; 256];
+                let id = write_pk_id(pk, &mut id_buf);
+                let mut matched_idx: Option<Result<Option<RowIdx>, SqlError>> = None;
+                let arena0 = &mut executor.arenas[0];
+                tx.read_stored_document_with_meta(&def0.name, metas[0].as_ref(), id, |stored| {
+                    matched_idx = Some(with_decoded_stored(def0, id, &stored, |vals| {
+                        if passes_early(&join_plan.early, vals, params)? {
+                            Ok(Some(arena0.push_borrowed(vals, needed0)))
+                        } else {
+                            Ok(None)
+                        }
+                    }));
+                })
+                .map_err(exec::classify_io_error)?;
+                if let Some(row_idx) = matched_idx.transpose()?.flatten() {
+                    let mut comb = empty_comb;
+                    comb[0] = row_idx;
+                    executor.extend_one(0, comb)?;
+                }
             }
         }
-        context.extend(0, &mut combined, budget, &mut out, cap)?;
-        Ok(sorted || wanted.is_none_or(|wanted| out.len() < wanted))
-    };
-    match &first {
-        Access::Point(key) => {
-            let key = eval(key, &Vec::new(), params)?;
-            for row in point_rows(tx, &defs[0], key, &mut budget)? {
-                seed(row, &mut budget)?;
-            }
-        }
-        Access::Index { name, column, key } => {
-            let key = eval(key, &Vec::new(), params)?;
-            for row in index_rows(tx, &defs[0], name, *column, key, &mut budget)? {
-                if !seed(row, &mut budget)? {
-                    break;
+        Access::Index {
+            name, column, key, ..
+        } => {
+            let val = eval_ref(key, &empty_comb, &executor.arenas, params)?;
+            if let Some(index_val) = index_value_ref(val, def0.columns[*column].col_type) {
+                let mut cursor: Option<Vec<u8>> = None;
+                let mut page_limit = executor
+                    .sink
+                    .remaining_wanted()
+                    .map_or(256, |rem| rem.clamp(1, 256));
+                loop {
+                    let mut failure: Option<SqlError> = None;
+                    let mut batch: Vec<Combined> = Vec::new();
+                    let arena0 = &mut executor.arenas[0];
+                    let (count, next) = tx
+                        .visit_index_stored_eq_with_meta(
+                            (&def0.name, metas[0].as_ref()),
+                            name,
+                            &index_val,
+                            cursor.as_deref(),
+                            page_limit,
+                            |id, stored| match with_decoded_stored(def0, id, &stored, |vals| {
+                                if passes_early(&join_plan.early, vals, params)? {
+                                    let row_idx = arena0.push_borrowed(vals, needed0);
+                                    let mut comb = empty_comb;
+                                    comb[0] = row_idx;
+                                    batch.push(comb);
+                                }
+                                Ok(())
+                            }) {
+                                Ok(()) => true,
+                                Err(err) => {
+                                    failure = Some(err);
+                                    false
+                                }
+                            },
+                        )
+                        .map_err(exec::classify_io_error)?;
+                    if let Some(err) = failure {
+                        return Err(err);
+                    }
+                    if count == 0 {
+                        break;
+                    }
+                    executor.budget.visit(count)?;
+                    executor.process_table0_batch(batch)?;
+                    if executor.sink.is_done() {
+                        break;
+                    }
+                    if executor.sink.can_clear_unshared_arena() {
+                        executor.arenas[0].clear();
+                    }
+                    match next {
+                        Some(next_cursor) => {
+                            cursor = Some(next_cursor);
+                            page_limit = (page_limit * 2).min(256);
+                        }
+                        None => break,
+                    }
                 }
             }
         }
         Access::Hash { .. } | Access::Loop => {
-            scan_table(tx, &defs[0], &mut budget, |row, budget| {
-                seed(Arc::new(row), budget)
-            })?;
-        }
-    }
-
-    if sorted {
-        let key = |row: &Combined, slot: Slot| {
-            row[slot.table]
-                .as_ref()
-                .map_or(SqlValue::Null, |values| values[slot.column].clone())
-        };
-        let mut failure = None;
-        // A stable sort keeps the join order for ties, so results are
-        // deterministic.
-        out.sort_by(|a, b| {
-            for &(slot, descending, nulls_first) in &order {
-                let (x, y) = (key(a, slot), key(b, slot));
-                let ordering = match (&x, &y) {
-                    (SqlValue::Null, SqlValue::Null) => Ordering::Equal,
-                    (SqlValue::Null, _) => {
-                        if nulls_first {
-                            Ordering::Less
-                        } else {
-                            Ordering::Greater
-                        }
-                    }
-                    (_, SqlValue::Null) => {
-                        if nulls_first {
-                            Ordering::Greater
-                        } else {
-                            Ordering::Less
-                        }
-                    }
-                    _ => match compare(&x, &y) {
-                        Ok(Some(ordering)) if descending => ordering.reverse(),
-                        Ok(Some(ordering)) => ordering,
-                        Ok(None) => Ordering::Equal,
-                        Err(error) => {
-                            failure.get_or_insert(error);
-                            Ordering::Equal
-                        }
-                    },
-                };
-                if ordering != Ordering::Equal {
-                    return ordering;
+            let mut after: Option<String> = None;
+            let mut page_size = match executor.sink.remaining_wanted() {
+                Some(rem) if join_plan.early.is_empty() => rem.clamp(1, MAX_SCAN_ENTRIES),
+                Some(rem) => rem.saturating_mul(16).clamp(64, 512),
+                None => 256,
+            };
+            let mut match_cap_scale = 1_usize;
+            loop {
+                let rem_visit = limits
+                    .max_visited_rows
+                    .saturating_sub(executor.budget.visited);
+                let fetch = page_size
+                    .min(rem_visit.saturating_add(1))
+                    .clamp(1, MAX_SCAN_ENTRIES);
+                let match_cap = executor.sink.remaining_wanted().map(|rem| {
+                    rem.saturating_mul(match_cap_scale)
+                        .clamp(1, MAX_SCAN_ENTRIES)
+                });
+                let mut failure: Option<SqlError> = None;
+                let mut batch: Vec<Combined> = Vec::new();
+                let arena0 = &mut executor.arenas[0];
+                let (count, last) = tx
+                    .visit_stored_documents_with_meta(
+                        &def0.name,
+                        metas[0].as_ref(),
+                        after.as_deref(),
+                        fetch,
+                        |id, stored| match with_decoded_stored(def0, id, &stored, |vals| {
+                            if passes_early(&join_plan.early, vals, params)? {
+                                let row_idx = arena0.push_borrowed(vals, needed0);
+                                let mut comb = empty_comb;
+                                comb[0] = row_idx;
+                                batch.push(comb);
+                                Ok(match_cap.is_none_or(|cap| batch.len() < cap))
+                            } else {
+                                Ok(true)
+                            }
+                        }) {
+                            Ok(go_on) => go_on,
+                            Err(err) => {
+                                failure = Some(err);
+                                false
+                            }
+                        },
+                    )
+                    .map_err(exec::classify_io_error)?;
+                page_size = (page_size * 2).min(MAX_SCAN_ENTRIES);
+                if let Some(err) = failure {
+                    return Err(err);
                 }
-            }
-            Ordering::Equal
-        });
-        if let Some(error) = failure {
-            return Err(error);
-        }
-    }
-    let end = wanted.unwrap_or(usize::MAX).min(out.len());
-    let start = offset.min(end);
-    let rows: Vec<Vec<SqlValue>> = out[start..end]
-        .iter()
-        .map(|row| {
-            projection
-                .iter()
-                .map(|slot| {
-                    row[slot.table]
-                        .as_ref()
-                        .map_or(SqlValue::Null, |values| values[slot.column].clone())
-                })
-                .collect()
-        })
-        .collect();
-    if rows.len() > limits.max_select_rows {
-        return Err(SqlError::Bounds(format!(
-            "SELECT result exceeds max_select_rows ({})",
-            limits.max_select_rows
-        )));
-    }
-    Ok(SqlOutcome::Rows {
-        columns: names,
-        rows,
-    })
-}
-
-fn point_rows(
-    tx: &DocumentTransaction<'_, '_>,
-    def: &TableDef,
-    key: SqlValue,
-    budget: &mut Budget<'_>,
-) -> Result<Vec<Arc<Vec<SqlValue>>>, SqlError> {
-    let pk_type = def.columns[def.primary_key_index].col_type;
-    let Some(id) = point_key(key, pk_type).as_ref().and_then(pk_id) else {
-        return Ok(Vec::new());
-    };
-    budget.visit(1)?;
-    Ok(
-        match tx.get(&def.name, &id).map_err(exec::classify_io_error)? {
-            Some(document) => vec![Arc::new(decode(def, &id, &document)?)],
-            None => Vec::new(),
-        },
-    )
-}
-
-/// The index value a key must equal, or `None` if no indexed value can equal
-/// it. Indexed TEXT values are at most 256 bytes; REAL columns are not
-/// indexable, and an INTEGER column matches only integral numbers.
-fn index_value(key: SqlValue, column_type: SqlType) -> Option<IndexValue> {
-    match (column_type, key) {
-        (_, SqlValue::Null) => None,
-        (SqlType::Integer, key) => match point_key(key, SqlType::Integer) {
-            Some(SqlValue::Integer(n)) => Some(IndexValue::Integer(n)),
-            _ => None,
-        },
-        (SqlType::Text { .. }, SqlValue::Text(s)) if s.len() <= 256 => Some(IndexValue::String(s)),
-        (SqlType::Boolean, SqlValue::Boolean(b)) => Some(IndexValue::Boolean(b)),
-        _ => None,
-    }
-}
-
-fn index_rows(
-    tx: &DocumentTransaction<'_, '_>,
-    def: &TableDef,
-    name: &str,
-    column: usize,
-    key: SqlValue,
-    budget: &mut Budget<'_>,
-) -> Result<Vec<Arc<Vec<SqlValue>>>, SqlError> {
-    let Some(value) = index_value(key, def.columns[column].col_type) else {
-        return Ok(Vec::new());
-    };
-    let mut query = IndexQuery {
-        equal: vec![value],
-        limit: 256,
-        ..IndexQuery::default()
-    };
-    let mut rows = Vec::new();
-    loop {
-        let page = tx
-            .query_index(&def.name, name, &query)
-            .map_err(exec::classify_io_error)?;
-        if page.documents.is_empty() {
-            return Ok(rows);
-        }
-        budget.visit(page.documents.len())?;
-        let full = page.documents.len() == query.limit;
-        for entry in page.documents {
-            rows.push(Arc::new(decode(def, &entry.id, &entry.document)?));
-        }
-        if !full {
-            return Ok(rows);
-        }
-        query.after = page.next;
-    }
-}
-
-#[derive(Clone, Copy)]
-struct Cap {
-    rows: usize,
-    /// Rows past `rows` are beyond OFFSET + LIMIT and are not returned.
-    limited: bool,
-}
-
-enum Built {
-    Hash(HashMap<HashKey, Vec<Arc<Vec<SqlValue>>>>),
-    Rows(Vec<Arc<Vec<SqlValue>>>),
-}
-
-struct Context<'a, 'b, 'tx, 'store> {
-    tx: &'a DocumentTransaction<'tx, 'store>,
-    defs: &'a [Arc<TableDef>],
-    steps: &'a [Step],
-    built: &'a [Option<Built>],
-    late: &'a [BExpr],
-    params: &'b [SqlValue],
-}
-
-impl Context<'_, '_, '_, '_> {
-    /// Joins tables after `done` to `combined`, appending finished rows.
-    fn extend(
-        &self,
-        done: usize,
-        combined: &mut Combined,
-        budget: &mut Budget<'_>,
-        out: &mut Vec<Combined>,
-        cap: Cap,
-    ) -> Result<(), SqlError> {
-        let Some(step) = self.steps.get(done) else {
-            for conjunct in self.late {
-                if !truthy(conjunct, combined, self.params)? {
-                    return Ok(());
-                }
-            }
-            if out.len() >= cap.rows {
-                // Unsorted rows past OFFSET + LIMIT are never returned, so
-                // dropping them is not truncation. Anything else is a bound.
-                if cap.limited {
-                    return Ok(());
-                }
-                return Err(SqlError::Bounds(format!(
-                    "join result exceeds its row bound ({}; see max_select_rows and max_sort_rows)",
-                    cap.rows
-                )));
-            }
-            out.push(combined.clone());
-            return Ok(());
-        };
-        let table = done + 1;
-        let def = &self.defs[table];
-        let fetched;
-        let candidates: &[Arc<Vec<SqlValue>>] = match (&step.access, &self.built[done]) {
-            (Access::Point(key), _) => {
-                let key = eval(key, combined, self.params)?;
-                fetched = point_rows(self.tx, def, key, budget)?;
-                &fetched
-            }
-            (Access::Index { name, column, key }, _) => {
-                let key = eval(key, combined, self.params)?;
-                fetched = index_rows(self.tx, def, name, *column, key, budget)?;
-                &fetched
-            }
-            (Access::Hash { key, .. }, Some(Built::Hash(map))) => {
-                match hash_key(&eval(key, combined, self.params)?) {
-                    Some(key) => map.get(&key).map_or(&[][..], Vec::as_slice),
-                    None => &[],
-                }
-            }
-            (Access::Loop, Some(Built::Rows(rows))) => rows,
-            _ => unreachable!("join step without its built side"),
-        };
-        let mut matched = false;
-        for candidate in candidates {
-            budget.combine()?;
-            combined.push(Some(Arc::clone(candidate)));
-            let mut keep = true;
-            for conjunct in &step.on {
-                if !truthy(conjunct, combined, self.params)? {
-                    keep = false;
+                if count == 0 {
                     break;
                 }
+                executor.budget.visit(count)?;
+                after = last;
+                let before_rem = executor.sink.remaining_wanted();
+                let batch_len = batch.len();
+                executor.process_table0_batch(batch)?;
+                if executor.sink.is_done() {
+                    break;
+                }
+                if let (Some(before), Some(after_rem)) =
+                    (before_rem, executor.sink.remaining_wanted())
+                {
+                    if batch_len > 0 && before - after_rem <= batch_len / 2 {
+                        match_cap_scale = (match_cap_scale * 2).min(16);
+                    }
+                }
+                if executor.sink.can_clear_unshared_arena() {
+                    executor.arenas[0].clear();
+                }
             }
-            if keep {
-                matched = true;
-                self.extend(table, combined, budget, out, cap)?;
-            }
-            combined.pop();
         }
-        if !matched && step.kind == JoinKind::Left {
-            budget.combine()?;
-            combined.push(None);
-            self.extend(table, combined, budget, out, cap)?;
-            combined.pop();
-        }
-        Ok(())
     }
+
+    let rows = executor
+        .sink
+        .finish(&mut executor.arenas, &join_plan, wanted, offset, limits)?;
+    Ok(SqlOutcome::Rows {
+        columns: join_plan.names.clone(),
+        rows,
+    })
 }
 
 /// Describes a join's plan, one row per table and one for ordering, without
@@ -1762,12 +3613,14 @@ pub(crate) fn explain(
     cache: &SqlCache,
 ) -> Result<Vec<Vec<SqlValue>>, SqlError> {
     let plan = plan(tx, statement, params, limits, cache)?;
-    let first = choose_access(0, &plan.defs[0], &plan.early);
+    let limit = limit_value(statement.limit, params)?;
+    let offset = limit_value(statement.offset, params)?.unwrap_or(0);
+    let wanted = limit.map(|l| l.saturating_add(offset));
     let text = |value: String| SqlValue::Text(value);
     let mut rows = Vec::new();
     for (index, def) in plan.defs.iter().enumerate() {
         let access = if index == 0 {
-            &first
+            &plan.first
         } else {
             &plan.steps[index - 1].access
         };
@@ -1801,14 +3654,12 @@ pub(crate) fn explain(
             text(detail),
         ]);
     }
-    let first_key = Slot {
-        table: 0,
-        column: plan.defs[0].primary_key_index,
-    };
-    let sorted = !(plan.order.is_empty()
-        || matches!(plan.order.as_slice(), [(slot, false, _)] if *slot == first_key));
-    let order = if sorted {
-        "rows are sorted by ORDER BY"
+    let order = if plan.sorted {
+        if wanted.is_some_and(|k| k <= limits.max_sort_rows) {
+            "top OFFSET + LIMIT rows are sorted by ORDER BY"
+        } else {
+            "rows are sorted by ORDER BY"
+        }
     } else if statement.limit.is_some() {
         "rows stream in the first table's key order and reading stops at OFFSET + LIMIT"
     } else {

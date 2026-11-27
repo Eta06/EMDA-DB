@@ -458,11 +458,19 @@ fn random_joins_match_sqlite() {
         sql.push_str(filter);
         // Every row is ordered by every table's key; SQLite then agrees on
         // order, including LEFT JOIN NULLs, which sort first in both.
-        let order = tables
+        let key_order = tables
             .iter()
             .map(|t| format!("{t}.id"))
             .collect::<Vec<_>>()
             .join(", ");
+        // Exercise PK-ordered streaming, non-PK ORDER BY (SortAll / TopK),
+        // and non-projected ORDER BY columns (e.g. r).
+        let order = match round % 5 {
+            1 => format!("b.k DESC NULLS LAST, {key_order}"),
+            2 => format!("a.s ASC NULLS FIRST, {key_order}"),
+            3 => format!("b.r DESC NULLS FIRST, {key_order}"),
+            _ => key_order.clone(),
+        };
         let columns = tables
             .iter()
             .flat_map(|t| [format!("{t}.id"), format!("{t}.k"), format!("{t}.s")])
@@ -590,5 +598,339 @@ fn scanned_rows_with_escaped_text_join_like_plain_rows() {
             })
             .collect();
         assert_eq!(got, expected, "{backend}");
+    });
+}
+
+#[test]
+fn top_k_order_by_limit_respects_bounds_and_stability() {
+    let dir = tempfile::tempdir().unwrap();
+    let limits = SqlLimits {
+        max_sort_rows: 10,
+        ..SqlLimits::default()
+    };
+    let check = |db: &SqlDatabase<'_>, backend: &str| {
+        db.execute(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, score INTEGER, tag TEXT)",
+            &[],
+        )
+        .unwrap();
+        db.execute(
+            "CREATE TABLE u (id INTEGER PRIMARY KEY, t_id INTEGER, note TEXT)",
+            &[],
+        )
+        .unwrap();
+        let t_vals: Vec<String> = (0..50)
+            .map(|i| format!("({i}, {}, 't{i}')", (i * 17) % 13))
+            .collect();
+        db.execute(&format!("INSERT INTO t VALUES {}", t_vals.join(", ")), &[])
+            .unwrap();
+        let u_vals: Vec<String> = (0..50).map(|i| format!("({i}, {i}, 'n{i}')")).collect();
+        db.execute(&format!("INSERT INTO u VALUES {}", u_vals.join(", ")), &[])
+            .unwrap();
+
+        // Top-K LIMIT 5 succeeds on 50 matching rows even with max_sort_rows = 10,
+        // including ordering by a non-projected column and deterministic tie-breaking.
+        let top = rows(
+            db,
+            "SELECT t.id, u.note FROM t JOIN u ON u.id = t.id ORDER BY t.score DESC LIMIT 5 OFFSET 2",
+            &[],
+        );
+        let mut expected: Vec<(i64, i64)> = (0..50).map(|i| ((i * 17) % 13, i)).collect();
+        expected.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        let expected_rows: Vec<Vec<SqlValue>> = expected[2..7]
+            .iter()
+            .map(|&(_, id)| vec![int(id), text(&format!("n{id}"))])
+            .collect();
+        assert_eq!(top, expected_rows, "{backend}");
+
+        // Unbounded ORDER BY on 50 rows exceeds max_sort_rows = 10.
+        assert!(
+            matches!(
+                db.execute(
+                    "SELECT t.id FROM t JOIN u ON u.id = t.id ORDER BY t.score DESC",
+                    &[]
+                ),
+                Err(SqlError::Bounds(_))
+            ),
+            "{backend}"
+        );
+        // OFFSET + LIMIT = 13 > max_sort_rows = 10 also exceeds max_sort_rows.
+        assert!(
+            matches!(
+                db.execute(
+                    "SELECT t.id FROM t JOIN u ON u.id = t.id ORDER BY t.score DESC LIMIT 5 OFFSET 8",
+                    &[]
+                ),
+                Err(SqlError::Bounds(_))
+            ),
+            "{backend}"
+        );
+        // EXPLAIN describes the top-K sort path.
+        let plan = rows(
+            db,
+            "EXPLAIN SELECT t.id FROM t JOIN u ON u.id = t.id ORDER BY t.score DESC LIMIT 5",
+            &[],
+        );
+        assert!(
+            matches!(&plan[2][2], SqlValue::Text(s) if s.contains("top") && s.contains("sorted")),
+            "{backend}: {plan:?}"
+        );
+    };
+
+    let store = Store::open(dir.path().join("ordinary")).unwrap();
+    let db = SqlDatabase::with_limits(DocumentDatabase::new(&store), limits).unwrap();
+    check(&db, "Store");
+    drop(store);
+
+    let log = dir.path().join("checkpoint-log");
+    let initial = Store::open(&log).unwrap();
+    let digest = initial
+        .checkpoint_to(dir.path().join("checkpoint"))
+        .unwrap();
+    drop(initial);
+    let checkpoint = CheckpointStore::open(&log, dir.path().join("checkpoint"), &digest).unwrap();
+    let db = SqlDatabase::with_limits(DocumentDatabase::with_checkpoint_store(&checkpoint), limits)
+        .unwrap();
+    check(&db, "CheckpointStore");
+}
+
+#[test]
+fn cached_join_plan_revalidates_params_limits_and_ddl() {
+    for_both(|db, backend| {
+        setup(db);
+        let sql = "SELECT u.name, u.name, t.title FROM users u JOIN teams t ON t.id = u.team WHERE u.id = ?";
+        let stmt = db.prepare(sql).unwrap();
+
+        // Repeated calls exercise the cached plan, including duplicate projected columns.
+        for (id, name, title) in [(10, "ada", "red"), (11, "bob", "blue")] {
+            let SqlOutcome::Rows { rows: got, .. } =
+                db.execute_prepared(&stmt, &[int(id)]).unwrap()
+            else {
+                panic!("{backend}")
+            };
+            assert_eq!(
+                got,
+                vec![vec![text(name), text(name), text(title)]],
+                "{backend}"
+            );
+        }
+        // NULL parameter matches nothing and succeeds.
+        let SqlOutcome::Rows { rows: got, .. } =
+            db.execute_prepared(&stmt, &[SqlValue::Null]).unwrap()
+        else {
+            panic!("{backend}")
+        };
+        assert!(got.is_empty(), "{backend}");
+        // Wrong parameter type on a cached plan must still fail with SqlError::Type.
+        assert!(
+            matches!(
+                db.execute_prepared(&stmt, &[text("not-an-int")]),
+                Err(SqlError::Type(_))
+            ),
+            "{backend}"
+        );
+
+        // Self-join reuses catalog & metadata cleanly.
+        assert_eq!(
+            rows(
+                db,
+                "SELECT a.id, b.name FROM users a JOIN users b ON b.id = a.id WHERE a.id = ?",
+                &[int(10)]
+            ),
+            vec![vec![int(10), text("ada")]],
+            "{backend}"
+        );
+
+        // DDL (CREATE INDEX / ALTER TABLE ADD COLUMN) invalidates cached plans.
+        let idx_sql = "SELECT u.name, t.title FROM users u JOIN teams t ON t.id = u.team WHERE u.team = ? ORDER BY u.id";
+        assert_eq!(
+            rows(db, idx_sql, &[int(1)]),
+            vec![vec![text("ada"), text("red")]],
+            "{backend}"
+        );
+        db.execute("CREATE INDEX users_team ON users (team)", &[])
+            .unwrap();
+        assert_eq!(
+            rows(db, idx_sql, &[int(1)]),
+            vec![vec![text("ada"), text("red")]],
+            "{backend}"
+        );
+        db.execute("ALTER TABLE teams ADD COLUMN extra TEXT", &[])
+            .unwrap();
+        assert_eq!(
+            rows(
+                db,
+                "SELECT u.name, t.extra FROM users u JOIN teams t ON t.id = u.team WHERE u.id = 10",
+                &[]
+            ),
+            vec![vec![text("ada"), SqlValue::Null]],
+            "{backend}"
+        );
+    });
+}
+
+#[test]
+fn text_pk_unique_index_compound_index_and_multipage_index_joins() {
+    for_both(|db, backend| {
+        for sql in [
+            "CREATE TABLE kv (k TEXT PRIMARY KEY, val TEXT NOT NULL)",
+            "CREATE TABLE items (id INTEGER PRIMARY KEY, code TEXT NOT NULL UNIQUE, grp INTEGER NOT NULL, seq INTEGER NOT NULL, k_ref TEXT)",
+            "CREATE INDEX items_grp_seq ON items (grp, seq)",
+            "CREATE INDEX items_grp ON items (grp)",
+            "INSERT INTO kv VALUES ('k1', 'plain'), ('k2', 'quote \" and\nline'), ('k3', 'é unicode')",
+        ] {
+            db.execute(sql, &[]).unwrap();
+        }
+        // Insert 280 items in grp=7 (> 256 index page size) plus extra rows with
+        // reversed seq order to test compound index ordering vs PK ordering.
+        for chunk_start in (0..280i64).step_by(70) {
+            let vals: Vec<String> = (chunk_start..chunk_start + 70)
+                .map(|i| {
+                    let k_ref = match i % 4 {
+                        0 => "'k1'",
+                        1 => "'k2'",
+                        2 => "'k3'",
+                        _ => "'missing'",
+                    };
+                    format!("({i}, 'c{i}', 7, {}, {k_ref})", 1000 - i)
+                })
+                .collect();
+            db.execute(
+                &format!("INSERT INTO items VALUES {}", vals.join(", ")),
+                &[],
+            )
+            .unwrap();
+        }
+
+        // Batched TEXT PK lookup across > 256 index rows (multi-page index scan +
+        // escaped text in point lookup + LEFT JOIN for missing key).
+        let got = rows(
+            db,
+            "SELECT i.id, kv.val FROM items i LEFT JOIN kv ON kv.k = i.k_ref WHERE i.grp = 7 ORDER BY i.id",
+            &[],
+        );
+        assert_eq!(got.len(), 280, "{backend}");
+        assert_eq!(got[0], vec![int(0), text("plain")], "{backend}");
+        assert_eq!(
+            got[1],
+            vec![int(1), text("quote \" and\nline")],
+            "{backend}"
+        );
+        assert_eq!(got[2], vec![int(2), text("é unicode")], "{backend}");
+        assert_eq!(got[3], vec![int(3), SqlValue::Null], "{backend}");
+        assert_eq!(got[279], vec![int(279), SqlValue::Null], "{backend}");
+
+        // UNIQUE secondary index lookup on flat rows (verifies unique-owner check).
+        assert_eq!(
+            rows(
+                db,
+                "SELECT i.id, kv.val FROM items i JOIN kv ON kv.k = i.k_ref WHERE i.code = ?",
+                &[text("c1")]
+            ),
+            vec![vec![int(1), text("quote \" and\nline")]],
+            "{backend}"
+        );
+
+        // Compound index with NOT NULL trailing column: equality on `grp` returns
+        // entries in `(seq, id)` order, NOT `id` order; ORDER BY i.id must still
+        // return ascending `i.id`.
+        db.execute("DROP INDEX items_grp ON items", &[]).unwrap();
+        let ordered = rows(
+            db,
+            "SELECT i.id, kv.k FROM items i JOIN kv ON kv.k = i.k_ref WHERE i.grp = 7 ORDER BY i.id LIMIT 6",
+            &[],
+        );
+        assert_eq!(
+            ordered,
+            vec![
+                vec![int(0), text("k1")],
+                vec![int(1), text("k2")],
+                vec![int(2), text("k3")],
+                vec![int(4), text("k1")],
+                vec![int(5), text("k2")],
+                vec![int(6), text("k3")],
+            ],
+            "{backend}"
+        );
+
+        // Oversized (> 254 bytes) TEXT PK lookup matches nothing without error.
+        let long_key = "x".repeat(300);
+        assert!(
+            rows(
+                db,
+                "SELECT kv.k FROM kv JOIN items i ON i.id = 0 WHERE kv.k = ?",
+                &[SqlValue::Text(long_key)]
+            )
+            .is_empty(),
+            "{backend}"
+        );
+    });
+}
+
+#[test]
+fn typed_hash_joins_cover_all_types_and_numeric_coercion() {
+    for_both(|db, backend| {
+        for sql in [
+            "CREATE TABLE l (id INTEGER PRIMARY KEY, i INTEGER, r REAL, s TEXT, b BOOLEAN)",
+            "CREATE TABLE r (id INTEGER PRIMARY KEY, i INTEGER, r REAL, s TEXT, b BOOLEAN)",
+            "INSERT INTO l VALUES (1, 0, -0.0, 'a', true), (2, 2, 2.5, 'b', false), (3, NULL, NULL, NULL, NULL)",
+            "INSERT INTO r VALUES (10, 0, 0.0, 'a', true), (11, 2, 2.0, 'a', true), (12, 3, 2.5, 'b', false), (13, NULL, NULL, NULL, NULL)",
+        ] {
+            db.execute(sql, &[]).unwrap();
+        }
+        // INTEGER build column probed by REAL (-0.0 matches 0, 2.5 matches nothing).
+        assert_eq!(
+            rows(
+                db,
+                "SELECT l.id, r.id FROM l JOIN r ON r.i = l.r ORDER BY l.id, r.id",
+                &[]
+            ),
+            vec![vec![int(1), int(10)]],
+            "{backend}"
+        );
+        // REAL build column probed by INTEGER (0 matches 0.0, 2 matches 2.0).
+        assert_eq!(
+            rows(
+                db,
+                "SELECT l.id, r.id FROM l JOIN r ON r.r = l.i ORDER BY l.id, r.id",
+                &[]
+            ),
+            vec![vec![int(1), int(10)], vec![int(2), int(11)]],
+            "{backend}"
+        );
+        // REAL build column probed by REAL (-0.0 matches 0.0, 2.5 matches 2.5).
+        assert_eq!(
+            rows(
+                db,
+                "SELECT l.id, r.id FROM l JOIN r ON r.r = l.r ORDER BY l.id, r.id",
+                &[]
+            ),
+            vec![vec![int(1), int(10)], vec![int(2), int(12)]],
+            "{backend}"
+        );
+        // TEXT hash join preserves build insertion order on ties.
+        assert_eq!(
+            rows(
+                db,
+                "SELECT l.id, r.id FROM l JOIN r ON r.s = l.s WHERE l.id = 1",
+                &[]
+            ),
+            vec![vec![int(1), int(10)], vec![int(1), int(11)]],
+            "{backend}"
+        );
+        // BOOLEAN hash join.
+        assert_eq!(
+            rows(
+                db,
+                "SELECT l.id, r.id FROM l JOIN r ON r.b = l.b ORDER BY l.id, r.id",
+                &[]
+            ),
+            vec![
+                vec![int(1), int(10)],
+                vec![int(1), int(11)],
+                vec![int(2), int(12)],
+            ],
+            "{backend}"
+        );
     });
 }
