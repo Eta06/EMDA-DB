@@ -4,6 +4,32 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Reduce checkpoint-backed point/indexed read latency and full-scan overhead
+  without weakening verification, isolation, or durability guarantees:
+  - Store packed first-key prefixes up to 256 bytes per checkpoint block in
+    `CheckpointView` (bounded by `CheckpointViewLimits`, falling back to full
+    verified-block comparison for longer shared prefixes), eliminating
+    intermediate binary-search block reads for document/SQL keys that share
+    the 16-byte reserved document prefix.
+  - Enable `CheckpointStore`'s verified-block LRU cache by default with
+    `DEFAULT_CHECKPOINT_BLOCK_CACHE_BYTES` (8 MiB, clamped to
+    `CheckpointViewLimits::max_file_bytes`, allocated lazily as blocks are
+    SHA-256-verified; configurable down to `0` via
+    `set_checkpoint_block_cache_limit`; standalone `CheckpointView` and
+    `RecoveredCheckpointView` remain uncached by default). Serialize limit
+    updates with store state transitions, recheck the authoritative limit under
+    the cache lock on insert, and preserve the configured limit (while clearing
+    retired caches) across `compact_and_replace`, rollover, and online handoff.
+  - Batch index-entry to document fetches within a scoped transaction/snapshot
+    point-read session, reusing the loaded verified checkpoint block, state/read-set
+    guards, and bounded log read-ahead across rows in an index page.
+  - Add bounded 64 KiB ephemeral log read-ahead (within a 4 KiB gap) for scans,
+    `get_many`, and batched point reads on both `Store` and checkpoint-backed
+    views, preserving per-value CRC-32 verification and admission boundaries.
+  - Avoid provably redundant tree-bound traversals when decoding stored
+    documents whose encoded JSON length mathematically guarantees the node and
+    depth limits, while continuing to enforce every `CollectionSchema` rule.
+
 - Reduce macOS V2 (`EMDALOG2`) durable commit latency without changing the
   on-disk format or weakening durability guarantees: on local macOS APFS and
   HFS+ volumes (`fstatfs` `MNT_LOCAL`) reporting `VOL_CAP_INT_BARRIERFSYNC` via
