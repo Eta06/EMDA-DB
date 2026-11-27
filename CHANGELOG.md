@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Accept SQL `RIGHT [OUTER] JOIN` as the first join of a join statement. It
+  runs as the mirrored `LEFT JOIN`, keeping the written column order for
+  `*`, and matches SQLite on the tested queries, alone and followed by
+  further joins. Later `RIGHT` joins and `FULL` joins remain unsupported.
 - Add `ON DELETE CASCADE` and `ON DELETE SET NULL` to SQL foreign keys.
   A parent `DELETE` deletes or clears child rows in the same transaction,
   recursively and at most 16 levels deep, within `max_mutation_rows` and

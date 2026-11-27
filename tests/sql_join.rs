@@ -228,7 +228,7 @@ fn join_errors_are_classified() {
             SqlError::Type(_)
         ));
         for unsupported in [
-            "SELECT u.id FROM users u RIGHT JOIN teams t ON t.id = u.team",
+            "SELECT u.id FROM users u FULL JOIN teams t ON t.id = u.team",
             "SELECT u.id FROM users u FULL JOIN teams t ON t.id = u.team",
             "SELECT u.id FROM users u CROSS JOIN teams t",
             "SELECT u.id FROM users u NATURAL JOIN teams t",
@@ -932,5 +932,54 @@ fn typed_hash_joins_cover_all_types_and_numeric_coercion() {
             ],
             "{backend}"
         );
+    });
+}
+
+/// `RIGHT JOIN` as the first join returns what SQLite returns, with the
+/// written column order for `*`, alone and followed by further joins.
+#[test]
+fn right_joins_match_sqlite() {
+    for_both(|db, backend| {
+        let sqlite = rusqlite::Connection::open_in_memory().unwrap();
+        for sql in [
+            "CREATE TABLE a (id INTEGER PRIMARY KEY, b_id INTEGER, label TEXT)",
+            "CREATE TABLE b (id INTEGER PRIMARY KEY, name TEXT)",
+            "CREATE TABLE c (id INTEGER PRIMARY KEY, b_id INTEGER)",
+            "INSERT INTO a VALUES (1, 10, 'x'), (2, 10, 'y'), (3, 99, 'z'), (4, NULL, 'w')",
+            "INSERT INTO b VALUES (10, 'ten'), (20, 'twenty'), (30, NULL)",
+            "INSERT INTO c VALUES (100, 20), (101, 10), (102, 40)",
+        ] {
+            db.execute(sql, &[]).unwrap();
+            sqlite.execute(sql, []).unwrap();
+        }
+        for sql in [
+            "SELECT * FROM a RIGHT JOIN b ON a.b_id = b.id ORDER BY b.id, a.id",
+            "SELECT a.label, b.name FROM a RIGHT OUTER JOIN b ON a.b_id = b.id ORDER BY b.id, a.id",
+            "SELECT b.id, a.id FROM a RIGHT JOIN b ON a.b_id = b.id WHERE a.id IS NULL ORDER BY b.id",
+            "SELECT b.id, a.id, c.id FROM a RIGHT JOIN b ON a.b_id = b.id LEFT JOIN c ON c.b_id = b.id ORDER BY b.id, a.id, c.id",
+            "SELECT b.id, c.id FROM a RIGHT JOIN b ON a.b_id = b.id JOIN c ON c.b_id = b.id ORDER BY b.id, c.id",
+            "SELECT a.id, b.id FROM a RIGHT JOIN b ON a.b_id = b.id AND a.label <> 'x' ORDER BY b.id, a.id LIMIT 3",
+        ] {
+            let ours = rows(db, sql, &[]);
+            let mut stmt = sqlite.prepare(sql).unwrap();
+            let n = stmt.column_count();
+            let theirs: Vec<Vec<SqlValue>> = stmt
+                .query_map([], |row| {
+                    (0..n).map(|i| row.get(i).map(from_sqlite)).collect()
+                })
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(ours, theirs, "{backend}: {sql}");
+        }
+        for sql in [
+            "SELECT a.id FROM a JOIN b ON a.b_id = b.id RIGHT JOIN c ON c.b_id = b.id",
+            "SELECT a.id FROM a FULL OUTER JOIN b ON a.b_id = b.id",
+        ] {
+            assert!(
+                matches!(db.execute(sql, &[]), Err(SqlError::Unsupported { .. })),
+                "{backend}: {sql}"
+            );
+        }
     });
 }

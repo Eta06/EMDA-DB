@@ -261,9 +261,24 @@ impl JoinParser<'_> {
         self.expect_kw("from")?;
         let mut tables = vec![self.table_ref()?];
         let mut joins = Vec::new();
+        // `a RIGHT JOIN b ON c` is `b LEFT JOIN a ON c` with `a`'s columns
+        // first; it is accepted as the first join, where both tables are
+        // visible to every later clause either way.
+        let mut right_first = false;
         loop {
-            if self.at_kw("right") || self.at_kw("full") {
-                return Err(self.unsupported("RIGHT or FULL JOIN"));
+            if self.at_kw("right") {
+                if !joins.is_empty() {
+                    return Err(self.unsupported("RIGHT JOIN after the first join"));
+                }
+                self.advance();
+                self.eat_kw("outer");
+                if !self.at_kw("join") {
+                    return Err(self.syntax("expected JOIN"));
+                }
+                right_first = true;
+            }
+            if self.at_kw("full") {
+                return Err(self.unsupported("FULL JOIN"));
             }
             if self.at_kw("cross") || self.at_kw("natural") {
                 return Err(self.unsupported("CROSS or NATURAL JOIN"));
@@ -271,7 +286,9 @@ impl JoinParser<'_> {
             if matches!(self.peek().kind, TokenKind::Comma) {
                 return Err(self.unsupported("comma-separated FROM tables"));
             }
-            let kind = if self.eat_kw("left") {
+            let kind = if right_first && joins.is_empty() {
+                JoinKind::Left
+            } else if self.eat_kw("left") {
                 self.eat_kw("outer");
                 JoinKind::Left
             } else {
@@ -344,6 +361,22 @@ impl JoinParser<'_> {
             }
         } else if self.at_kw("offset") {
             return Err(self.unsupported("OFFSET without LIMIT"));
+        }
+        if right_first {
+            // Keep the written column order for `*`, then put the preserved
+            // (right) table first.
+            let mut expanded = Vec::with_capacity(items.len() + 1);
+            for item in items {
+                match item {
+                    SelectItem::All => {
+                        expanded.push(SelectItem::TableAll(tables[0].alias.clone(), 0));
+                        expanded.push(SelectItem::TableAll(tables[1].alias.clone(), 0));
+                    }
+                    other => expanded.push(other),
+                }
+            }
+            items = expanded;
+            tables.swap(0, 1);
         }
         Ok(JoinSelect {
             items,
