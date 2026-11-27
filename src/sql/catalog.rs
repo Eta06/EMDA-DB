@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_CACHED_TABLES: usize = 256;
+pub(crate) const MAX_SQL_FOREIGN_KEYS: usize = MAX_SQL_COLUMNS;
 
 #[derive(Debug)]
 pub(crate) struct CachedTable {
@@ -76,6 +77,40 @@ pub(crate) struct IndexDef {
     pub(crate) is_constraint: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ForeignKeyAction {
+    #[default]
+    NoAction,
+    Restrict,
+}
+
+impl ForeignKeyAction {
+    fn is_default(&self) -> bool {
+        *self == Self::NoAction
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ForeignKeyDef {
+    pub(crate) column: usize,
+    pub(crate) ref_table: String,
+    pub(crate) ref_column: String,
+    #[serde(default, skip_serializing_if = "ForeignKeyAction::is_default")]
+    pub(crate) on_delete: ForeignKeyAction,
+    #[serde(default, skip_serializing_if = "ForeignKeyAction::is_default")]
+    pub(crate) on_update: ForeignKeyAction,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ForeignKeyRef {
+    pub(crate) child_table: String,
+    pub(crate) child_column: String,
+    pub(crate) ref_column: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TableDef {
@@ -85,14 +120,37 @@ pub(crate) struct TableDef {
     pub(crate) primary_key_index: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) indexes: Vec<IndexDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) foreign_keys: Vec<ForeignKeyDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) referenced_by: Vec<ForeignKeyRef>,
 }
 
 impl TableDef {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(
         name: String,
         columns: Vec<ColumnDef>,
         primary_key_index: usize,
         indexes: Vec<IndexDef>,
+    ) -> Result<Self, SqlError> {
+        Self::with_foreign_keys(
+            name,
+            columns,
+            primary_key_index,
+            indexes,
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    pub(crate) fn with_foreign_keys(
+        name: String,
+        columns: Vec<ColumnDef>,
+        primary_key_index: usize,
+        indexes: Vec<IndexDef>,
+        foreign_keys: Vec<ForeignKeyDef>,
+        referenced_by: Vec<ForeignKeyRef>,
     ) -> Result<Self, SqlError> {
         let def = Self {
             version: CATALOG_VERSION,
@@ -100,6 +158,8 @@ impl TableDef {
             columns,
             primary_key_index,
             indexes,
+            foreign_keys,
+            referenced_by,
         };
         def.validate()?;
         Ok(def)
@@ -202,6 +262,45 @@ impl TableDef {
                 }
             }
         }
+        if self.foreign_keys.len() > MAX_SQL_FOREIGN_KEYS {
+            return Err(SqlError::Bounds(format!(
+                "table '{}' cannot have more than {MAX_SQL_FOREIGN_KEYS} foreign keys",
+                self.name
+            )));
+        }
+        for fk in &self.foreign_keys {
+            if fk.column >= self.columns.len() {
+                return Err(SqlError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid foreign key column index in SQL catalog entry",
+                )));
+            }
+            if fk.ref_table.is_empty()
+                || fk.ref_table.len() > MAX_SQL_IDENTIFIER_BYTES
+                || fk.ref_column.is_empty()
+                || fk.ref_column.len() > MAX_SQL_IDENTIFIER_BYTES
+            {
+                return Err(SqlError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid foreign key target identifier in SQL catalog entry",
+                )));
+            }
+        }
+        for back_ref in &self.referenced_by {
+            if back_ref.child_table.is_empty()
+                || back_ref.child_table.len() > MAX_SQL_IDENTIFIER_BYTES
+                || back_ref.child_column.is_empty()
+                || back_ref.child_column.len() > MAX_SQL_IDENTIFIER_BYTES
+                || back_ref.ref_column.is_empty()
+                || back_ref.ref_column.len() > MAX_SQL_IDENTIFIER_BYTES
+                || self.column_index(&back_ref.ref_column).is_none()
+            {
+                return Err(SqlError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid foreign key back-reference in SQL catalog entry",
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -237,6 +336,14 @@ impl TableDef {
             partial: None,
         }
     }
+}
+
+pub(crate) fn table_exists(
+    tx: &DocumentTransaction<'_, '_>,
+    table_name: &str,
+) -> Result<bool, SqlError> {
+    let key = catalog_key(table_name)?;
+    Ok(tx.get_raw(&key).map_err(classify_io_error)?.is_some())
 }
 
 /// Removes a table's catalog entry in the caller's transaction.

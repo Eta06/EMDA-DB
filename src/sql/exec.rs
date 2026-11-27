@@ -176,7 +176,7 @@ fn execute_statement_in_validated_tx(
     force_full_scan: bool,
 ) -> Result<SqlOutcome, SqlError> {
     match &stmt.inner {
-        Statement::CreateTable(create) => exec_create_table(tx, create, limits),
+        Statement::CreateTable(create) => exec_create_table(tx, create, limits, cache),
         Statement::CreateIndex(_) => Err(SqlError::Unsupported {
             feature: "CREATE INDEX inside an explicit transaction (online index DDL must run outside a transaction)".into(),
             offset: None,
@@ -336,6 +336,7 @@ fn exec_create_table(
     tx: &mut DocumentTransaction<'_, '_>,
     stmt: &CreateTableStmt,
     limits: &SqlLimits,
+    cache: &SqlCache,
 ) -> Result<SqlOutcome, SqlError> {
     if stmt.columns.len() > limits.max_columns {
         return Err(SqlError::Bounds(format!(
@@ -344,7 +345,7 @@ fn exec_create_table(
             limits.max_columns
         )));
     }
-    let columns = stmt
+    let columns: Vec<ColumnDef> = stmt
         .columns
         .iter()
         .map(|col| ColumnDef {
@@ -353,7 +354,7 @@ fn exec_create_table(
             not_null: col.not_null,
         })
         .collect();
-    let indexes = stmt
+    let indexes: Vec<IndexDef> = stmt
         .unique_constraints
         .iter()
         .enumerate()
@@ -365,8 +366,34 @@ fn exec_create_table(
             is_constraint: true,
         })
         .collect();
-    let def = TableDef::new(stmt.name.clone(), columns, stmt.primary_key_index, indexes)?;
+    if catalog::table_exists(tx, &stmt.name)? {
+        if stmt.if_not_exists {
+            return Ok(SqlOutcome::TableCreated);
+        }
+        return Err(SqlError::TableExists(stmt.name.clone()));
+    }
+    let prepared_fks = super::foreign_key::prepare_create_table_foreign_keys(
+        tx,
+        &stmt.name,
+        &columns,
+        stmt.primary_key_index,
+        &indexes,
+        &stmt.foreign_keys,
+        &cache.tables,
+    )?;
+    let def = TableDef::with_foreign_keys(
+        stmt.name.clone(),
+        columns,
+        stmt.primary_key_index,
+        indexes,
+        prepared_fks.foreign_keys,
+        prepared_fks.self_referenced_by,
+    )?;
     catalog::create_table(tx, &def, stmt.if_not_exists)?;
+    for (parent_key, parent_def) in prepared_fks.parent_updates {
+        parent_def.validate()?;
+        catalog::save_table_def(tx, &parent_key, &parent_def)?;
+    }
     Ok(SqlOutcome::TableCreated)
 }
 
@@ -738,6 +765,7 @@ fn exec_drop_index(
                 existing.name, stmt.table
             )));
         }
+        super::foreign_key::ensure_index_not_fk_target(&cached_table.def, existing)?;
         match existing.state {
             IndexState::Building => Ok(DropAction::CancelBuilding),
             IndexState::Dropping => Ok(DropAction::FinishDropping),
@@ -798,6 +826,7 @@ fn exec_drop_index(
                         existing.name, stmt.table
                     )));
                 }
+                super::foreign_key::ensure_index_not_fk_target(&cached_table.def, existing)?;
                 match existing.state {
                     IndexState::Ready => {
                         tx.start_index_drop(&stmt.table, &stmt.name)
@@ -1137,6 +1166,7 @@ fn exec_insert(
         let doc = Value::Object(obj);
         tx.insert(&table.name, doc_id, &doc)
             .map_err(|err| map_write_constraint_error(err, &table.name))?;
+        super::foreign_key::check_inserted_docs(tx, table, &[&doc], &cache.tables)?;
         return Ok(SqlOutcome::Inserted { rows: 1 });
     }
 
@@ -1201,10 +1231,11 @@ fn exec_insert(
     }
 
     let inserted = prepared_rows.len();
-    for (doc_id, doc) in prepared_rows {
-        tx.insert(&table.name, &doc_id, &doc)
+    for (doc_id, doc) in &prepared_rows {
+        tx.insert(&table.name, doc_id, doc)
             .map_err(|err| map_write_constraint_error(err, &table.name))?;
     }
+    super::foreign_key::check_inserted_prepared_rows(tx, table, &prepared_rows, &cache.tables)?;
     Ok(SqlOutcome::Inserted { rows: inserted })
 }
 
@@ -3914,6 +3945,12 @@ fn exec_update(
     }
     validate_filter_params(plan.filter.as_ref(), params)?;
 
+    let assigned_cols: Vec<usize> = plan
+        .assignments
+        .iter()
+        .map(|(col_idx, _)| *col_idx)
+        .collect();
+    let mut fk_checks = super::foreign_key::PendingUpdateFkChecks::new(table, &assigned_cols)?;
     let bound_filter = plan.filter.as_ref().map(|f| &f.expr);
     let mut matched = Vec::new();
     visit_matching_rows(
@@ -3947,6 +3984,7 @@ fn exec_update(
                 )?;
                 updates.push((col, coerced));
             }
+            fk_checks.record_row(table, &obj, &updates)?;
             for (col, val) in updates {
                 if matches!(val, SqlValue::Null) {
                     obj.remove(&col.name);
@@ -3965,6 +4003,7 @@ fn exec_update(
         tx.replace(&table.name, &doc_id, &doc, false)
             .map_err(|err| map_write_constraint_error(err, &table.name))?;
     }
+    fk_checks.verify(tx, table, limits, &cache.tables)?;
     Ok(SqlOutcome::Updated { rows: updated })
 }
 
@@ -4002,6 +4041,7 @@ fn exec_delete(
     let table = &cached_table.def;
     validate_filter_params(plan.as_ref().as_ref(), params)?;
     let bound_filter = plan.as_ref().as_ref().map(|f| &f.expr);
+    let mut fk_checks = super::foreign_key::PendingDeleteFkChecks::new(table)?;
     let mut to_delete = Vec::new();
     visit_matching_rows(
         tx,
@@ -4011,13 +4051,14 @@ fn exec_delete(
         limits,
         force_full_scan,
         None,
-        |doc_id, _verified_pk, _obj| {
+        |doc_id, _verified_pk, obj| {
             if to_delete.len() >= limits.max_mutation_rows {
                 return Err(SqlError::Bounds(format!(
                     "DELETE row count exceeds max_mutation_rows ({})",
                     limits.max_mutation_rows
                 )));
             }
+            fk_checks.record_row(table, &obj)?;
             to_delete.push(doc_id);
             Ok(ControlFlow::Continue(()))
         },
@@ -4027,6 +4068,7 @@ fn exec_delete(
     for doc_id in to_delete {
         tx.delete(&table.name, &doc_id).map_err(classify_io_error)?;
     }
+    fk_checks.verify(tx, table, limits, &cache.tables)?;
     Ok(SqlOutcome::Deleted { rows: deleted })
 }
 

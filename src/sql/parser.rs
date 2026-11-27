@@ -1,4 +1,5 @@
 //! Hand-written recursive-descent SQL parser and AST definitions.
+use super::catalog::ForeignKeyAction;
 use super::lexer::{Token, TokenKind, tokenize};
 use super::value::{
     MAX_SQL_INDEX_COLUMNS, MAX_SQL_INDEXES_PER_TABLE, SqlError, SqlLimits, SqlType,
@@ -44,6 +45,15 @@ pub(crate) enum Statement {
     Explain(Box<SqlStatement>),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ForeignKeySpec {
+    pub(crate) column: usize,
+    pub(crate) ref_table: String,
+    pub(crate) ref_column: Option<String>,
+    pub(crate) on_delete: ForeignKeyAction,
+    pub(crate) on_update: ForeignKeyAction,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CreateTableStmt {
     pub(crate) if_not_exists: bool,
@@ -51,6 +61,7 @@ pub(crate) struct CreateTableStmt {
     pub(crate) columns: Vec<ColumnSpec>,
     pub(crate) primary_key_index: usize,
     pub(crate) unique_constraints: Vec<Vec<usize>>,
+    pub(crate) foreign_keys: Vec<ForeignKeySpec>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -295,6 +306,13 @@ pub(crate) fn parse_statement(sql: &str, limits: &SqlLimits) -> Result<SqlStatem
         param_count: parser.param_count,
         stmt_id: NEXT_STMT_ID.fetch_add(1, Ordering::Relaxed),
     })
+}
+
+struct ParsedReferences {
+    ref_table: String,
+    ref_column: Option<String>,
+    on_delete: Option<ForeignKeyAction>,
+    on_update: Option<ForeignKeyAction>,
 }
 
 struct Parser<'a> {
@@ -696,6 +714,8 @@ impl Parser<'_> {
         let mut table_pk_name: Option<(String, usize)> = None;
         let mut col_uniques: Vec<usize> = Vec::new();
         let mut table_uniques: Vec<Vec<(String, usize)>> = Vec::new();
+        let mut col_fks: Vec<(usize, ParsedReferences)> = Vec::new();
+        let mut table_fks: Vec<(String, usize, ParsedReferences)> = Vec::new();
 
         if matches!(self.peek().kind, TokenKind::RParen) {
             return Err(SqlError::Syntax {
@@ -766,7 +786,28 @@ impl Parser<'_> {
                 }
                 self.expect_kind(&TokenKind::RParen, "')'")?;
                 table_uniques.push(u_cols);
-            } else if self.at_kw("constraint") || self.at_kw("check") || self.at_kw("foreign") {
+            } else if self.eat_kw("foreign") {
+                self.expect_kw("key")?;
+                self.expect_kind(&TokenKind::LParen, "'('")?;
+                if matches!(self.peek().kind, TokenKind::RParen) {
+                    return Err(SqlError::Syntax {
+                        offset: self.peek().offset,
+                        message: "FOREIGN KEY constraint must declare a column".into(),
+                    });
+                }
+                let (fk_col, fk_offset) =
+                    self.expect_ident("column name in FOREIGN KEY constraint")?;
+                if matches!(self.peek().kind, TokenKind::Comma) {
+                    return Err(SqlError::Unsupported {
+                        feature: "composite FOREIGN KEY constraint".into(),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                self.expect_kind(&TokenKind::RParen, "')'")?;
+                self.expect_kw("references")?;
+                let parsed_ref = self.parse_references_tail()?;
+                table_fks.push((fk_col, fk_offset, parsed_ref));
+            } else if self.at_kw("constraint") || self.at_kw("check") {
                 let feature = match &self.peek().kind {
                     TokenKind::Ident { text, .. } => {
                         format!("{} constraint", text.to_ascii_uppercase())
@@ -795,6 +836,7 @@ impl Parser<'_> {
                 let mut not_null = false;
                 let mut is_pk = false;
                 let mut is_unique = false;
+                let col_idx = columns.len();
                 loop {
                     if self.eat_kw("not") {
                         self.expect_kw("null")?;
@@ -810,9 +852,11 @@ impl Parser<'_> {
                         not_null = true;
                     } else if self.eat_kw("unique") {
                         is_unique = true;
+                    } else if self.eat_kw("references") {
+                        let parsed_ref = self.parse_references_tail()?;
+                        col_fks.push((col_idx, parsed_ref));
                     } else if self.at_kw("default")
                         || self.at_kw("check")
-                        || self.at_kw("references")
                         || self.at_kw("autoincrement")
                         || self.at_kw("generated")
                         || self.at_kw("collate")
@@ -831,7 +875,6 @@ impl Parser<'_> {
                         break;
                     }
                 }
-                let col_idx = columns.len();
                 if is_pk {
                     pk_col_index = Some(col_idx);
                 }
@@ -934,12 +977,160 @@ impl Parser<'_> {
             }
         }
 
+        let mut foreign_keys = Vec::with_capacity(col_fks.len() + table_fks.len());
+        for (col_idx, parsed_ref) in col_fks {
+            foreign_keys.push(ForeignKeySpec {
+                column: col_idx,
+                ref_table: parsed_ref.ref_table,
+                ref_column: parsed_ref.ref_column,
+                on_delete: parsed_ref.on_delete.unwrap_or_default(),
+                on_update: parsed_ref.on_update.unwrap_or_default(),
+            });
+        }
+        for (fk_col, fk_offset, parsed_ref) in table_fks {
+            let col_idx = columns
+                .iter()
+                .position(|c| c.name == fk_col)
+                .ok_or_else(|| SqlError::Syntax {
+                    offset: fk_offset,
+                    message: format!("FOREIGN KEY column '{fk_col}' is not declared in table"),
+                })?;
+            foreign_keys.push(ForeignKeySpec {
+                column: col_idx,
+                ref_table: parsed_ref.ref_table,
+                ref_column: parsed_ref.ref_column,
+                on_delete: parsed_ref.on_delete.unwrap_or_default(),
+                on_update: parsed_ref.on_update.unwrap_or_default(),
+            });
+        }
+        if foreign_keys.len() > super::catalog::MAX_SQL_FOREIGN_KEYS {
+            return Err(SqlError::Bounds(format!(
+                "FOREIGN KEY constraint count exceeds maximum ({})",
+                super::catalog::MAX_SQL_FOREIGN_KEYS
+            )));
+        }
+
         Ok(CreateTableStmt {
             if_not_exists,
             name,
             columns,
             primary_key_index,
             unique_constraints,
+            foreign_keys,
+        })
+    }
+
+    fn parse_references_tail(&mut self) -> Result<ParsedReferences, SqlError> {
+        let (ref_table, _) = self.expect_ident("referenced table name")?;
+        let ref_column = if matches!(self.peek().kind, TokenKind::LParen) {
+            self.advance();
+            if matches!(self.peek().kind, TokenKind::RParen) {
+                return Err(SqlError::Syntax {
+                    offset: self.peek().offset,
+                    message: "REFERENCES column list cannot be empty".into(),
+                });
+            }
+            let (col, _) = self.expect_ident("referenced column name")?;
+            if matches!(self.peek().kind, TokenKind::Comma) {
+                return Err(SqlError::Unsupported {
+                    feature: "composite FOREIGN KEY constraint".into(),
+                    offset: Some(self.peek().offset),
+                });
+            }
+            self.expect_kind(&TokenKind::RParen, "')'")?;
+            Some(col)
+        } else {
+            None
+        };
+
+        let mut on_delete = None;
+        let mut on_update = None;
+        loop {
+            if self.eat_kw("on") {
+                let is_delete = if self.eat_kw("delete") {
+                    true
+                } else if self.eat_kw("update") {
+                    false
+                } else {
+                    return Err(SqlError::Syntax {
+                        offset: self.peek().offset,
+                        message: "expected DELETE or UPDATE after ON".into(),
+                    });
+                };
+                let clause = if is_delete { "DELETE" } else { "UPDATE" };
+                let action_offset = self.peek().offset;
+                let action = if self.eat_kw("no") {
+                    self.expect_kw("action")?;
+                    ForeignKeyAction::NoAction
+                } else if self.eat_kw("restrict") {
+                    ForeignKeyAction::Restrict
+                } else if self.eat_kw("cascade") {
+                    return Err(SqlError::Unsupported {
+                        feature: format!("FOREIGN KEY ON {clause} CASCADE"),
+                        offset: Some(action_offset),
+                    });
+                } else if self.eat_kw("set") {
+                    if self.eat_kw("null") {
+                        return Err(SqlError::Unsupported {
+                            feature: format!("FOREIGN KEY ON {clause} SET NULL"),
+                            offset: Some(action_offset),
+                        });
+                    } else if self.eat_kw("default") {
+                        return Err(SqlError::Unsupported {
+                            feature: format!("FOREIGN KEY ON {clause} SET DEFAULT"),
+                            offset: Some(action_offset),
+                        });
+                    } else {
+                        return Err(SqlError::Syntax {
+                            offset: self.peek().offset,
+                            message: "expected NULL or DEFAULT after SET".into(),
+                        });
+                    }
+                } else {
+                    return Err(SqlError::Syntax {
+                        offset: action_offset,
+                        message: format!("expected referential action after ON {clause}"),
+                    });
+                };
+                let slot = if is_delete {
+                    &mut on_delete
+                } else {
+                    &mut on_update
+                };
+                if slot.is_some() {
+                    return Err(SqlError::Syntax {
+                        offset: action_offset,
+                        message: format!("duplicate ON {clause} clause in FOREIGN KEY"),
+                    });
+                }
+                *slot = Some(action);
+            } else if self.at_kw("match") {
+                return Err(SqlError::Unsupported {
+                    feature: "FOREIGN KEY MATCH clause".into(),
+                    offset: Some(self.peek().offset),
+                });
+            } else if self.at_kw("deferrable")
+                || self.at_kw("initially")
+                || (self.at_kw("not")
+                    && matches!(
+                        self.peek_n(1).map(|t| &t.kind),
+                        Some(TokenKind::Ident { text, quoted: false }) if text == "deferrable"
+                    ))
+            {
+                return Err(SqlError::Unsupported {
+                    feature: "DEFERRABLE foreign key constraints".into(),
+                    offset: Some(self.peek().offset),
+                });
+            } else {
+                break;
+            }
+        }
+
+        Ok(ParsedReferences {
+            ref_table,
+            ref_column,
+            on_delete,
+            on_update,
         })
     }
 

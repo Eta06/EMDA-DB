@@ -8,6 +8,7 @@
 mod catalog;
 mod ddl;
 mod exec;
+mod foreign_key;
 mod join;
 mod lexer;
 mod parser;

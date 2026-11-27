@@ -9,6 +9,7 @@
 //! same name finishes them; until then, creating a table of that name fails.
 use super::catalog::{self, ColumnDef, IndexState};
 use super::exec::{self, SqlCache};
+use super::foreign_key;
 use super::lexer::{Token, TokenKind};
 use super::value::{SqlError, SqlLimits, SqlOutcome, SqlType};
 use crate::document::DocumentDatabase;
@@ -102,6 +103,21 @@ fn too_large(error: &SqlError) -> bool {
     }
 }
 
+fn check_droppable(table: &catalog::TableDef, name: &str) -> Result<(), SqlError> {
+    if let Some(index) = table
+        .indexes
+        .iter()
+        .find(|index| index.state != IndexState::Ready)
+    {
+        return Err(SqlError::Constraint(format!(
+            "index '{}' on table '{name}' is still being built or dropped; \
+             run CREATE INDEX or DROP INDEX for it first",
+            index.name
+        )));
+    }
+    foreign_key::ensure_table_droppable(table)
+}
+
 pub(crate) fn execute(
     db: &DocumentDatabase<'_>,
     statement: &DropTable,
@@ -123,19 +139,9 @@ pub(crate) fn execute(
             }
             Err(error) => return Err(error),
         };
-        if let Some(index) = table
-            .def
-            .indexes
-            .iter()
-            .find(|index| index.state != IndexState::Ready)
-        {
-            return Err(SqlError::Constraint(format!(
-                "index '{}' on table '{name}' is still being built or dropped; \
-                 run CREATE INDEX or DROP INDEX for it first",
-                index.name
-            )));
-        }
+        check_droppable(&table.def, name)?;
         tx.drop_collection(name).map_err(exec::classify_io_error)?;
+        foreign_key::detach_parent_references(tx, &table.def, cache.tables())?;
         catalog::remove_table(tx, name)?;
         Ok(Plan::Done)
     });
@@ -144,7 +150,9 @@ pub(crate) fn execute(
         Err(error) if too_large(&error) => exec::run_tx(db, |tx| {
             // Re-check inside the new transaction; another statement may
             // have changed the table.
-            catalog::load_table_cached(tx, name, cache.tables())?;
+            let table = catalog::load_table_cached(tx, name, cache.tables())?;
+            check_droppable(&table.def, name)?;
+            foreign_key::detach_parent_references(tx, &table.def, cache.tables())?;
             catalog::remove_table(tx, name)?;
             tx.start_collection_drop(name)
                 .map_err(exec::classify_io_error)?;

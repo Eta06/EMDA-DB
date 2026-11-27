@@ -1,0 +1,1038 @@
+//! Foreign key DDL validation, catalog back-reference maintenance, and runtime enforcement.
+use super::catalog::{
+    self, CachedTable, ForeignKeyDef, ForeignKeyRef, IndexDef, IndexState, TableCache, TableDef,
+};
+use super::exec::classify_io_error;
+use super::parser::ForeignKeySpec;
+use super::value::{
+    MAX_SQL_INDEX_TEXT_BYTES, MAX_SQL_TEXT_PK_BYTES, SqlError, SqlLimits, SqlType, SqlValue,
+    encode_i64_pk_bytes,
+};
+use crate::MAX_SCAN_ENTRIES;
+use crate::document::flat::FlatScalar;
+use crate::document::{DocumentTransaction, IndexQuery, IndexValue, StoredDocument};
+use serde_json::{Map, Value};
+use std::collections::{HashMap, HashSet};
+use std::io;
+use std::sync::Arc;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum FkKey {
+    Integer(i64),
+    Text(String),
+    Boolean(bool),
+}
+
+enum FkKeySet {
+    Integer(HashSet<i64>),
+    Text(HashSet<String>),
+    Boolean(HashSet<bool>),
+}
+
+impl FkKeySet {
+    fn new(col_type: SqlType) -> Result<Self, SqlError> {
+        match col_type {
+            SqlType::Integer => Ok(Self::Integer(HashSet::new())),
+            SqlType::Text { .. } => Ok(Self::Text(HashSet::new())),
+            SqlType::Boolean => Ok(Self::Boolean(HashSet::new())),
+            SqlType::Real => Err(SqlError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "foreign key column cannot have type REAL",
+            ))),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Integer(s) => s.is_empty(),
+            Self::Text(s) => s.is_empty(),
+            Self::Boolean(s) => s.is_empty(),
+        }
+    }
+
+    fn insert(&mut self, key: FkKey) -> Result<(), SqlError> {
+        match (self, key) {
+            (Self::Integer(set), FkKey::Integer(n)) => {
+                set.insert(n);
+                Ok(())
+            }
+            (Self::Text(set), FkKey::Text(t)) => {
+                set.insert(t);
+                Ok(())
+            }
+            (Self::Boolean(set), FkKey::Boolean(b)) => {
+                set.insert(b);
+                Ok(())
+            }
+            _ => Err(SqlError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "mismatched foreign key value type",
+            ))),
+        }
+    }
+
+    fn to_vec(&self) -> Vec<FkKey> {
+        match self {
+            Self::Integer(set) => set.iter().copied().map(FkKey::Integer).collect(),
+            Self::Text(set) => set.iter().cloned().map(FkKey::Text).collect(),
+            Self::Boolean(set) => set.iter().copied().map(FkKey::Boolean).collect(),
+        }
+    }
+}
+
+pub(crate) struct PreparedCreateTableFks {
+    pub(crate) foreign_keys: Vec<ForeignKeyDef>,
+    pub(crate) self_referenced_by: Vec<ForeignKeyRef>,
+    pub(crate) parent_updates: Vec<(Vec<u8>, TableDef)>,
+}
+
+/// Validates declared foreign keys for a new table and prepares both the child's
+/// resolved `ForeignKeyDef`s and the parent `TableDef` back-reference updates.
+pub(crate) fn prepare_create_table_foreign_keys(
+    tx: &DocumentTransaction<'_, '_>,
+    child_name: &str,
+    child_columns: &[catalog::ColumnDef],
+    child_pk_index: usize,
+    child_indexes: &[IndexDef],
+    specs: &[ForeignKeySpec],
+    cache: &TableCache,
+) -> Result<PreparedCreateTableFks, SqlError> {
+    if specs.is_empty() {
+        return Ok(PreparedCreateTableFks {
+            foreign_keys: Vec::new(),
+            self_referenced_by: Vec::new(),
+            parent_updates: Vec::new(),
+        });
+    }
+
+    let mut foreign_keys: Vec<ForeignKeyDef> = Vec::with_capacity(specs.len());
+    let mut self_referenced_by: Vec<ForeignKeyRef> = Vec::new();
+    let mut parent_map: HashMap<String, (Vec<u8>, TableDef)> = HashMap::new();
+
+    for spec in specs {
+        let child_col = &child_columns[spec.column];
+        if spec.ref_table == child_name {
+            let ref_col_idx = match &spec.ref_column {
+                Some(name) => child_columns
+                    .iter()
+                    .position(|c| c.name == *name)
+                    .ok_or_else(|| SqlError::NoSuchColumn {
+                        table: child_name.to_owned(),
+                        column: name.clone(),
+                    })?,
+                None => child_pk_index,
+            };
+            validate_fk_target(
+                child_name,
+                child_col,
+                child_name,
+                &child_columns[ref_col_idx],
+                ref_col_idx == child_pk_index,
+                child_indexes,
+                ref_col_idx,
+            )?;
+            let ref_col_name = child_columns[ref_col_idx].name.clone();
+            let fk_def = ForeignKeyDef {
+                column: spec.column,
+                ref_table: spec.ref_table.clone(),
+                ref_column: ref_col_name.clone(),
+                on_delete: spec.on_delete,
+                on_update: spec.on_update,
+            };
+            if !foreign_keys.iter().any(|existing| {
+                existing.column == fk_def.column
+                    && existing.ref_table == fk_def.ref_table
+                    && existing.ref_column == fk_def.ref_column
+            }) {
+                foreign_keys.push(fk_def);
+            }
+            let back_ref = ForeignKeyRef {
+                child_table: child_name.to_owned(),
+                child_column: child_col.name.clone(),
+                ref_column: ref_col_name,
+            };
+            if !self_referenced_by.contains(&back_ref) {
+                self_referenced_by.push(back_ref);
+            }
+        } else {
+            if !parent_map.contains_key(&spec.ref_table) {
+                let cached_parent = catalog::load_table_cached(tx, &spec.ref_table, cache)?;
+                parent_map.insert(
+                    spec.ref_table.clone(),
+                    (
+                        cached_parent.catalog_key.clone(),
+                        TableDef::clone(&cached_parent.def),
+                    ),
+                );
+            }
+            let (_, parent_def) = parent_map
+                .get_mut(&spec.ref_table)
+                .expect("parent loaded above");
+            let ref_col_idx = match &spec.ref_column {
+                Some(name) => {
+                    parent_def
+                        .column_index(name)
+                        .ok_or_else(|| SqlError::NoSuchColumn {
+                            table: parent_def.name.clone(),
+                            column: name.clone(),
+                        })?
+                }
+                None => parent_def.primary_key_index,
+            };
+            validate_fk_target(
+                child_name,
+                child_col,
+                &parent_def.name,
+                &parent_def.columns[ref_col_idx],
+                ref_col_idx == parent_def.primary_key_index,
+                &parent_def.indexes,
+                ref_col_idx,
+            )?;
+            let ref_col_name = parent_def.columns[ref_col_idx].name.clone();
+            let fk_def = ForeignKeyDef {
+                column: spec.column,
+                ref_table: spec.ref_table.clone(),
+                ref_column: ref_col_name.clone(),
+                on_delete: spec.on_delete,
+                on_update: spec.on_update,
+            };
+            if !foreign_keys.iter().any(|existing| {
+                existing.column == fk_def.column
+                    && existing.ref_table == fk_def.ref_table
+                    && existing.ref_column == fk_def.ref_column
+            }) {
+                foreign_keys.push(fk_def);
+            }
+            let back_ref = ForeignKeyRef {
+                child_table: child_name.to_owned(),
+                child_column: child_col.name.clone(),
+                ref_column: ref_col_name,
+            };
+            if !parent_def.referenced_by.contains(&back_ref) {
+                parent_def.referenced_by.push(back_ref);
+            }
+        }
+    }
+
+    let mut parent_updates: Vec<(Vec<u8>, TableDef)> = parent_map.into_values().collect();
+    parent_updates.sort_by(|a, b| a.1.name.cmp(&b.1.name));
+
+    Ok(PreparedCreateTableFks {
+        foreign_keys,
+        self_referenced_by,
+        parent_updates,
+    })
+}
+
+fn validate_fk_target(
+    child_table: &str,
+    child_col: &catalog::ColumnDef,
+    parent_table: &str,
+    parent_col: &catalog::ColumnDef,
+    is_parent_pk: bool,
+    parent_indexes: &[IndexDef],
+    parent_col_idx: usize,
+) -> Result<(), SqlError> {
+    let has_unique_index = is_parent_pk
+        || parent_indexes.iter().any(|idx| {
+            idx.unique
+                && idx.state == IndexState::Ready
+                && idx.columns.as_slice() == [parent_col_idx]
+        });
+    if !has_unique_index {
+        return Err(SqlError::Constraint(format!(
+            "foreign key target '{parent_table}.{}' must be PRIMARY KEY or have a Ready UNIQUE single-column index",
+            parent_col.name
+        )));
+    }
+    if !child_col.col_type.matches_base(parent_col.col_type) {
+        return Err(SqlError::Type(format!(
+            "foreign key column '{child_table}.{}' ({}) is incompatible with referenced column '{parent_table}.{}' ({})",
+            child_col.name,
+            child_col.col_type.display_name(),
+            parent_col.name,
+            parent_col.col_type.display_name()
+        )));
+    }
+    Ok(())
+}
+
+/// Refuses `DROP TABLE` if any other table holds a foreign key referencing this table.
+pub(crate) fn ensure_table_droppable(table: &TableDef) -> Result<(), SqlError> {
+    if let Some(fk_ref) = table
+        .referenced_by
+        .iter()
+        .find(|r| r.child_table != table.name)
+    {
+        return Err(SqlError::Constraint(format!(
+            "cannot drop table '{}': referenced by foreign key '{}.{}'",
+            table.name, fk_ref.child_table, fk_ref.child_column
+        )));
+    }
+    Ok(())
+}
+
+/// Removes back-references from all external parent tables when dropping `child`.
+pub(crate) fn detach_parent_references(
+    tx: &mut DocumentTransaction<'_, '_>,
+    child: &TableDef,
+    cache: &TableCache,
+) -> Result<(), SqlError> {
+    if child.foreign_keys.is_empty() {
+        return Ok(());
+    }
+    let mut parent_names: Vec<&str> = child
+        .foreign_keys
+        .iter()
+        .map(|fk| fk.ref_table.as_str())
+        .filter(|name| *name != child.name)
+        .collect();
+    parent_names.sort_unstable();
+    parent_names.dedup();
+
+    for parent_name in parent_names {
+        let cached_parent = match catalog::load_table_cached(tx, parent_name, cache) {
+            Ok(p) => p,
+            Err(SqlError::NoSuchTable(_)) => continue,
+            Err(err) => return Err(err),
+        };
+        let mut updated = TableDef::clone(&cached_parent.def);
+        let prev_len = updated.referenced_by.len();
+        updated
+            .referenced_by
+            .retain(|r| r.child_table != child.name);
+        if updated.referenced_by.len() != prev_len {
+            updated.validate()?;
+            catalog::save_table_def(tx, &cached_parent.catalog_key, &updated)?;
+        }
+    }
+    Ok(())
+}
+
+/// Refuses dropping a single-column UNIQUE index if a foreign key depends on it
+/// and no other Ready UNIQUE single-column index (or PRIMARY KEY) covers that column.
+pub(crate) fn ensure_index_not_fk_target(
+    table: &TableDef,
+    index: &IndexDef,
+) -> Result<(), SqlError> {
+    if !index.unique || index.columns.len() != 1 || table.referenced_by.is_empty() {
+        return Ok(());
+    }
+    let col_idx = index.columns[0];
+    if col_idx == table.primary_key_index {
+        return Ok(());
+    }
+    let col_name = &table.columns[col_idx].name;
+    let referenced = table
+        .referenced_by
+        .iter()
+        .any(|r| r.ref_column == *col_name);
+    if !referenced {
+        return Ok(());
+    }
+    let has_other_unique = table.indexes.iter().any(|other| {
+        other.name != index.name
+            && other.unique
+            && other.state == IndexState::Ready
+            && other.columns.as_slice() == [col_idx]
+    });
+    if !has_other_unique {
+        return Err(SqlError::Constraint(format!(
+            "cannot drop UNIQUE index '{}' on '{}.{}': referenced by a FOREIGN KEY",
+            index.name, table.name, col_name
+        )));
+    }
+    Ok(())
+}
+
+/// Verifies all foreign key constraints after staging one or more inserted rows.
+pub(crate) fn check_inserted_docs(
+    tx: &DocumentTransaction<'_, '_>,
+    table: &TableDef,
+    docs: &[&Value],
+    cache: &TableCache,
+) -> Result<(), SqlError> {
+    if table.foreign_keys.is_empty() || docs.is_empty() {
+        return Ok(());
+    }
+    let mut parent_cache: HashMap<&str, Arc<CachedTable>> = HashMap::new();
+    for fk in &table.foreign_keys {
+        let child_col = &table.columns[fk.column];
+        let mut keys = FkKeySet::new(child_col.col_type)?;
+        for doc in docs {
+            let Value::Object(obj) = doc else {
+                return Err(SqlError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "inserted row is not a JSON object",
+                )));
+            };
+            if let Some(key) = extract_json_fk_key(obj, child_col)? {
+                keys.insert(key)?;
+            }
+        }
+        if keys.is_empty() {
+            continue;
+        }
+        verify_parent_keys_exist(
+            tx,
+            table,
+            child_col,
+            &fk.ref_table,
+            &fk.ref_column,
+            &keys,
+            cache,
+            &mut parent_cache,
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn check_inserted_prepared_rows(
+    tx: &DocumentTransaction<'_, '_>,
+    table: &TableDef,
+    rows: &[(String, Value)],
+    cache: &TableCache,
+) -> Result<(), SqlError> {
+    if table.foreign_keys.is_empty() || rows.is_empty() {
+        return Ok(());
+    }
+    let doc_refs: Vec<&Value> = rows.iter().map(|(_, doc)| doc).collect();
+    check_inserted_docs(tx, table, &doc_refs, cache)
+}
+
+/// Tracks parent-key deletions during `DELETE` so they can be verified at statement end.
+pub(crate) struct PendingDeleteFkChecks {
+    /// `(ref_col_idx, FkKeySet)` for each distinct referenced column of `table`.
+    deleted_by_col: Vec<(usize, FkKeySet)>,
+}
+
+impl PendingDeleteFkChecks {
+    pub(crate) fn new(table: &TableDef) -> Result<Self, SqlError> {
+        if table.referenced_by.is_empty() {
+            return Ok(Self {
+                deleted_by_col: Vec::new(),
+            });
+        }
+        let mut col_indices: Vec<usize> = table
+            .referenced_by
+            .iter()
+            .filter_map(|r| table.column_index(&r.ref_column))
+            .collect();
+        col_indices.sort_unstable();
+        col_indices.dedup();
+        let mut deleted_by_col = Vec::with_capacity(col_indices.len());
+        for col_idx in col_indices {
+            deleted_by_col.push((col_idx, FkKeySet::new(table.columns[col_idx].col_type)?));
+        }
+        Ok(Self { deleted_by_col })
+    }
+
+    pub(crate) fn record_row(
+        &mut self,
+        table: &TableDef,
+        obj: &Map<String, Value>,
+    ) -> Result<(), SqlError> {
+        for (col_idx, set) in &mut self.deleted_by_col {
+            if let Some(key) = extract_json_fk_key(obj, &table.columns[*col_idx])? {
+                set.insert(key)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn verify(
+        self,
+        tx: &DocumentTransaction<'_, '_>,
+        table: &TableDef,
+        limits: &SqlLimits,
+        cache: &TableCache,
+    ) -> Result<(), SqlError> {
+        if self.deleted_by_col.is_empty() {
+            return Ok(());
+        }
+        let mut child_cache: HashMap<String, Arc<CachedTable>> = HashMap::new();
+        let mut visited = 0usize;
+        for (ref_col_idx, keys) in &self.deleted_by_col {
+            if keys.is_empty() {
+                continue;
+            }
+            let ref_col_name = &table.columns[*ref_col_idx].name;
+            for fk_ref in &table.referenced_by {
+                if fk_ref.ref_column != *ref_col_name {
+                    continue;
+                }
+                ensure_no_child_references(
+                    tx,
+                    table,
+                    ref_col_name,
+                    fk_ref,
+                    keys,
+                    limits,
+                    cache,
+                    &mut child_cache,
+                    &mut visited,
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Tracks both child FK assignments and parent unique-key removals during `UPDATE`.
+pub(crate) struct PendingUpdateFkChecks {
+    /// For each FK in `table.foreign_keys` whose column is assigned: `(fk_idx, FkKeySet of new values)`.
+    child_checks: Vec<(usize, FkKeySet)>,
+    /// For each referenced column of `table` that is assigned: `(col_idx, FkKeySet of removed old values)`.
+    parent_removed: Vec<(usize, FkKeySet)>,
+}
+
+impl PendingUpdateFkChecks {
+    pub(crate) fn new(table: &TableDef, assigned_cols: &[usize]) -> Result<Self, SqlError> {
+        let mut child_checks = Vec::new();
+        for (fk_idx, fk) in table.foreign_keys.iter().enumerate() {
+            if assigned_cols.contains(&fk.column) {
+                child_checks.push((fk_idx, FkKeySet::new(table.columns[fk.column].col_type)?));
+            }
+        }
+
+        let mut parent_cols: Vec<usize> = table
+            .referenced_by
+            .iter()
+            .filter_map(|r| table.column_index(&r.ref_column))
+            .filter(|col_idx| assigned_cols.contains(col_idx))
+            .collect();
+        parent_cols.sort_unstable();
+        parent_cols.dedup();
+        let mut parent_removed = Vec::with_capacity(parent_cols.len());
+        for col_idx in parent_cols {
+            parent_removed.push((col_idx, FkKeySet::new(table.columns[col_idx].col_type)?));
+        }
+
+        Ok(Self {
+            child_checks,
+            parent_removed,
+        })
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        !self.child_checks.is_empty() || !self.parent_removed.is_empty()
+    }
+
+    pub(crate) fn record_row(
+        &mut self,
+        table: &TableDef,
+        old_obj: &Map<String, Value>,
+        updates: &[(&catalog::ColumnDef, SqlValue)],
+    ) -> Result<(), SqlError> {
+        if !self.is_active() {
+            return Ok(());
+        }
+        for (fk_idx, set) in &mut self.child_checks {
+            let col_idx = table.foreign_keys[*fk_idx].column;
+            let col_name = &table.columns[col_idx].name;
+            if let Some((_, new_val)) = updates.iter().find(|(col, _)| col.name == *col_name) {
+                if let Some(key) = sql_value_to_fk_key(new_val)? {
+                    set.insert(key)?;
+                }
+            }
+        }
+        for (col_idx, old_set) in &mut self.parent_removed {
+            let col = &table.columns[*col_idx];
+            let Some(old_key) = extract_json_fk_key(old_obj, col)? else {
+                continue;
+            };
+            let new_key = updates
+                .iter()
+                .find(|(c, _)| c.name == col.name)
+                .map(|(_, v)| sql_value_to_fk_key(v))
+                .transpose()?
+                .flatten();
+            if new_key.as_ref() != Some(&old_key) {
+                old_set.insert(old_key)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn verify(
+        self,
+        tx: &DocumentTransaction<'_, '_>,
+        table: &TableDef,
+        limits: &SqlLimits,
+        cache: &TableCache,
+    ) -> Result<(), SqlError> {
+        if !self.is_active() {
+            return Ok(());
+        }
+        if !self.child_checks.is_empty() {
+            let mut parent_cache: HashMap<&str, Arc<CachedTable>> = HashMap::new();
+            for (fk_idx, keys) in &self.child_checks {
+                if keys.is_empty() {
+                    continue;
+                }
+                let fk = &table.foreign_keys[*fk_idx];
+                let child_col = &table.columns[fk.column];
+                verify_parent_keys_exist(
+                    tx,
+                    table,
+                    child_col,
+                    &fk.ref_table,
+                    &fk.ref_column,
+                    keys,
+                    cache,
+                    &mut parent_cache,
+                )?;
+            }
+        }
+        if !self.parent_removed.is_empty() {
+            let mut child_cache: HashMap<String, Arc<CachedTable>> = HashMap::new();
+            let mut visited = 0usize;
+            for (ref_col_idx, old_keys) in &self.parent_removed {
+                if old_keys.is_empty() {
+                    continue;
+                }
+                // Filter out keys that still exist on another row in `table` after all updates.
+                let col_type = table.columns[*ref_col_idx].col_type;
+                let mut missing_keys = FkKeySet::new(col_type)?;
+                for key in old_keys.to_vec() {
+                    if !parent_has_key(tx, table, *ref_col_idx, &key)? {
+                        missing_keys.insert(key)?;
+                    }
+                }
+                if missing_keys.is_empty() {
+                    continue;
+                }
+                let ref_col_name = &table.columns[*ref_col_idx].name;
+                for fk_ref in &table.referenced_by {
+                    if fk_ref.ref_column != *ref_col_name {
+                        continue;
+                    }
+                    ensure_no_child_references(
+                        tx,
+                        table,
+                        ref_col_name,
+                        fk_ref,
+                        &missing_keys,
+                        limits,
+                        cache,
+                        &mut child_cache,
+                        &mut visited,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_parent_keys_exist<'a>(
+    tx: &DocumentTransaction<'_, '_>,
+    child_table: &TableDef,
+    child_col: &catalog::ColumnDef,
+    ref_table_name: &'a str,
+    ref_col_name: &str,
+    keys: &FkKeySet,
+    cache: &TableCache,
+    parent_cache: &mut HashMap<&'a str, Arc<CachedTable>>,
+) -> Result<(), SqlError> {
+    let parent = if let Some(cached) = parent_cache.get(ref_table_name) {
+        Arc::clone(cached)
+    } else {
+        let loaded = catalog::load_table_cached(tx, ref_table_name, cache)?;
+        parent_cache.insert(ref_table_name, Arc::clone(&loaded));
+        loaded
+    };
+    let parent_def = &parent.def;
+    let ref_col_idx = parent_def.column_index(ref_col_name).ok_or_else(|| {
+        SqlError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "foreign key target column '{}.{}' missing from catalog",
+                parent_def.name, ref_col_name
+            ),
+        ))
+    })?;
+    for key in keys.to_vec() {
+        if !parent_has_key(tx, parent_def, ref_col_idx, &key)? {
+            return Err(SqlError::Constraint(format!(
+                "FOREIGN KEY constraint failed on '{}.{}' referencing '{}.{}'",
+                child_table.name, child_col.name, parent_def.name, ref_col_name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn parent_has_key(
+    tx: &DocumentTransaction<'_, '_>,
+    parent: &TableDef,
+    ref_col_idx: usize,
+    key: &FkKey,
+) -> Result<bool, SqlError> {
+    if ref_col_idx == parent.primary_key_index {
+        let pk_type = parent.columns[ref_col_idx].col_type;
+        match (pk_type, key) {
+            (SqlType::Integer, FkKey::Integer(n)) => {
+                let mut buf = [0u8; 18];
+                encode_i64_pk_bytes(*n, &mut buf);
+                let doc_id = std::str::from_utf8(&buf).expect("ASCII hex PK");
+                Ok(tx
+                    .get(&parent.name, doc_id)
+                    .map_err(classify_io_error)?
+                    .is_some())
+            }
+            (SqlType::Text { .. }, FkKey::Text(s)) => {
+                if s.len() > MAX_SQL_TEXT_PK_BYTES {
+                    return Ok(false);
+                }
+                let mut buf = [0u8; 256];
+                buf[0] = b't';
+                buf[1] = b':';
+                buf[2..2 + s.len()].copy_from_slice(s.as_bytes());
+                let doc_id = std::str::from_utf8(&buf[..2 + s.len()]).expect("valid UTF-8 PK");
+                Ok(tx
+                    .get(&parent.name, doc_id)
+                    .map_err(classify_io_error)?
+                    .is_some())
+            }
+            _ => Ok(false),
+        }
+    } else {
+        let idx_def = parent
+            .indexes
+            .iter()
+            .find(|i| {
+                i.unique && i.state == IndexState::Ready && i.columns.as_slice() == [ref_col_idx]
+            })
+            .ok_or_else(|| {
+                SqlError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "referenced column '{}.{}' lacks a Ready UNIQUE index",
+                        parent.name, parent.columns[ref_col_idx].name
+                    ),
+                ))
+            })?;
+        let Some(index_val) = fk_key_to_index_value(key) else {
+            return Ok(false);
+        };
+        let page = tx
+            .query_index(
+                &parent.name,
+                &idx_def.name,
+                &IndexQuery {
+                    equal: vec![index_val],
+                    lower: None,
+                    upper: None,
+                    after: None,
+                    limit: 1,
+                },
+            )
+            .map_err(classify_io_error)?;
+        Ok(!page.documents.is_empty())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ensure_no_child_references(
+    tx: &DocumentTransaction<'_, '_>,
+    parent: &TableDef,
+    ref_col_name: &str,
+    fk_ref: &ForeignKeyRef,
+    keys: &FkKeySet,
+    limits: &SqlLimits,
+    cache: &TableCache,
+    child_cache: &mut HashMap<String, Arc<CachedTable>>,
+    visited: &mut usize,
+) -> Result<(), SqlError> {
+    let child = if let Some(cached) = child_cache.get(&fk_ref.child_table) {
+        Arc::clone(cached)
+    } else {
+        let loaded = catalog::load_table_cached(tx, &fk_ref.child_table, cache)?;
+        child_cache.insert(fk_ref.child_table.clone(), Arc::clone(&loaded));
+        loaded
+    };
+    let child_def = &child.def;
+    let child_col_idx = child_def
+        .column_index(&fk_ref.child_column)
+        .ok_or_else(|| {
+            SqlError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "foreign key child column '{}.{}' missing from catalog",
+                    child_def.name, fk_ref.child_column
+                ),
+            ))
+        })?;
+
+    if child_has_any_key(tx, child_def, child_col_idx, keys, limits, visited)? {
+        return Err(SqlError::Constraint(format!(
+            "FOREIGN KEY constraint failed: '{}.{}' is referenced by '{}.{}'",
+            parent.name, ref_col_name, child_def.name, fk_ref.child_column
+        )));
+    }
+    Ok(())
+}
+
+fn child_has_any_key(
+    tx: &DocumentTransaction<'_, '_>,
+    child: &TableDef,
+    child_col_idx: usize,
+    keys: &FkKeySet,
+    limits: &SqlLimits,
+    visited: &mut usize,
+) -> Result<bool, SqlError> {
+    // 1. Child column is PRIMARY KEY -> O(1) point lookups.
+    if child_col_idx == child.primary_key_index {
+        let pk_type = child.columns[child_col_idx].col_type;
+        for key in keys.to_vec() {
+            match (pk_type, &key) {
+                (SqlType::Integer, FkKey::Integer(n)) => {
+                    let mut buf = [0u8; 18];
+                    encode_i64_pk_bytes(*n, &mut buf);
+                    let doc_id = std::str::from_utf8(&buf).expect("ASCII hex PK");
+                    if tx
+                        .get(&child.name, doc_id)
+                        .map_err(classify_io_error)?
+                        .is_some()
+                    {
+                        return Ok(true);
+                    }
+                }
+                (SqlType::Text { .. }, FkKey::Text(s)) => {
+                    if s.len() > MAX_SQL_TEXT_PK_BYTES {
+                        continue;
+                    }
+                    let mut buf = [0u8; 256];
+                    buf[0] = b't';
+                    buf[1] = b':';
+                    buf[2..2 + s.len()].copy_from_slice(s.as_bytes());
+                    let doc_id = std::str::from_utf8(&buf[..2 + s.len()]).expect("valid UTF-8 PK");
+                    if tx
+                        .get(&child.name, doc_id)
+                        .map_err(classify_io_error)?
+                        .is_some()
+                    {
+                        return Ok(true);
+                    }
+                }
+                _ => {}
+            }
+        }
+        return Ok(false);
+    }
+
+    // 2. Ready child index whose leading column is `child_col_idx` and all trailing
+    //    columns are NOT NULL (otherwise rows with NULL in a trailing column are omitted
+    //    from the document index and would be missed).
+    let usable_index = child
+        .indexes
+        .iter()
+        .filter(|idx| {
+            idx.state == IndexState::Ready
+                && idx.columns.first() == Some(&child_col_idx)
+                && idx.columns[1..]
+                    .iter()
+                    .all(|&trailing| child.columns[trailing].not_null)
+        })
+        .min_by_key(|idx| (idx.columns.len(), !idx.unique));
+
+    if let Some(idx_def) = usable_index {
+        for key in keys.to_vec() {
+            let Some(index_val) = fk_key_to_index_value(&key) else {
+                // Indexed columns never store strings > MAX_SQL_INDEX_TEXT_BYTES.
+                continue;
+            };
+            let page = tx
+                .query_index(
+                    &child.name,
+                    &idx_def.name,
+                    &IndexQuery {
+                        equal: vec![index_val],
+                        lower: None,
+                        upper: None,
+                        after: None,
+                        limit: 1,
+                    },
+                )
+                .map_err(classify_io_error)?;
+            if !page.documents.is_empty() {
+                return Ok(true);
+            }
+        }
+        return Ok(false);
+    }
+
+    // 3. No usable index -> bounded scan subject to `limits.max_visited_rows`.
+    scan_child_for_keys(tx, child, child_col_idx, keys, limits, visited)
+}
+
+fn scan_child_for_keys(
+    tx: &DocumentTransaction<'_, '_>,
+    child: &TableDef,
+    child_col_idx: usize,
+    keys: &FkKeySet,
+    limits: &SqlLimits,
+    visited: &mut usize,
+) -> Result<bool, SqlError> {
+    let child_col = &child.columns[child_col_idx];
+    let mut after_id: Option<String> = None;
+
+    loop {
+        let remaining_visit = limits.max_visited_rows.saturating_sub(*visited);
+        let page_limit = remaining_visit.saturating_add(1).clamp(1, MAX_SCAN_ENTRIES);
+        let mut outcome: Result<bool, SqlError> = Ok(false);
+        let mut visit_fn = |schema: &crate::CollectionSchema, _id: &str, bytes: &[u8]| {
+            *visited += 1;
+            if *visited > limits.max_visited_rows {
+                outcome = Err(SqlError::Bounds(format!(
+                    "visited row count exceeds max_visited_rows ({})",
+                    limits.max_visited_rows
+                )));
+                return false;
+            }
+            match check_stored_row_matches_fk(bytes, schema, child_col, keys) {
+                Ok(true) => {
+                    outcome = Ok(true);
+                    false
+                }
+                Ok(false) => true,
+                Err(err) => {
+                    outcome = Err(err);
+                    false
+                }
+            }
+        };
+        let (count, last_id) = tx
+            .visit_stored_documents(&child.name, after_id.as_deref(), page_limit, &mut visit_fn)
+            .map_err(classify_io_error)?;
+        if outcome? {
+            return Ok(true);
+        }
+        if count == 0 {
+            return Ok(false);
+        }
+        after_id = last_id;
+    }
+}
+
+fn check_stored_row_matches_fk(
+    bytes: &[u8],
+    schema: &crate::CollectionSchema,
+    col: &catalog::ColumnDef,
+    keys: &FkKeySet,
+) -> Result<bool, SqlError> {
+    let invalid = |msg: String| SqlError::Io(io::Error::new(io::ErrorKind::InvalidData, msg));
+    let decoded = DocumentTransaction::decode_stored(bytes, schema).map_err(classify_io_error)?;
+    match decoded {
+        StoredDocument::Flat(doc) => match doc.get(&col.name) {
+            None | Some(FlatScalar::Null) => Ok(false),
+            Some(scalar) => match (col.col_type, keys) {
+                (SqlType::Integer, FkKeySet::Integer(set)) => {
+                    let n = scalar.as_i64().ok_or_else(|| {
+                        invalid(format!("stored column '{}' is not an INTEGER", col.name))
+                    })?;
+                    Ok(set.contains(&n))
+                }
+                (SqlType::Text { .. }, FkKeySet::Text(set)) => match scalar {
+                    FlatScalar::Str(txt) => Ok(set.contains(txt)),
+                    _ => Err(invalid(format!("stored column '{}' is not TEXT", col.name))),
+                },
+                (SqlType::Boolean, FkKeySet::Boolean(set)) => match scalar {
+                    FlatScalar::Bool(b) => Ok(set.contains(&b)),
+                    _ => Err(invalid(format!(
+                        "stored column '{}' is not BOOLEAN",
+                        col.name
+                    ))),
+                },
+                _ => Err(invalid(format!(
+                    "mismatched foreign key type on column '{}'",
+                    col.name
+                ))),
+            },
+        },
+        StoredDocument::Full(Value::Object(obj)) => match obj.get(&col.name) {
+            None | Some(Value::Null) => Ok(false),
+            Some(val) => match (col.col_type, keys) {
+                (SqlType::Integer, FkKeySet::Integer(set)) => {
+                    let n = val.as_i64().ok_or_else(|| {
+                        invalid(format!("stored column '{}' is not an INTEGER", col.name))
+                    })?;
+                    Ok(set.contains(&n))
+                }
+                (SqlType::Text { .. }, FkKeySet::Text(set)) => {
+                    let s = val.as_str().ok_or_else(|| {
+                        invalid(format!("stored column '{}' is not TEXT", col.name))
+                    })?;
+                    Ok(set.contains(s))
+                }
+                (SqlType::Boolean, FkKeySet::Boolean(set)) => {
+                    let b = val.as_bool().ok_or_else(|| {
+                        invalid(format!("stored column '{}' is not BOOLEAN", col.name))
+                    })?;
+                    Ok(set.contains(&b))
+                }
+                _ => Err(invalid(format!(
+                    "mismatched foreign key type on column '{}'",
+                    col.name
+                ))),
+            },
+        },
+        StoredDocument::Full(_) => Err(invalid("stored row is not a JSON object".into())),
+    }
+}
+
+fn fk_key_to_index_value(key: &FkKey) -> Option<IndexValue> {
+    match key {
+        FkKey::Integer(n) => Some(IndexValue::Integer(*n)),
+        FkKey::Text(s) => {
+            if s.len() > MAX_SQL_INDEX_TEXT_BYTES {
+                None
+            } else {
+                Some(IndexValue::String(s.clone()))
+            }
+        }
+        FkKey::Boolean(b) => Some(IndexValue::Boolean(*b)),
+    }
+}
+
+fn extract_json_fk_key(
+    obj: &Map<String, Value>,
+    col: &catalog::ColumnDef,
+) -> Result<Option<FkKey>, SqlError> {
+    let invalid = |msg: String| SqlError::Io(io::Error::new(io::ErrorKind::InvalidData, msg));
+    match obj.get(&col.name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => match col.col_type {
+            SqlType::Integer => Ok(Some(FkKey::Integer(v.as_i64().ok_or_else(|| {
+                invalid(format!("stored column '{}' is not an INTEGER", col.name))
+            })?))),
+            SqlType::Text { .. } => Ok(Some(FkKey::Text(
+                v.as_str()
+                    .ok_or_else(|| invalid(format!("stored column '{}' is not TEXT", col.name)))?
+                    .to_owned(),
+            ))),
+            SqlType::Boolean => Ok(Some(FkKey::Boolean(v.as_bool().ok_or_else(|| {
+                invalid(format!("stored column '{}' is not BOOLEAN", col.name))
+            })?))),
+            SqlType::Real => Err(invalid(format!(
+                "foreign key column '{}' cannot have type REAL",
+                col.name
+            ))),
+        },
+    }
+}
+
+fn sql_value_to_fk_key(val: &SqlValue) -> Result<Option<FkKey>, SqlError> {
+    match val {
+        SqlValue::Null => Ok(None),
+        SqlValue::Integer(n) => Ok(Some(FkKey::Integer(*n))),
+        SqlValue::Text(s) => Ok(Some(FkKey::Text(s.clone()))),
+        SqlValue::Boolean(b) => Ok(Some(FkKey::Boolean(*b))),
+        SqlValue::Real(_) => Err(SqlError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "foreign key value cannot be REAL",
+        ))),
+    }
+}
