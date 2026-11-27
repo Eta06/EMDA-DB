@@ -54,6 +54,7 @@ fn assert_documented_error(err: &SqlError) {
         | SqlError::Constraint(_)
         | SqlError::NoSuchTable(_)
         | SqlError::NoSuchColumn { .. }
+        | SqlError::NoSuchIndex { .. }
         | SqlError::TableExists(_)
         | SqlError::IndexExists(_)
         | SqlError::Bounds(_)
@@ -1714,6 +1715,25 @@ fn exec_create_unique_n_op(
     }
 }
 
+fn exec_drop_unique_n_op(db: &SqlDatabase<'_>, has_unique_n: &mut bool, cur: &mut ByteCursor<'_>) {
+    let if_exists = cur.next_or(0) & 1 != 0;
+    let sql = if if_exists {
+        "DROP INDEX IF EXISTS u_n ON m"
+    } else {
+        "DROP INDEX u_n ON m"
+    };
+    let res = db.execute(sql, &[]);
+    if *has_unique_n || if_exists {
+        assert_eq!(res.unwrap(), SqlOutcome::IndexDropped);
+        *has_unique_n = false;
+    } else {
+        assert!(matches!(res, Err(SqlError::NoSuchIndex { .. })));
+    }
+    if cur.next_or(0) & 1 != 0 {
+        let _ = db.execute("DROP INDEX IF EXISTS idx_n ON m", &[]);
+    }
+}
+
 fn fuzz_structured_model(root: &Path, data: &[u8]) -> Backend {
     let mut cur = ByteCursor::new(data);
     let flags = cur.next_or(0);
@@ -1765,7 +1785,7 @@ fn fuzz_structured_model(root: &Path, data: &[u8]) -> Backend {
         let Some(op) = cur.next() else {
             break;
         };
-        match op % 9 {
+        match op % 10 {
             0 | 1 => {
                 exec_insert_op(&backend.sql(), &mut model, &mut cur, text_pk, has_unique_n);
                 check_full_table(&backend.sql(), &model);
@@ -1788,6 +1808,9 @@ fn fuzz_structured_model(root: &Path, data: &[u8]) -> Backend {
             }
             7 => {
                 exec_create_unique_n_op(&backend.sql(), &model, &mut has_unique_n, &mut cur);
+            }
+            8 => {
+                exec_drop_unique_n_op(&backend.sql(), &mut has_unique_n, &mut cur);
             }
             _ => {
                 exec_error_probe(&backend.sql(), cur.next_or(0));

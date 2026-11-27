@@ -827,3 +827,167 @@ fn crash_verifier_rejects_missing_ack_partial_in_flight_and_future_state() {
     }
     assert!(verify_recovered_state(&swapped, &m_acked, &m_in_flight).is_err());
 }
+
+const ENV_INDEX_CRASH_UNIQUE: &str = "EMDA_SQL_INDEX_CRASH_UNIQUE";
+
+#[test]
+fn sql_index_build_crash_worker() {
+    if std::env::var(ENV_ROLE).ok().as_deref() != Some("index_worker") {
+        return;
+    }
+    let dir = PathBuf::from(std::env::var(ENV_DIR).expect("missing dir"));
+    let backend = BackendKind::from_str(&std::env::var(ENV_BACKEND).expect("missing backend"));
+    let unique = std::env::var(ENV_INDEX_CRASH_UNIQUE).ok().as_deref() == Some("1");
+    let opened = open_backend(&dir, backend);
+    let db = opened.sql();
+
+    let mut out = io::stdout();
+    out.write_all(b"READY\n").unwrap();
+    out.flush().unwrap();
+
+    let sql = if unique {
+        "CREATE UNIQUE INDEX idx_crash ON t (b)"
+    } else {
+        "CREATE INDEX idx_crash ON t (a)"
+    };
+    db.execute(sql, &[]).unwrap();
+    let _ = out.write_all(b"DONE\n");
+    let _ = out.flush();
+}
+
+fn run_index_build_crash_drill(kind: BackendKind) {
+    for (resume_via_create, unique) in [(true, false), (false, true)] {
+        let mut delay_ms = 25u64;
+        let mut hit_mid_build = false;
+
+        for attempt in 0..5 {
+            let dir = tempfile::tempdir().unwrap();
+            init_backend(dir.path(), kind);
+            {
+                let opened = open_backend(dir.path(), kind);
+                let db = opened.sql();
+                let total_rows = 4_000i64;
+                for chunk in (0..total_rows).collect::<Vec<_>>().chunks(250) {
+                    let placeholders = vec!["(?, ?, ?)"; chunk.len()].join(", ");
+                    let params: Vec<SqlValue> = chunk
+                        .iter()
+                        .flat_map(|&i| {
+                            [
+                                SqlValue::Integer(i),
+                                SqlValue::Integer(i % 50),
+                                SqlValue::Text(format!("u-{i}")),
+                            ]
+                        })
+                        .collect();
+                    db.execute(&format!("INSERT INTO t VALUES {placeholders}"), &params)
+                        .unwrap();
+                }
+            }
+
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "sql_index_build_crash_worker", "--nocapture"])
+                .env(ENV_ROLE, "index_worker")
+                .env(ENV_DIR, dir.path())
+                .env(ENV_BACKEND, kind.as_str())
+                .env(ENV_INDEX_CRASH_UNIQUE, if unique { "1" } else { "0" })
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+
+            let child_stdout = child.stdout.take().unwrap();
+            let mut reader = BufReader::new(child_stdout);
+            let mut line = String::new();
+            let mut saw_ready = false;
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        if line.trim_end() == "READY" {
+                            saw_ready = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if !saw_ready {
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "index worker failed to signal READY on {kind:?} attempt={attempt}: stderr={}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+
+            std::thread::sleep(Duration::from_millis(delay_ms));
+            let _ = child.kill();
+            let _ = child.wait();
+
+            let opened = open_backend(dir.path(), kind);
+            let db = opened.sql();
+
+            // Whether killed before build started, mid-build, or at completion,
+            // readers must return exact pre-index rows and never rely on an incomplete index.
+            let check_q = if unique {
+                "SELECT id FROM t WHERE b = 'u-123'"
+            } else {
+                "SELECT id FROM t WHERE a = 23 ORDER BY id"
+            };
+            assert_eq!(
+                db.execute(check_q, &[]).unwrap(),
+                db.execute_force_full_scan_for_test(check_q, &[]).unwrap()
+            );
+
+            let jobs = db.document_database().index_jobs("t").unwrap();
+            if !jobs.is_empty() {
+                hit_mid_build = true;
+                if resume_via_create {
+                    assert_eq!(
+                        db.execute("CREATE INDEX idx_crash ON t (a)", &[]).unwrap(),
+                        SqlOutcome::IndexCreated
+                    );
+                    assert!(db.document_database().index_jobs("t").unwrap().is_empty());
+                    assert_eq!(
+                        db.execute(check_q, &[]).unwrap(),
+                        db.execute_force_full_scan_for_test(check_q, &[]).unwrap()
+                    );
+                } else {
+                    assert_eq!(
+                        db.execute("DROP INDEX idx_crash ON t", &[]).unwrap(),
+                        SqlOutcome::IndexDropped
+                    );
+                    assert!(db.document_database().index_jobs("t").unwrap().is_empty());
+                    assert!(db.document_database().indexes("t").unwrap().is_empty());
+                    assert_eq!(
+                        db.execute(check_q, &[]).unwrap(),
+                        db.execute_force_full_scan_for_test(check_q, &[]).unwrap()
+                    );
+                }
+                break;
+            } else if db.document_database().indexes("t").unwrap().is_empty() {
+                // Killed before start_index_build committed; lengthen delay slightly next attempt.
+                delay_ms = delay_ms.saturating_mul(2);
+            } else {
+                // Finished before kill; shorten delay next attempt.
+                delay_ms = (delay_ms / 2).max(5);
+            }
+            if attempt == 4 && !hit_mid_build {
+                panic!(
+                    "failed to catch {kind:?} CREATE INDEX mid-build within 5 attempts \
+                     (unique={unique}, last delay_ms={delay_ms})"
+                );
+            }
+        }
+        assert!(hit_mid_build);
+    }
+}
+
+#[test]
+fn sql_index_build_crash_ordinary_store() {
+    run_index_build_crash_drill(BackendKind::Ordinary);
+}
+
+#[test]
+fn sql_index_build_crash_checkpoint_store() {
+    run_index_build_crash_drill(BackendKind::Checkpoint);
+}

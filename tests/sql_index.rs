@@ -354,10 +354,11 @@ fn populated_table_create_index_build_and_bounds() {
             );
         }
 
-        // Populated table exceeding 256-row one-shot build limit fails with Bounds and builds nothing.
+        // Populated table exceeding 256-row one-shot build limit succeeds via bounded
+        // online index build and matches full scan.
         db.execute("CREATE TABLE big (id INTEGER PRIMARY KEY, v INT)", &[])
             .unwrap();
-        for chunk in (0..257i64).collect::<Vec<_>>().chunks(100) {
+        for chunk in (0..300i64).collect::<Vec<_>>().chunks(100) {
             let placeholders = vec!["(?, ?)"; chunk.len()].join(", ");
             let params: Vec<SqlValue> = chunk
                 .iter()
@@ -366,11 +367,17 @@ fn populated_table_create_index_build_and_bounds() {
             db.execute(&format!("INSERT INTO big VALUES {placeholders}"), &params)
                 .unwrap();
         }
-        assert!(matches!(
-            db.execute("CREATE INDEX idx_v ON big (v)", &[]),
-            Err(SqlError::Bounds(_))
-        ));
-        assert!(db.document_database().indexes("big").unwrap().is_empty());
+        assert_eq!(
+            db.execute("CREATE INDEX idx_v ON big (v)", &[]).unwrap(),
+            SqlOutcome::IndexCreated
+        );
+        assert!(db.document_database().index_jobs("big").unwrap().is_empty());
+        assert_eq!(
+            db.execute("SELECT id FROM big WHERE v = 5 ORDER BY id", &[])
+                .unwrap(),
+            db.execute_force_full_scan_for_test("SELECT id FROM big WHERE v = 5 ORDER BY id", &[])
+                .unwrap()
+        );
 
         // Populated table with >256-byte TEXT fails CREATE INDEX with Bounds and builds nothing.
         db.execute(
@@ -1015,6 +1022,796 @@ fn unique_index_over_legacy_explicit_null_rows_allows_many_nulls() {
             panic!("expected rows")
         };
         assert_eq!(rows, vec![vec![SqlValue::Integer(2)]], "{backend}");
+        verify_collection_ok(db, "t");
+    });
+}
+
+fn open_managed_checkpoint(dir: &std::path::Path) -> (Arc<CheckpointStore>, impl FnOnce()) {
+    let log_dir = dir.join("managed_log");
+    let base_ckpt = dir.join("managed_base.dat");
+    let init = Store::open(&log_dir).unwrap();
+    drop(init);
+    CheckpointStore::rebuild_managed_selection(&log_dir, &base_ckpt).unwrap();
+    let ckpt = Arc::new(CheckpointStore::open_managed(&log_dir).unwrap());
+    ckpt.enable_automatic_checkpoints().unwrap();
+    let worker = ckpt
+        .start_checkpoint_worker(std::time::Duration::from_millis(5), 256 * 1024)
+        .unwrap();
+    let stop = move || {
+        worker.stop().unwrap();
+    };
+    (ckpt, stop)
+}
+
+fn populate_int_table(db: &SqlDatabase<'_>, rows: i64, mod_v: i64) {
+    db.execute(
+        "CREATE TABLE big (id INTEGER PRIMARY KEY, v INT, u INT)",
+        &[],
+    )
+    .unwrap();
+    for chunk in (0..rows).collect::<Vec<_>>().chunks(256) {
+        let placeholders = vec!["(?, ?, ?)"; chunk.len()].join(", ");
+        let params: Vec<SqlValue> = chunk
+            .iter()
+            .flat_map(|&i| {
+                [
+                    SqlValue::Integer(i),
+                    SqlValue::Integer(i % mod_v),
+                    SqlValue::Integer(i * 3 + 1),
+                ]
+            })
+            .collect();
+        db.execute(&format!("INSERT INTO big VALUES {placeholders}"), &params)
+            .unwrap();
+    }
+}
+
+#[test]
+fn create_index_and_drop_index_20k_rows_on_managed_checkpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ckpt, stop_worker) = open_managed_checkpoint(dir.path());
+    let db = SqlDatabase::new(DocumentDatabase::with_checkpoint_store(&ckpt));
+
+    let total_rows = 20_000i64;
+    populate_int_table(&db, total_rows, 500);
+
+    assert_eq!(
+        db.execute("CREATE INDEX idx_v ON big (v)", &[]).unwrap(),
+        SqlOutcome::IndexCreated
+    );
+    assert_eq!(
+        db.execute("CREATE UNIQUE INDEX idx_u ON big (u)", &[])
+            .unwrap(),
+        SqlOutcome::IndexCreated
+    );
+    assert!(db.document_database().index_jobs("big").unwrap().is_empty());
+    assert_eq!(db.document_database().indexes("big").unwrap().len(), 2);
+
+    assert_eq!(
+        db.execute("SELECT id FROM big WHERE v = 42 ORDER BY id", &[])
+            .unwrap(),
+        db.execute_force_full_scan_for_test("SELECT id FROM big WHERE v = 42 ORDER BY id", &[])
+            .unwrap()
+    );
+    assert_eq!(
+        db.execute("SELECT id FROM big WHERE u = 30001", &[])
+            .unwrap(),
+        SqlOutcome::Rows {
+            columns: vec!["id".into()],
+            rows: vec![vec![SqlValue::Integer(10_000)]],
+        }
+    );
+
+    // Concurrent-compatible DML after 20k build.
+    assert!(matches!(
+        db.execute("INSERT INTO big VALUES (20000, 42, 30001)", &[]),
+        Err(SqlError::Constraint(_))
+    ));
+    assert_eq!(
+        db.execute("INSERT INTO big VALUES (20000, 42, 999999)", &[])
+            .unwrap(),
+        SqlOutcome::Inserted { rows: 1 }
+    );
+    assert_eq!(
+        db.execute("UPDATE big SET v = 42 WHERE id = 1", &[])
+            .unwrap(),
+        SqlOutcome::Updated { rows: 1 }
+    );
+    assert_eq!(
+        db.execute("DELETE FROM big WHERE id = 42", &[]).unwrap(),
+        SqlOutcome::Deleted { rows: 1 }
+    );
+    assert_eq!(
+        db.execute("SELECT id FROM big WHERE v = 42 ORDER BY id", &[])
+            .unwrap(),
+        db.execute_force_full_scan_for_test("SELECT id FROM big WHERE v = 42 ORDER BY id", &[])
+            .unwrap()
+    );
+
+    // Large-table resumable DROP INDEX (> 768 index keys).
+    assert_eq!(
+        db.execute("DROP INDEX idx_v ON big", &[]).unwrap(),
+        SqlOutcome::IndexDropped
+    );
+    assert_eq!(
+        db.execute("DROP INDEX idx_u ON big", &[]).unwrap(),
+        SqlOutcome::IndexDropped
+    );
+    assert!(db.document_database().indexes("big").unwrap().is_empty());
+    assert!(db.document_database().index_jobs("big").unwrap().is_empty());
+
+    // After dropping the unique index, duplicate values of `u` are allowed.
+    assert_eq!(
+        db.execute("INSERT INTO big VALUES (20001, 42, 30001)", &[])
+            .unwrap(),
+        SqlOutcome::Inserted { rows: 1 }
+    );
+    assert_eq!(
+        db.execute("SELECT id FROM big WHERE v = 42 ORDER BY id", &[])
+            .unwrap(),
+        db.execute_force_full_scan_for_test("SELECT id FROM big WHERE v = 42 ORDER BY id", &[])
+            .unwrap()
+    );
+    drop(db);
+    stop_worker();
+}
+
+#[test]
+fn create_index_and_drop_index_ordinary_store_near_and_over_snapshot_limit() {
+    // Non-unique index: ~7,500 rows => ~15,002 live keys (< 16,384 snapshot limit).
+    let dir1 = tempfile::tempdir().unwrap();
+    let store1 = Store::open(dir1.path()).unwrap();
+    let db1 = SqlDatabase::new(DocumentDatabase::new(&store1));
+    populate_int_table(&db1, 7_500, 125);
+    assert_eq!(
+        db1.execute("CREATE INDEX idx_v ON big (v)", &[]).unwrap(),
+        SqlOutcome::IndexCreated
+    );
+    assert!(
+        db1.document_database()
+            .index_jobs("big")
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        db1.execute("SELECT id FROM big WHERE v = 17 ORDER BY id", &[])
+            .unwrap(),
+        db1.execute_force_full_scan_for_test("SELECT id FROM big WHERE v = 17 ORDER BY id", &[])
+            .unwrap()
+    );
+    assert_eq!(
+        db1.execute("DROP INDEX idx_v ON big", &[]).unwrap(),
+        SqlOutcome::IndexDropped
+    );
+    assert!(db1.document_database().indexes("big").unwrap().is_empty());
+
+    // Unique index: ~5,000 rows => ~15,002 live keys (< 16,384 snapshot limit).
+    let dir2 = tempfile::tempdir().unwrap();
+    let store2 = Store::open(dir2.path()).unwrap();
+    let db2 = SqlDatabase::new(DocumentDatabase::new(&store2));
+    populate_int_table(&db2, 5_000, 100);
+    assert_eq!(
+        db2.execute("CREATE UNIQUE INDEX idx_u ON big (u)", &[])
+            .unwrap(),
+        SqlOutcome::IndexCreated
+    );
+    assert_eq!(
+        db2.execute("SELECT id FROM big WHERE u = 1234", &[])
+            .unwrap(),
+        db2.execute_force_full_scan_for_test("SELECT id FROM big WHERE u = 1234", &[])
+            .unwrap()
+    );
+    assert_eq!(
+        db2.execute("DROP INDEX idx_u ON big", &[]).unwrap(),
+        SqlOutcome::IndexDropped
+    );
+
+    // Exceeding ordinary Store's 16,384 snapshot limit mid-build fails with Bounds;
+    // transitioning to CheckpointStore sees intact pre-index rows and cleanly drops or resumes it.
+    let dir3 = tempfile::tempdir().unwrap();
+    let store3_path = dir3.path().join("s3");
+    let store3 = Store::open(&store3_path).unwrap();
+    let db3 = SqlDatabase::new(DocumentDatabase::new(&store3));
+    populate_int_table(&db3, 9_000, 200);
+    assert!(matches!(
+        db3.execute("CREATE INDEX idx_v ON big (v)", &[]),
+        Err(SqlError::Bounds(_))
+    ));
+    let ckpt3_path = dir3.path().join("s3.ckpt");
+    let digest3 = store3.checkpoint_to(&ckpt3_path).unwrap();
+    drop(db3);
+    drop(store3);
+    let ckpt3 = CheckpointStore::open(&store3_path, &ckpt3_path, &digest3).unwrap();
+    let ckpt3_db = SqlDatabase::new(DocumentDatabase::with_checkpoint_store(&ckpt3));
+    assert_eq!(
+        ckpt3_db
+            .execute("SELECT id FROM big WHERE id >= 8995 ORDER BY id", &[])
+            .unwrap(),
+        SqlOutcome::Rows {
+            columns: vec!["id".into()],
+            rows: (8995..9000).map(|i| vec![SqlValue::Integer(i)]).collect(),
+        }
+    );
+    assert_eq!(
+        ckpt3_db.execute("DROP INDEX idx_v ON big", &[]).unwrap(),
+        SqlOutcome::IndexDropped
+    );
+    assert!(
+        ckpt3_db
+            .document_database()
+            .indexes("big")
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        ckpt3_db
+            .document_database()
+            .index_jobs("big")
+            .unwrap()
+            .is_empty()
+    );
+
+    // Multi-step build failing mid-build due to indexed TEXT > 256 bytes cleans up in-place on Store.
+    let dir4 = tempfile::tempdir().unwrap();
+    let store4 = Store::open(dir4.path()).unwrap();
+    let db4 = SqlDatabase::new(DocumentDatabase::new(&store4));
+    db4.execute("CREATE TABLE txt (id INTEGER PRIMARY KEY, s TEXT)", &[])
+        .unwrap();
+    for chunk in (0..400i64).collect::<Vec<_>>().chunks(100) {
+        let placeholders = vec!["(?, ?)"; chunk.len()].join(", ");
+        let params: Vec<SqlValue> = chunk
+            .iter()
+            .flat_map(|&i| {
+                let s = if i == 350 {
+                    "z".repeat(257)
+                } else {
+                    format!("s{i}")
+                };
+                [SqlValue::Integer(i), SqlValue::Text(s)]
+            })
+            .collect();
+        db4.execute(&format!("INSERT INTO txt VALUES {placeholders}"), &params)
+            .unwrap();
+    }
+    assert!(matches!(
+        db4.execute("CREATE INDEX idx_s ON txt (s)", &[]),
+        Err(SqlError::Bounds(_))
+    ));
+    assert!(db4.document_database().indexes("txt").unwrap().is_empty());
+    assert!(
+        db4.document_database()
+            .index_jobs("txt")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn unique_index_over_large_legacy_explicit_null_rows_allows_many_nulls() {
+    fn seed_legacy_explicit_nulls(db: &SqlDatabase<'_>, total_rows: i64) {
+        db.execute(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, u INTEGER, v TEXT)",
+            &[],
+        )
+        .unwrap();
+        let docs = db.document_database();
+        for chunk in (1..=total_rows).collect::<Vec<_>>().chunks(256) {
+            docs.transaction(|tx| {
+                for &id in chunk {
+                    let key = format!("i:{:016x}", (id ^ i64::MIN) as u64);
+                    let u_val = if id % 10 == 0 {
+                        serde_json::json!(id)
+                    } else {
+                        serde_json::Value::Null
+                    };
+                    let v_val = if id % 20 == 0 {
+                        serde_json::json!(format!("k{id}"))
+                    } else {
+                        serde_json::Value::Null
+                    };
+                    tx.insert(
+                        "t",
+                        &key,
+                        &serde_json::json!({"id": id, "u": u_val, "v": v_val}),
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        }
+    }
+
+    // Ordinary Store large variant (1,500 rows > 256).
+    let dir1 = tempfile::tempdir().unwrap();
+    let store1 = Store::open(dir1.path()).unwrap();
+    let db1 = SqlDatabase::new(DocumentDatabase::new(&store1));
+    seed_legacy_explicit_nulls(&db1, 1_500);
+    db1.execute("CREATE UNIQUE INDEX tu ON t (u)", &[]).unwrap();
+    db1.execute("CREATE UNIQUE INDEX tuv ON t (u, v)", &[])
+        .unwrap();
+    assert!(db1.document_database().index_jobs("t").unwrap().is_empty());
+    assert_eq!(
+        db1.execute("SELECT id FROM t WHERE u IS NULL ORDER BY id LIMIT 10", &[])
+            .unwrap(),
+        db1.execute_force_full_scan_for_test(
+            "SELECT id FROM t WHERE u IS NULL ORDER BY id LIMIT 10",
+            &[]
+        )
+        .unwrap()
+    );
+    assert!(matches!(
+        db1.execute("INSERT INTO t VALUES (2000, 10, 'x')", &[]),
+        Err(SqlError::Constraint(_))
+    ));
+    db1.execute("INSERT INTO t VALUES (2001, NULL, NULL)", &[])
+        .unwrap();
+
+    // Managed CheckpointStore large variant (20,000 rows).
+    let dir2 = tempfile::tempdir().unwrap();
+    let (ckpt, stop_worker) = open_managed_checkpoint(dir2.path());
+    let db2 = SqlDatabase::new(DocumentDatabase::with_checkpoint_store(&ckpt));
+    seed_legacy_explicit_nulls(&db2, 20_000);
+    db2.execute("CREATE UNIQUE INDEX tu ON t (u)", &[]).unwrap();
+    assert_eq!(
+        db2.execute("SELECT id FROM t WHERE u = 19990", &[])
+            .unwrap(),
+        SqlOutcome::Rows {
+            columns: vec!["id".into()],
+            rows: vec![vec![SqlValue::Integer(19_990)]],
+        }
+    );
+    assert!(matches!(
+        db2.execute("INSERT INTO t VALUES (30000, 19990, NULL)", &[]),
+        Err(SqlError::Constraint(_))
+    ));
+    db2.execute("INSERT INTO t VALUES (30001, NULL, NULL)", &[])
+        .unwrap();
+    drop(db2);
+    stop_worker();
+}
+
+#[test]
+fn create_unique_index_mid_build_violation_cleans_up_everything() {
+    for_both_sql(|db, backend| {
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v INT)", &[])
+            .unwrap();
+        for chunk in (0..1_500i64).collect::<Vec<_>>().chunks(250) {
+            let placeholders = vec!["(?, ?)"; chunk.len()].join(", ");
+            let params: Vec<SqlValue> = chunk
+                .iter()
+                .flat_map(|&i| {
+                    // Duplicate value on step >= 10 (row 1400 duplicates row 10).
+                    let v = if i == 1_400 { 10 } else { i };
+                    [SqlValue::Integer(i), SqlValue::Integer(v)]
+                })
+                .collect();
+            db.execute(&format!("INSERT INTO t VALUES {placeholders}"), &params)
+                .unwrap();
+        }
+
+        assert!(
+            matches!(
+                db.execute("CREATE UNIQUE INDEX idx_v ON t (v)", &[]),
+                Err(SqlError::Constraint(_))
+            ),
+            "{backend}: expected mid-build Constraint failure"
+        );
+        assert!(db.document_database().indexes("t").unwrap().is_empty());
+        assert!(db.document_database().index_jobs("t").unwrap().is_empty());
+
+        // Subsequent queries and inserts behave as without the unique index (e.g. duplicate v=10 allowed).
+        assert_eq!(
+            db.execute("INSERT INTO t VALUES (1500, 10)", &[]).unwrap(),
+            SqlOutcome::Inserted { rows: 1 }
+        );
+        assert_eq!(
+            db.execute("SELECT id FROM t WHERE v = 10 ORDER BY id", &[])
+                .unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["id".into()],
+                rows: vec![
+                    vec![SqlValue::Integer(10)],
+                    vec![SqlValue::Integer(1_400)],
+                    vec![SqlValue::Integer(1_500)],
+                ],
+            }
+        );
+
+        // Removing the duplicates allows CREATE UNIQUE INDEX to succeed cleanly.
+        db.execute("DELETE FROM t WHERE id >= 1400", &[]).unwrap();
+        assert_eq!(
+            db.execute("CREATE UNIQUE INDEX idx_v ON t (v)", &[])
+                .unwrap(),
+            SqlOutcome::IndexCreated
+        );
+        assert!(db.document_database().index_jobs("t").unwrap().is_empty());
+        assert!(matches!(
+            db.execute("INSERT INTO t VALUES (1501, 10)", &[]),
+            Err(SqlError::Constraint(_))
+        ));
+    });
+}
+
+#[test]
+fn building_index_is_ignored_by_planner_and_resumed_by_recreate() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    {
+        let db = SqlDatabase::new(DocumentDatabase::new(&store));
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v INT)", &[])
+            .unwrap();
+        db.execute(
+            "INSERT INTO t VALUES (1, 10), (2, 10), (3, 20), (4, 10)",
+            &[],
+        )
+        .unwrap();
+
+        // Simulate an interrupted online build: job started (empty index keys), catalog recorded as building.
+        let docs = db.document_database();
+        docs.transaction(|tx| {
+            tx.start_index_build(
+                "t",
+                database_engine::IndexDefinition {
+                    name: "idx_v".to_string(),
+                    fields: vec![vec!["v".to_string()]],
+                    unique: false,
+                    partial: None,
+                },
+            )?;
+            let raw = tx
+                .get_raw(b"\0emda-sql\x01Tt")?
+                .expect("catalog entry must exist");
+            let mut def: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+            def["indexes"] = serde_json::json!([{
+                "name": "idx_v",
+                "columns": [1],
+                "unique": false,
+                "state": "building",
+                "is_constraint": false
+            }]);
+            tx.put_raw(b"\0emda-sql\x01Tt", &serde_json::to_vec(&def).unwrap())?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    // Reopen fresh SqlDatabase so catalog cache reads the `building` index.
+    let db = SqlDatabase::new(DocumentDatabase::new(&store));
+    assert_eq!(
+        db.execute("SELECT id FROM t WHERE v = 10 ORDER BY id", &[])
+            .unwrap(),
+        SqlOutcome::Rows {
+            columns: vec!["id".into()],
+            rows: vec![
+                vec![SqlValue::Integer(1)],
+                vec![SqlValue::Integer(2)],
+                vec![SqlValue::Integer(4)],
+            ],
+        }
+    );
+
+    // Re-running CREATE INDEX completes the interrupted build.
+    assert_eq!(
+        db.execute("CREATE INDEX idx_v ON t (v)", &[]).unwrap(),
+        SqlOutcome::IndexCreated
+    );
+    assert!(db.document_database().index_jobs("t").unwrap().is_empty());
+    assert_eq!(
+        db.execute("SELECT id FROM t WHERE v = 10 ORDER BY id", &[])
+            .unwrap(),
+        db.execute_force_full_scan_for_test("SELECT id FROM t WHERE v = 10 ORDER BY id", &[])
+            .unwrap()
+    );
+}
+
+#[test]
+fn concurrent_writes_during_online_index_build_store_and_checkpoint() {
+    fn exec_retry_conflict(db: &SqlDatabase<'_>, sql: &str, params: &[SqlValue]) -> SqlOutcome {
+        loop {
+            match db.execute(sql, params) {
+                Ok(out) => return out,
+                Err(SqlError::Conflict(_)) => std::thread::yield_now(),
+                Err(err) => panic!("unexpected error on {sql}: {err}"),
+            }
+        }
+    }
+
+    fn run_small_verify(make_db: impl Fn() -> SqlDatabase<'static> + Send + Sync) {
+        let setup = make_db();
+        setup
+            .execute(
+                "CREATE TABLE cw (id INTEGER PRIMARY KEY, v INT, tag TEXT)",
+                &[],
+            )
+            .unwrap();
+        for chunk in (0..200i64).collect::<Vec<_>>().chunks(100) {
+            let placeholders = vec!["(?, ?, ?)"; chunk.len()].join(", ");
+            let params: Vec<SqlValue> = chunk
+                .iter()
+                .flat_map(|&i| {
+                    [
+                        SqlValue::Integer(i),
+                        SqlValue::Integer(i % 25),
+                        SqlValue::Text(format!("r{i}")),
+                    ]
+                })
+                .collect();
+            setup
+                .execute(&format!("INSERT INTO cw VALUES {placeholders}"), &params)
+                .unwrap();
+        }
+
+        let make = &make_db;
+        let start = Arc::new(Barrier::new(2));
+        thread::scope(|s| {
+            let b1 = Arc::clone(&start);
+            let builder = s.spawn(move || {
+                let db = make();
+                b1.wait();
+                db.execute("CREATE INDEX idx_v ON cw (v)", &[]).unwrap();
+                db.execute("CREATE UNIQUE INDEX idx_tag ON cw (tag)", &[])
+                    .unwrap();
+            });
+            let b2 = Arc::clone(&start);
+            let writer = s.spawn(move || {
+                let db = make();
+                b2.wait();
+                for step in 0..20i64 {
+                    let new_id = 300 + step;
+                    exec_retry_conflict(
+                        &db,
+                        "INSERT INTO cw VALUES (?, ?, ?)",
+                        &[
+                            SqlValue::Integer(new_id),
+                            SqlValue::Integer(7),
+                            SqlValue::Text(format!("new{step}")),
+                        ],
+                    );
+                    exec_retry_conflict(
+                        &db,
+                        "UPDATE cw SET v = 7, tag = ? WHERE id = ?",
+                        &[
+                            SqlValue::Text(format!("upd{step}")),
+                            SqlValue::Integer(step * 2),
+                        ],
+                    );
+                    exec_retry_conflict(
+                        &db,
+                        "DELETE FROM cw WHERE id = ?",
+                        &[SqlValue::Integer(150 + step)],
+                    );
+                }
+            });
+            builder.join().unwrap();
+            writer.join().unwrap();
+        });
+
+        verify_collection_ok(&setup, "cw");
+        for q in [
+            "SELECT id, tag FROM cw WHERE v = 7 ORDER BY id",
+            "SELECT id FROM cw WHERE v >= 5 AND v <= 10 ORDER BY id",
+            "SELECT id FROM cw WHERE tag = 'upd3'",
+            "SELECT id FROM cw WHERE tag = 'new15'",
+        ] {
+            assert_eq!(
+                setup.execute(q, &[]).unwrap(),
+                setup.execute_force_full_scan_for_test(q, &[]).unwrap(),
+                "mismatch for query: {q}"
+            );
+        }
+    }
+
+    fn run_multi_step_race(make_db: impl Fn() -> SqlDatabase<'static> + Send + Sync) {
+        let setup = make_db();
+        setup
+            .execute("CREATE TABLE race (id INTEGER PRIMARY KEY, v INT)", &[])
+            .unwrap();
+        for chunk in (0..2_000i64).collect::<Vec<_>>().chunks(200) {
+            let placeholders = vec!["(?, ?)"; chunk.len()].join(", ");
+            let params: Vec<SqlValue> = chunk
+                .iter()
+                .flat_map(|&i| [SqlValue::Integer(i), SqlValue::Integer(i % 40)])
+                .collect();
+            setup
+                .execute(&format!("INSERT INTO race VALUES {placeholders}"), &params)
+                .unwrap();
+        }
+
+        let make = &make_db;
+        let start = Arc::new(Barrier::new(2));
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        struct DoneGuard<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for DoneGuard<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+        thread::scope(|s| {
+            let b1 = Arc::clone(&start);
+            let done_flag = Arc::clone(&done);
+            let builder = s.spawn(move || {
+                let _guard = DoneGuard(&done_flag);
+                let db = make();
+                b1.wait();
+                db.execute("CREATE INDEX idx_v ON race (v)", &[]).unwrap();
+            });
+            let b2 = Arc::clone(&start);
+            let done_writer = Arc::clone(&done);
+            let writer = s.spawn(move || {
+                let db = make();
+                b2.wait();
+                let mut iter = 0i64;
+                // Write at least 30 batches spanning both low IDs (already scanned) and high IDs
+                // (not yet scanned) while CREATE INDEX steps commit.
+                while iter < 30 || !done_writer.load(std::sync::atomic::Ordering::Acquire) {
+                    let new_id = 3_000 + iter;
+                    exec_retry_conflict(
+                        &db,
+                        "INSERT INTO race VALUES (?, ?)",
+                        &[SqlValue::Integer(new_id), SqlValue::Integer(999)],
+                    );
+                    let low_id = iter % 50;
+                    exec_retry_conflict(
+                        &db,
+                        "UPDATE race SET v = 999 WHERE id = ?",
+                        &[SqlValue::Integer(low_id)],
+                    );
+                    let high_id = 1_500 + (iter % 400);
+                    exec_retry_conflict(
+                        &db,
+                        "UPDATE race SET v = 999 WHERE id = ?",
+                        &[SqlValue::Integer(high_id)],
+                    );
+                    if iter % 3 == 0 {
+                        let del_id = 800 + iter;
+                        exec_retry_conflict(
+                            &db,
+                            "DELETE FROM race WHERE id = ?",
+                            &[SqlValue::Integer(del_id)],
+                        );
+                    }
+                    iter += 1;
+                    // Pace writer commits so both 128-row build steps and concurrent DML
+                    // interleave and commit across the whole online build window.
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            });
+            builder.join().unwrap();
+            writer.join().unwrap();
+        });
+
+        assert!(
+            setup
+                .document_database()
+                .index_jobs("race")
+                .unwrap()
+                .is_empty()
+        );
+        for q in [
+            "SELECT id FROM race WHERE v = 999 ORDER BY id",
+            "SELECT id FROM race WHERE v = 5 ORDER BY id",
+            "SELECT id FROM race WHERE v >= 10 AND v <= 15 ORDER BY id",
+        ] {
+            assert_eq!(
+                setup.execute(q, &[]).unwrap(),
+                setup.execute_force_full_scan_for_test(q, &[]).unwrap(),
+                "mismatch for query: {q}"
+            );
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let store_small: &'static Store =
+        Box::leak(Box::new(Store::open(dir.path().join("s_small")).unwrap()));
+    run_small_verify(|| SqlDatabase::new(DocumentDatabase::new(store_small)));
+
+    let (ckpt_small, _, _) = open_checkpoint(&dir.path().join("c_small"));
+    let ckpt_small: &'static CheckpointStore = Box::leak(Box::new(ckpt_small));
+    run_small_verify(|| SqlDatabase::new(DocumentDatabase::with_checkpoint_store(ckpt_small)));
+
+    let store_big: &'static Store =
+        Box::leak(Box::new(Store::open(dir.path().join("s_big")).unwrap()));
+    run_multi_step_race(|| SqlDatabase::new(DocumentDatabase::new(store_big)));
+
+    let (ckpt_big, _, _) = open_checkpoint(&dir.path().join("c_big"));
+    let ckpt_big: &'static CheckpointStore = Box::leak(Box::new(ckpt_big));
+    run_multi_step_race(|| SqlDatabase::new(DocumentDatabase::with_checkpoint_store(ckpt_big)));
+}
+
+#[test]
+fn drop_index_behavior_if_exists_errors_and_constraints() {
+    for_both_sql(|db, backend| {
+        db.execute(
+            "CREATE TABLE t (
+                id INTEGER PRIMARY KEY,
+                email TEXT UNIQUE,
+                a INT,
+                b INT,
+                UNIQUE (a, b)
+            )",
+            &[],
+        )
+        .unwrap();
+        db.execute("CREATE INDEX idx_a ON t (a)", &[]).unwrap();
+        db.execute("CREATE UNIQUE INDEX idx_ab_explicit ON t (b, a)", &[])
+            .unwrap();
+
+        // Dropping explicit indexes works and returns IndexDropped.
+        assert_eq!(
+            db.execute("DROP INDEX idx_a ON t", &[]).unwrap(),
+            SqlOutcome::IndexDropped
+        );
+        assert!(matches!(
+            db.execute("DROP INDEX idx_a ON t", &[]),
+            Err(SqlError::NoSuchIndex { .. })
+        ));
+        assert_eq!(
+            db.execute("DROP INDEX IF EXISTS idx_a ON t", &[]).unwrap(),
+            SqlOutcome::IndexDropped
+        );
+        assert!(matches!(
+            db.execute("DROP INDEX idx_a ON missing_tbl", &[]),
+            Err(SqlError::NoSuchTable(_))
+        ));
+        assert!(matches!(
+            db.execute("DROP INDEX IF EXISTS idx_a ON missing_tbl", &[]),
+            Err(SqlError::NoSuchTable(_))
+        ));
+
+        // Dropping an index without ON table remains Unsupported.
+        assert!(matches!(
+            db.execute("DROP INDEX idx_ab_explicit", &[]),
+            Err(SqlError::Unsupported { .. })
+        ));
+
+        // Constraint-backed indexes (column UNIQUE and table UNIQUE) refuse DROP INDEX.
+        let constraint_names: Vec<String> = db
+            .document_database()
+            .indexes("t")
+            .unwrap()
+            .into_iter()
+            .filter(|m| m.name != "idx_ab_explicit")
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(constraint_names.len(), 2, "{backend}");
+        for cname in &constraint_names {
+            assert!(
+                matches!(
+                    db.execute(&format!("DROP INDEX {cname} ON t"), &[]),
+                    Err(SqlError::Constraint(_))
+                ),
+                "{backend}: expected Constraint when dropping {cname}"
+            );
+            assert!(
+                matches!(
+                    db.execute(&format!("DROP INDEX IF EXISTS {cname} ON t"), &[]),
+                    Err(SqlError::Constraint(_))
+                ),
+                "{backend}: expected Constraint even with IF EXISTS for {cname}"
+            );
+        }
+
+        // Dropping explicit UNIQUE index frees duplicate writes on (b, a), while constraint indexes still enforce uniqueness.
+        db.execute("INSERT INTO t VALUES (1, 'a@x', 1, 10)", &[])
+            .unwrap();
+        assert!(matches!(
+            db.execute("INSERT INTO t VALUES (2, 'b@x', 2, 10)", &[]),
+            Ok(SqlOutcome::Inserted { rows: 1 })
+        ));
+        assert_eq!(
+            db.execute("DROP INDEX idx_ab_explicit ON t", &[]).unwrap(),
+            SqlOutcome::IndexDropped
+        );
+        db.execute("INSERT INTO t VALUES (3, 'c@x', 3, 10)", &[])
+            .unwrap();
+        assert!(matches!(
+            db.execute("INSERT INTO t VALUES (4, 'a@x', 4, 20)", &[]),
+            Err(SqlError::Constraint(_))
+        ));
+        assert!(matches!(
+            db.execute("INSERT INTO t VALUES (5, 'd@x', 1, 10)", &[]),
+            Err(SqlError::Constraint(_))
+        ));
         verify_collection_ok(db, "t");
     });
 }

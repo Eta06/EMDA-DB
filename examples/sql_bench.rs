@@ -52,7 +52,7 @@ impl Backend for SqlDatabase<'_> {
             SqlOutcome::Inserted { rows }
             | SqlOutcome::Updated { rows }
             | SqlOutcome::Deleted { rows } => rows,
-            SqlOutcome::TableCreated | SqlOutcome::IndexCreated => 0,
+            SqlOutcome::TableCreated | SqlOutcome::IndexCreated | SqlOutcome::IndexDropped => 0,
         })
     }
     fn prepare_only(&self, sql: &str) -> Result<()> {
@@ -382,35 +382,60 @@ fn main() -> Result<()> {
     check(&sqlite(&root.join("sqlite.db"))?, rows)?;
 
     let store_idx = Store::open(root.join("store-idx"))?;
-    println!(
-        "{}",
-        indexed_workload(
-            "emda-store",
-            &SqlDatabase::new(DocumentDatabase::new(&store_idx)),
-            rows,
-            ops
-        )?
-    );
+    match indexed_workload(
+        "emda-store",
+        &SqlDatabase::new(DocumentDatabase::new(&store_idx)),
+        rows,
+        ops,
+    ) {
+        Ok(line) => println!("{line}"),
+        Err(err) => println!(
+            "{{\"backend\":\"emda-store-indexed\",\"rows\":{rows},\"skipped\":{:?}}}",
+            err.to_string()
+        ),
+    }
     drop(store_idx);
 
-    let initial_idx = Store::open(root.join("checkpoint-idx-log"))?;
-    let digest_idx = initial_idx.checkpoint_to(root.join("checkpoint-idx"))?;
-    drop(initial_idx);
-    let ckpt_idx = CheckpointStore::open(
-        root.join("checkpoint-idx-log"),
-        root.join("checkpoint-idx"),
-        &digest_idx,
-    )?;
-    println!(
-        "{}",
-        indexed_workload(
-            "emda-checkpoint",
-            &SqlDatabase::new(DocumentDatabase::with_checkpoint_store(&ckpt_idx)),
-            rows,
-            ops
-        )?
-    );
-    drop(ckpt_idx);
+    if rows <= 2_500 {
+        let initial_idx = Store::open(root.join("checkpoint-idx-log"))?;
+        let digest_idx = initial_idx.checkpoint_to(root.join("checkpoint-idx"))?;
+        drop(initial_idx);
+        let ckpt_idx = CheckpointStore::open(
+            root.join("checkpoint-idx-log"),
+            root.join("checkpoint-idx"),
+            &digest_idx,
+        )?;
+        println!(
+            "{}",
+            indexed_workload(
+                "emda-checkpoint",
+                &SqlDatabase::new(DocumentDatabase::with_checkpoint_store(&ckpt_idx)),
+                rows,
+                ops
+            )?
+        );
+        drop(ckpt_idx);
+    } else {
+        let log_idx = root.join("checkpoint-idx-log");
+        let base_idx = root.join("checkpoint-idx");
+        drop(Store::open(&log_idx)?);
+        CheckpointStore::rebuild_managed_selection(&log_idx, &base_idx)?;
+        let ckpt_idx = std::sync::Arc::new(CheckpointStore::open_managed(&log_idx)?);
+        ckpt_idx.enable_automatic_checkpoints()?;
+        let worker =
+            ckpt_idx.start_checkpoint_worker(std::time::Duration::from_millis(5), 256 * 1024)?;
+        println!(
+            "{}",
+            indexed_workload(
+                "emda-checkpoint",
+                &SqlDatabase::new(DocumentDatabase::with_checkpoint_store(&ckpt_idx)),
+                rows,
+                ops
+            )?
+        );
+        worker.stop()?;
+        drop(ckpt_idx);
+    }
 
     let sqlite_idx = sqlite(&root.join("sqlite-idx.db"))?;
     println!("{}", indexed_workload("sqlite", &sqlite_idx, rows, ops)?);
