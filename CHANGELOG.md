@@ -4,6 +4,25 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add single-column `FOREIGN KEY` constraints (`REFERENCES parent [(col)]` and
+  `FOREIGN KEY (col) REFERENCES parent [(col)]`) to the embedded SQL subset:
+  - Targets must be the parent's `PRIMARY KEY` or a column backed by a `Ready`
+    single-column `UNIQUE` index with a matching base type.
+  - Supports `NO ACTION` / `RESTRICT` (default, enforced at statement end
+    inside the statement's `ReadSet` transaction so staged writes, forward
+    references in multi-row `INSERT`, and self-references work and concurrent
+    conflicting writes surface as `SqlError::Conflict`).
+  - Child-side parent delete/update checks use the child's primary key or a
+    safe `Ready` child index when available, and otherwise run a bounded scan
+    enforcing `SqlLimits::max_visited_rows`.
+  - Refuses `DROP TABLE` on referenced parent tables (while allowing
+    self-referencing tables and detaching parents when a child table is
+    dropped) and refuses `DROP INDEX` on the last `Ready` single-column
+    `UNIQUE` index backing a foreign key; existing stored catalogs without
+    foreign-key metadata remain backward-compatible.
+  - Composite foreign keys, `CASCADE` / `SET NULL` / `SET DEFAULT`, `MATCH`,
+    `DEFERRABLE`, `CONSTRAINT` names, and `ALTER TABLE ... ADD COLUMN ...
+    REFERENCES` remain `SqlError::Unsupported`.
 - Add `Store::discard_incomplete_tail`, an explicit repair for a log that ends
   inside a record whose append was cut short, which `Store::open` refuses. It
   removes only such a record at or after the witnessed commit boundary, so no
