@@ -12,7 +12,10 @@
 use super::catalog::{self, CachedTable, IndexState, TableDef};
 use super::exec::{self, SqlCache};
 use super::lexer::{Token, TokenKind};
-use super::parser::{CompareOp, LimitValue};
+use super::parser::{AggregateKind, CompareOp, LimitValue};
+
+#[path = "join_aggregate.rs"]
+mod aggregate;
 use super::value::{
     MAX_SQL_COLUMNS, MAX_SQL_TEXT_PK_BYTES, SqlError, SqlLimits, SqlOutcome, SqlType, SqlValue,
     compare_i64_f64, encode_i64_pk_bytes,
@@ -40,6 +43,9 @@ pub(crate) struct JoinSelect {
     order_by: Vec<OrderItem>,
     limit: Option<LimitValue>,
     offset: Option<LimitValue>,
+    /// `GROUP BY` columns; with aggregate items, the statement aggregates.
+    group_by: Vec<ColRef>,
+    having: Option<JExpr>,
     cached_plan: RwLock<Option<Arc<JoinPlan>>>,
 }
 
@@ -53,6 +59,8 @@ impl Clone for JoinSelect {
             order_by: self.order_by.clone(),
             limit: self.limit,
             offset: self.offset,
+            group_by: self.group_by.clone(),
+            having: self.having.clone(),
             cached_plan: RwLock::new(None),
         }
     }
@@ -67,6 +75,8 @@ impl PartialEq for JoinSelect {
             && self.order_by == other.order_by
             && self.limit == other.limit
             && self.offset == other.offset
+            && self.group_by == other.group_by
+            && self.having == other.having
     }
 }
 
@@ -93,6 +103,16 @@ enum SelectItem {
     All,
     TableAll(String, usize),
     Column(ColRef),
+    /// An aggregate call with an optional `AS` name.
+    Aggregate(AggCall, Option<String>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct AggCall {
+    kind: AggregateKind,
+    /// `None` for `COUNT(*)`.
+    arg: Option<ColRef>,
+    offset: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -119,6 +139,8 @@ enum JExpr {
     Compare(CompareOp, Box<JExpr>, Box<JExpr>),
     And(Vec<JExpr>),
     Or(Vec<JExpr>),
+    /// An aggregate call; allowed only in `HAVING`.
+    Agg(AggCall),
 }
 
 /// Whether a tokenized statement is a SELECT containing `JOIN`.
@@ -319,9 +341,21 @@ impl JoinParser<'_> {
         } else {
             None
         };
-        if self.at_kw("group") || self.at_kw("having") {
-            return Err(self.unsupported("GROUP BY or HAVING in a join"));
+        let mut group_by = Vec::new();
+        if self.eat_kw("group") {
+            self.expect_kw("by")?;
+            loop {
+                group_by.push(self.col_ref()?);
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
         }
+        let having = if self.eat_kw("having") {
+            Some(self.expr()?)
+        } else {
+            None
+        };
         let mut order_by = Vec::new();
         if self.eat_kw("order") {
             self.expect_kw("by")?;
@@ -386,8 +420,53 @@ impl JoinParser<'_> {
             order_by,
             limit,
             offset,
+            group_by,
+            having,
             cached_plan: RwLock::new(None),
         })
+    }
+
+    /// The aggregate named `name`, if `name(` starts one.
+    fn aggregate_kind(&self, name: &str) -> Option<AggregateKind> {
+        if !matches!(self.peek().kind, TokenKind::LParen) {
+            return None;
+        }
+        match name {
+            "count" => Some(AggregateKind::Count),
+            "sum" => Some(AggregateKind::Sum),
+            "avg" => Some(AggregateKind::Avg),
+            "min" => Some(AggregateKind::Min),
+            "max" => Some(AggregateKind::Max),
+            _ => None,
+        }
+    }
+
+    /// The parenthesized argument of an aggregate whose name was read.
+    fn aggregate_call(&mut self, kind: AggregateKind, offset: usize) -> Result<AggCall, SqlError> {
+        self.expect(&TokenKind::LParen, "(")?;
+        let call = if kind == AggregateKind::Count && self.eat(&TokenKind::Star) {
+            AggCall {
+                kind: AggregateKind::CountStar,
+                arg: None,
+                offset,
+            }
+        } else {
+            let distinct = self.eat_kw("distinct");
+            if distinct && kind != AggregateKind::Count {
+                return Err(self.unsupported("DISTINCT in aggregates other than COUNT"));
+            }
+            AggCall {
+                kind: if distinct {
+                    AggregateKind::CountDistinct
+                } else {
+                    kind
+                },
+                arg: Some(self.col_ref()?),
+                offset,
+            }
+        };
+        self.expect(&TokenKind::RParen, ")")?;
+        Ok(call)
     }
 
     fn select_item(&mut self) -> Result<SelectItem, SqlError> {
@@ -407,8 +486,17 @@ impl JoinParser<'_> {
                 offset,
             }));
         }
+        if let Some(kind) = self.aggregate_kind(&first) {
+            let call = self.aggregate_call(kind, offset)?;
+            let alias = if self.eat_kw("as") {
+                Some(self.ident("column alias")?)
+            } else {
+                None
+            };
+            return Ok(SelectItem::Aggregate(call, alias));
+        }
         if matches!(self.peek().kind, TokenKind::LParen) {
-            return Err(self.unsupported("functions or aggregates in a join"));
+            return Err(self.unsupported("functions in a join"));
         }
         self.no_alias(SelectItem::Column(ColRef {
             qualifier: None,
@@ -584,7 +672,24 @@ impl JoinParser<'_> {
                     _ => SqlValue::Boolean(false),
                 }))
             }
-            TokenKind::Ident { .. } => {
+            TokenKind::Ident { ref text, .. } => {
+                let call_follows = matches!(
+                    self.tokens.get(self.pos + 1).map(|token| &token.kind),
+                    Some(TokenKind::LParen)
+                );
+                let kind = match text.as_str() {
+                    "count" => Some(AggregateKind::Count),
+                    "sum" => Some(AggregateKind::Sum),
+                    "avg" => Some(AggregateKind::Avg),
+                    "min" => Some(AggregateKind::Min),
+                    "max" => Some(AggregateKind::Max),
+                    _ => None,
+                };
+                if let (Some(kind), true) = (kind, call_follows) {
+                    let offset = self.offset();
+                    self.advance();
+                    return Ok(JExpr::Agg(self.aggregate_call(kind, offset)?));
+                }
                 let column = self.col_ref()?;
                 if matches!(self.peek().kind, TokenKind::LParen) {
                     return Err(self.unsupported("functions in a join"));
@@ -847,6 +952,13 @@ impl Binder<'_> {
 
     fn bind(&mut self, expr: &JExpr) -> Result<(BExpr, Ty), SqlError> {
         Ok(match expr {
+            JExpr::Agg(call) => {
+                return Err(SqlError::Syntax {
+                    offset: call.offset,
+                    message: "aggregate functions are allowed only in the select list and HAVING"
+                        .into(),
+                });
+            }
             JExpr::Literal(value) => (BExpr::Literal(value.clone()), value_type(value)),
             JExpr::Param(index) => (BExpr::Param(*index), Ty::Param(*index)),
             JExpr::Column(column) => {
@@ -1947,6 +2059,12 @@ fn plan(
         };
         for item in &statement.items {
             let tables: Vec<usize> = match item {
+                SelectItem::Aggregate(call, _) => {
+                    return Err(SqlError::Syntax {
+                        offset: call.offset,
+                        message: "an aggregate join is planned as its inner join".into(),
+                    });
+                }
                 SelectItem::All => (0..all).collect(),
                 SelectItem::TableAll(alias, offset) => {
                     vec![aliases.iter().position(|a| a == alias).ok_or_else(|| {
@@ -3302,6 +3420,9 @@ fn run(
     limits: &SqlLimits,
     cache: &SqlCache,
 ) -> Result<SqlOutcome, SqlError> {
+    if aggregate::is_aggregate(statement) {
+        return aggregate::run(tx, statement, params, limits, cache);
+    }
     let join_plan = plan(tx, statement, params, limits, cache)?;
     let limit = limit_value(statement.limit, params)?;
     let offset = limit_value(statement.offset, params)?.unwrap_or(0);
@@ -3645,6 +3766,17 @@ pub(crate) fn explain(
     limits: &SqlLimits,
     cache: &SqlCache,
 ) -> Result<Vec<Vec<SqlValue>>, SqlError> {
+    if aggregate::is_aggregate(statement) {
+        let prepared = aggregate::prepare(tx, statement, cache)?;
+        let mut rows = explain(tx, &prepared.inner, params, limits, cache)?;
+        rows.push(vec![
+            SqlValue::Text("aggregate".into()),
+            SqlValue::Text(String::new()),
+            SqlValue::Text(prepared.describe()),
+            SqlValue::Text("HAVING, ORDER BY and LIMIT apply to the groups".into()),
+        ]);
+        return Ok(rows);
+    }
     let plan = plan(tx, statement, params, limits, cache)?;
     let limit = limit_value(statement.limit, params)?;
     let offset = limit_value(statement.offset, params)?.unwrap_or(0);

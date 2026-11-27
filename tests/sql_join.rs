@@ -234,9 +234,8 @@ fn join_errors_are_classified() {
             "SELECT u.id FROM users u NATURAL JOIN teams t",
             "SELECT u.id FROM users u JOIN teams t USING (id)",
             "SELECT u.id FROM users u, teams t JOIN orders o ON o.id = u.id",
-            "SELECT COUNT(*) FROM users u JOIN teams t ON t.id = u.team",
             "SELECT u.id AS x FROM users u JOIN teams t ON t.id = u.team",
-            "SELECT u.id FROM users u JOIN teams t ON t.id = u.team GROUP BY u.id",
+            "SELECT UPPER(u.id) FROM users u JOIN teams t ON t.id = u.team",
             "SELECT u.id FROM users u JOIN teams t ON t.id IN (1, 2)",
         ] {
             assert!(
@@ -981,5 +980,94 @@ fn right_joins_match_sqlite() {
                 "{backend}: {sql}"
             );
         }
+    });
+}
+
+/// Aggregates, `GROUP BY` and `HAVING` over joins return what SQLite
+/// returns, on both backends.
+#[test]
+fn aggregates_over_joins_match_sqlite() {
+    for_both(|db, backend| {
+        let sqlite = rusqlite::Connection::open_in_memory().unwrap();
+        let mut setup = vec![
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)".to_owned(),
+            "CREATE TABLE u (id INTEGER PRIMARY KEY, t_id INTEGER, score REAL, tag TEXT)"
+                .to_owned(),
+            "CREATE TABLE o (id INTEGER PRIMARY KEY, u_id INTEGER, amount INTEGER)".to_owned(),
+            "CREATE INDEX o_u ON o (u_id)".to_owned(),
+        ];
+        for id in 0..6 {
+            setup.push(format!("INSERT INTO t VALUES ({id}, 'team{}')", id % 4));
+        }
+        for id in 0..40 {
+            let t = if id % 9 == 0 {
+                "NULL".to_owned()
+            } else {
+                (id % 7).to_string()
+            };
+            let score = if id % 5 == 0 {
+                "NULL".to_owned()
+            } else {
+                format!("{}.5", id % 11)
+            };
+            let tag = ["'a'", "'b'", "NULL"][id % 3];
+            setup.push(format!("INSERT INTO u VALUES ({id}, {t}, {score}, {tag})"));
+        }
+        for id in 0..120 {
+            let amount = if id % 13 == 0 {
+                "NULL".to_owned()
+            } else {
+                ((id * 37) % 50).to_string()
+            };
+            setup.push(format!(
+                "INSERT INTO o VALUES ({id}, {}, {amount})",
+                (id * 7) % 45
+            ));
+        }
+        for sql in &setup {
+            db.execute(sql, &[]).unwrap();
+            sqlite.execute(sql, []).unwrap();
+        }
+        for sql in [
+            "SELECT COUNT(*), SUM(o.amount), MIN(o.amount), MAX(o.amount) FROM u JOIN o ON o.u_id = u.id",
+            "SELECT u.tag, COUNT(*) AS n, SUM(o.amount) AS total FROM u JOIN o ON o.u_id = u.id GROUP BY u.tag ORDER BY u.tag",
+            "SELECT t.name, COUNT(u.id), AVG(u.score) FROM t LEFT JOIN u ON u.t_id = t.id GROUP BY t.name ORDER BY t.name",
+            "SELECT t.id, COUNT(DISTINCT u.tag) AS tags FROM t JOIN u ON u.t_id = t.id GROUP BY t.id ORDER BY t.id",
+            "SELECT u.t_id, SUM(o.amount) AS total FROM u JOIN o ON o.u_id = u.id GROUP BY u.t_id HAVING SUM(o.amount) > 150 ORDER BY total DESC, u.t_id",
+            "SELECT u.t_id, COUNT(*) AS n FROM u JOIN o ON o.u_id = u.id WHERE o.amount IS NOT NULL GROUP BY u.t_id HAVING COUNT(*) >= 10 AND MAX(o.amount) < 49 ORDER BY n, u.t_id LIMIT 3",
+            "SELECT t.name, u.tag, COUNT(o.id) AS n FROM t JOIN u ON u.t_id = t.id LEFT JOIN o ON o.u_id = u.id GROUP BY t.name, u.tag ORDER BY t.name, u.tag NULLS FIRST",
+            "SELECT COUNT(*) FROM t JOIN u ON u.t_id = t.id WHERE t.id > 100",
+            "SELECT u.tag, MIN(u.score) AS lo FROM t RIGHT JOIN u ON u.t_id = t.id GROUP BY u.tag ORDER BY lo DESC NULLS LAST, u.tag",
+        ] {
+            let ours = rows(db, sql, &[]);
+            let mut stmt = sqlite.prepare(sql).unwrap();
+            let n = stmt.column_count();
+            let theirs: Vec<Vec<SqlValue>> = stmt
+                .query_map([], |row| {
+                    (0..n).map(|i| row.get(i).map(from_sqlite)).collect()
+                })
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(ours, theirs, "{backend}: {sql}");
+        }
+        for sql in [
+            "SELECT u.tag, o.amount FROM u JOIN o ON o.u_id = u.id GROUP BY u.tag",
+            "SELECT u.tag FROM u JOIN o ON o.u_id = u.id WHERE COUNT(*) > 1 GROUP BY u.tag",
+            "SELECT SUM(u.tag) FROM u JOIN o ON o.u_id = u.id",
+            "SELECT * FROM u JOIN o ON o.u_id = u.id GROUP BY u.tag",
+        ] {
+            assert!(db.execute(sql, &[]).is_err(), "{backend}: {sql}");
+        }
+        let plan = rows(
+            db,
+            "EXPLAIN SELECT u.tag, COUNT(*) FROM u JOIN o ON o.u_id = u.id GROUP BY u.tag",
+            &[],
+        );
+        assert_eq!(
+            plan.last().map(|row| row[0].clone()),
+            Some(SqlValue::Text("aggregate".into())),
+            "{backend}"
+        );
     });
 }

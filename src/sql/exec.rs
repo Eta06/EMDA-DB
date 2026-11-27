@@ -1616,10 +1616,10 @@ pub(crate) struct BoundSelectPlan {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct BoundAggregate {
-    kind: AggregateKind,
-    col_idx: Option<usize>,
-    col_type: Option<SqlType>,
+pub(crate) struct BoundAggregate {
+    pub(crate) kind: AggregateKind,
+    pub(crate) col_idx: Option<usize>,
+    pub(crate) col_type: Option<SqlType>,
 }
 
 #[derive(Clone, Debug)]
@@ -3603,7 +3603,7 @@ fn exec_simple_select_into(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum ScalarKey {
+pub(crate) enum ScalarKey {
     Null,
     Integer(i64),
     Real(u64),
@@ -3692,7 +3692,7 @@ fn compare_value_ref_to_scalar(v: SqlValueRef<'_>, k: &ScalarKey) -> Ordering {
     compare_non_null(v, k.as_value_ref()).expect("aggregate column has uniform type")
 }
 
-fn compare_order_cell_ref(
+pub(crate) fn compare_order_cell_ref(
     a: SqlValueRef<'_>,
     b: SqlValueRef<'_>,
     desc: bool,
@@ -3721,7 +3721,7 @@ fn compare_order_cell_ref(
     }
 }
 
-struct DistinctSet {
+pub(crate) struct DistinctSet {
     values: Vec<ScalarKey>,
     buckets: HashMap<u64, Vec<usize>>,
 }
@@ -3765,7 +3765,7 @@ impl DistinctSet {
     }
 }
 
-enum AggAcc {
+pub(crate) enum AggAcc {
     Count(u64),
     CountDistinct(DistinctSet),
     SumInt { sum: i128, has_value: bool },
@@ -3777,7 +3777,7 @@ enum AggAcc {
 }
 
 impl AggAcc {
-    fn new(spec: &BoundAggregate) -> Self {
+    pub(crate) fn new(spec: &BoundAggregate) -> Self {
         match (spec.kind, spec.col_type) {
             (AggregateKind::CountStar | AggregateKind::Count, _) => Self::Count(0),
             (AggregateKind::CountDistinct, _) => Self::CountDistinct(DistinctSet::new()),
@@ -3797,7 +3797,7 @@ impl AggAcc {
         }
     }
 
-    fn update(
+    pub(crate) fn update(
         &mut self,
         val: Option<SqlValueRef<'_>>,
         hash_builder: &RandomState,
@@ -3866,7 +3866,7 @@ impl AggAcc {
         Ok(())
     }
 
-    fn finalize(self) -> Result<SqlValue, SqlError> {
+    pub(crate) fn finalize(self) -> Result<SqlValue, SqlError> {
         match self {
             Self::Count(c) => Ok(SqlValue::Integer(c as i64)),
             Self::CountDistinct(set) => Ok(SqlValue::Integer(set.values.len() as i64)),

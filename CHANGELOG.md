@@ -4,6 +4,13 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add aggregates over SQL joins: `COUNT`, `SUM`, `AVG`, `MIN` and `MAX`
+  (including `COUNT(DISTINCT ...)`), `GROUP BY` over columns of any joined
+  table, `HAVING`, and `ORDER BY`/`LIMIT` over the groups, with the same
+  result rules as single-table aggregates. The join runs unchanged and
+  feeds at most `max_sort_rows` rows into at most `max_groups` groups.
+  `EXPLAIN` adds an `aggregate` step. Nine queries over inner, left and
+  right joins match SQLite on both backends.
 - Accept SQL `RIGHT [OUTER] JOIN` as the first join of a join statement. It
   runs as the mirrored `LEFT JOIN`, keeping the written column order for
   `*`, and matches SQLite on the tested queries, alone and followed by
