@@ -7,6 +7,7 @@
 
 mod catalog;
 mod exec;
+mod join;
 mod lexer;
 mod parser;
 mod plan;

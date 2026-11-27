@@ -822,7 +822,9 @@ fn unsupported_sql_features_return_unsupported_naming_feature() {
     let db = SqlDatabase::new(DocumentDatabase::new(&store));
 
     let cases = [
-        "SELECT id FROM a JOIN b ON a.id = b.id",
+        "SELECT a.id FROM a RIGHT JOIN b ON a.id = b.id",
+        "SELECT a.id FROM a CROSS JOIN b",
+        "SELECT a.id FROM a JOIN b USING (id)",
         "SELECT * FROM a, b",
         "SELECT id FROM a GROUP BY id",
         "SELECT id FROM a ORDER BY 1",

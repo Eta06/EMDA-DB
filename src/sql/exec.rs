@@ -40,6 +40,10 @@ pub(crate) struct SqlCache {
 }
 
 impl SqlCache {
+    pub(crate) fn tables(&self) -> &TableCache {
+        &self.tables
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             tables: TableCache::new(),
@@ -122,12 +126,15 @@ pub(crate) fn execute_statement(
     match &stmt.inner {
         Statement::CreateIndex(create_idx) => return exec_create_index(db, create_idx, cache),
         Statement::DropIndex(drop_idx) => return exec_drop_index(db, drop_idx, cache),
+        Statement::Join(join) => return super::join::execute(db, join, params, limits, cache),
         _ => {}
     }
 
     run_tx(db, |tx| match &stmt.inner {
         Statement::CreateTable(create) => exec_create_table(tx, create, limits),
-        Statement::CreateIndex(_) | Statement::DropIndex(_) => unreachable!(),
+        Statement::CreateIndex(_) | Statement::DropIndex(_) | Statement::Join(_) => {
+            unreachable!()
+        }
         Statement::Insert(insert) => exec_insert(tx, stmt.stmt_id, insert, params, limits, cache),
         Statement::Select(select) => exec_select(
             tx,
@@ -159,7 +166,7 @@ pub(crate) fn execute_statement(
     })
 }
 
-fn run_tx<T>(
+pub(crate) fn run_tx<T>(
     db: &DocumentDatabase<'_>,
     action: impl FnOnce(&mut DocumentTransaction<'_, '_>) -> Result<T, SqlError>,
 ) -> Result<T, SqlError> {

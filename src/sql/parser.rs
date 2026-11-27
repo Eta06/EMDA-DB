@@ -38,6 +38,7 @@ pub(crate) enum Statement {
     Select(SelectStmt),
     Update(UpdateStmt),
     Delete(DeleteStmt),
+    Join(Box<super::join::JoinSelect>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -174,6 +175,14 @@ pub(crate) enum Expr {
 
 pub(crate) fn parse_statement(sql: &str, limits: &SqlLimits) -> Result<SqlStatement, SqlError> {
     let tokens = tokenize(sql, limits)?;
+    if super::join::is_join_select(&tokens) {
+        let (join, param_count) = super::join::parse(tokens, limits)?;
+        return Ok(SqlStatement {
+            inner: Statement::Join(Box::new(join)),
+            param_count,
+            stmt_id: NEXT_STMT_ID.fetch_add(1, Ordering::Relaxed),
+        });
+    }
     let mut parser = Parser {
         tokens,
         pos: 0,
