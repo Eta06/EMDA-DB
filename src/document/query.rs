@@ -1,8 +1,9 @@
 //! Bounded indexed document queries with explicit ordering and pagination.
 use super::{
+    flat::FlatDocument,
     index::{self, IndexDefinition, IndexValue, TupleBuf},
     key,
-    transaction::{DocumentTransaction, Metadata, StoredDocument},
+    transaction::{DocumentTransaction, Metadata, StoredDocumentRef},
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -16,13 +17,14 @@ const CURSOR_MAGIC: &[u8; 8] = b"EMDAIC01";
 const CURSOR_HEADER_BYTES: usize = CURSOR_MAGIC.len() + 32;
 const CURSOR_CHECKSUM_BYTES: usize = 4;
 const CURSOR_SCOPE_MEMO_ENTRIES: usize = 8;
-const INLINE_INDEX_BYTES: usize = 512;
-const INLINE_INDEX_ENTRIES: usize = 16;
+const INDEX_ENTRIES_POOL_MAX_BYTES: usize = 64 * 1024;
+const INDEX_ENTRIES_POOL_MAX_ENDS: usize = 1024;
 
 type CursorScopeMemo = Vec<(String, IndexDefinition, [u8; 32])>;
 
 thread_local! {
     static CURSOR_SCOPE_MEMO: RefCell<CursorScopeMemo> = const { RefCell::new(Vec::new()) };
+    static INDEX_ENTRIES_POOL: RefCell<Option<IndexEntries>> = const { RefCell::new(None) };
 }
 
 fn cursor_scope(collection: &str, definition: &IndexDefinition) -> io::Result<[u8; 32]> {
@@ -31,6 +33,9 @@ fn cursor_scope(collection: &str, definition: &IndexDefinition) -> io::Result<[u
         let at = memo
             .iter()
             .position(|(name, def, _)| name == collection && def == definition)?;
+        if at == 0 {
+            return Some(memo[0].2);
+        }
         let entry = memo.remove(at);
         let scope = entry.2;
         memo.insert(0, entry);
@@ -51,87 +56,83 @@ fn cursor_scope(collection: &str, definition: &IndexDefinition) -> io::Result<[u
     Ok(scope)
 }
 
-/// Packed index entry keys scanned for one page. Small pages stay on the
-/// stack without heap allocation; larger pages spill into two contiguous
-/// vectors rather than one allocation per entry.
+/// Packed index entry keys scanned for one page, pooled per thread so steady-state
+/// indexed queries perform zero stack zeroing and zero heap allocations.
 struct IndexEntries {
-    inline_bytes: [u8; INLINE_INDEX_BYTES],
-    inline_ends: [u16; INLINE_INDEX_ENTRIES],
-    bytes_len: usize,
-    count: usize,
-    spilled: bool,
-    spill_bytes: Vec<u8>,
-    spill_ends: Vec<usize>,
+    bytes: Vec<u8>,
+    ends: Vec<usize>,
 }
 
 impl IndexEntries {
     fn new() -> Self {
         Self {
-            inline_bytes: [0; INLINE_INDEX_BYTES],
-            inline_ends: [0; INLINE_INDEX_ENTRIES],
-            bytes_len: 0,
-            count: 0,
-            spilled: false,
-            spill_bytes: Vec::new(),
-            spill_ends: Vec::new(),
+            bytes: Vec::new(),
+            ends: Vec::new(),
         }
     }
 
+    #[inline]
     fn clear(&mut self) {
-        self.bytes_len = 0;
-        self.count = 0;
-        self.spilled = false;
-        self.spill_bytes.clear();
-        self.spill_ends.clear();
+        self.bytes.clear();
+        self.ends.clear();
     }
 
+    #[inline]
     fn push(&mut self, entry: &[u8]) {
-        if !self.spilled {
-            if self.count < INLINE_INDEX_ENTRIES
-                && self.bytes_len + entry.len() <= INLINE_INDEX_BYTES
-            {
-                self.inline_bytes[self.bytes_len..self.bytes_len + entry.len()]
-                    .copy_from_slice(entry);
-                self.bytes_len += entry.len();
-                self.inline_ends[self.count] = self.bytes_len as u16;
-                self.count += 1;
-                return;
-            }
-            self.spill_bytes.clear();
-            self.spill_bytes.reserve(self.bytes_len + entry.len());
-            self.spill_bytes
-                .extend_from_slice(&self.inline_bytes[..self.bytes_len]);
-            self.spill_ends.clear();
-            self.spill_ends.reserve(self.count + 1);
-            for &end in &self.inline_ends[..self.count] {
-                self.spill_ends.push(usize::from(end));
-            }
-            self.spilled = true;
-        }
-        self.spill_bytes.extend_from_slice(entry);
-        self.spill_ends.push(self.spill_bytes.len());
-        self.count += 1;
+        self.bytes.extend_from_slice(entry);
+        self.ends.push(self.bytes.len());
     }
 
+    #[inline]
     fn len(&self) -> usize {
-        self.count
+        self.ends.len()
     }
 
+    #[inline]
     fn is_empty(&self) -> bool {
-        self.count == 0
+        self.ends.is_empty()
     }
 
+    #[inline]
     fn get(&self, index: usize) -> &[u8] {
-        if !self.spilled {
-            let start = index
-                .checked_sub(1)
-                .map_or(0, |prev| usize::from(self.inline_ends[prev]));
-            let end = usize::from(self.inline_ends[index]);
-            &self.inline_bytes[start..end]
-        } else {
-            let start = index.checked_sub(1).map_or(0, |prev| self.spill_ends[prev]);
-            let end = self.spill_ends[index];
-            &self.spill_bytes[start..end]
+        let start = if index == 0 { 0 } else { self.ends[index - 1] };
+        let end = self.ends[index];
+        &self.bytes[start..end]
+    }
+}
+
+struct IndexEntriesGuard(IndexEntries);
+
+impl IndexEntriesGuard {
+    fn acquire() -> Self {
+        let pooled = INDEX_ENTRIES_POOL
+            .try_with(|slot| {
+                slot.try_borrow_mut()
+                    .ok()
+                    .and_then(|mut guard| guard.take())
+            })
+            .ok()
+            .flatten();
+        let mut entries = pooled.unwrap_or_else(IndexEntries::new);
+        entries.clear();
+        Self(entries)
+    }
+}
+
+impl Drop for IndexEntriesGuard {
+    fn drop(&mut self) {
+        if self.0.bytes.capacity() <= INDEX_ENTRIES_POOL_MAX_BYTES
+            && self.0.ends.capacity() <= INDEX_ENTRIES_POOL_MAX_ENDS
+        {
+            self.0.clear();
+            let entries = std::mem::replace(&mut self.0, IndexEntries::new());
+            let _ = INDEX_ENTRIES_POOL.try_with(|slot| {
+                if let Ok(mut guard) = slot.try_borrow_mut() {
+                    if guard.is_none() {
+                        *guard = Some(entries);
+                    }
+                }
+            });
         }
     }
 }
@@ -575,9 +576,9 @@ impl DocumentTransaction<'_, '_> {
     }
 
     /// Visits matching documents in secondary-index order across as many
-    /// internal pages as needed, lending each document ID and decoded
-    /// `StoredDocument` without computing public cursor scopes or building
-    /// JSON values for flat rows.
+    /// internal pages as needed, lending each document ID and decoded flat
+    /// (`Ok(&FlatDocument)`) or full (`Err(&Value)`) document without
+    /// computing public cursor scopes or building JSON values for flat rows.
     ///
     /// Enforces the same metadata, bounds, checksum, schema, index-entry,
     /// unique-owner, read-set, and read-budget checks as `query_index`.
@@ -593,7 +594,7 @@ impl DocumentTransaction<'_, '_> {
         upper: Option<&IndexBound>,
         unique_equality: bool,
         mut next_page_limit: impl FnMut() -> usize,
-        mut visit: impl FnMut(&str, &StoredDocument<'_>) -> Result<ControlFlow<()>, E>,
+        mut visit: impl FnMut(&str, Result<&FlatDocument<'_>, &Value>) -> Result<ControlFlow<()>, E>,
     ) -> io::Result<Result<(), E>> {
         let mut page_limit = next_page_limit();
         if page_limit == 0 {
@@ -630,14 +631,15 @@ impl DocumentTransaction<'_, '_> {
         }
         let mut doc_prefix = TupleBuf::new();
         write_collection_prefix(&mut doc_prefix, b'D', collection)?;
-        let mut unique_prefix = TupleBuf::new();
-        let unique_prefix_slice = if definition.unique {
-            write_index_prefix(&mut unique_prefix, b'U', collection, &definition.name)?;
-            Some(unique_prefix.as_slice())
+        let unique_prefix = if definition.unique {
+            let mut buf = TupleBuf::new();
+            write_index_prefix(&mut buf, b'U', collection, &definition.name)?;
+            Some(buf)
         } else {
             None
         };
-        let mut entries = IndexEntries::new();
+        let unique_prefix_slice = unique_prefix.as_ref().map(TupleBuf::as_slice);
+        let mut entries = IndexEntriesGuard::acquire();
         let mut tuple_buf = TupleBuf::new();
         let mut cursor: Option<Vec<u8>> = None;
         loop {
@@ -660,9 +662,12 @@ impl DocumentTransaction<'_, '_> {
                     candidate_limit: None,
                     unique_equality: false,
                 },
-                &mut entries,
+                &mut entries.0,
                 &mut tuple_buf,
-                |id, stored| visit(id, stored),
+                |id, stored| match stored {
+                    StoredDocumentRef::Flat(flat) => visit(id, Ok(flat)),
+                    StoredDocumentRef::Full(value) => visit(id, Err(value)),
+                },
             )? {
                 Ok(outcome) => outcome,
                 Err(visitor_error) => return Ok(Err(visitor_error)),
@@ -681,7 +686,7 @@ impl DocumentTransaction<'_, '_> {
             let Some(cursor_index) = outcome.cursor_index else {
                 return Ok(Ok(()));
             };
-            cursor = Some(entries.get(cursor_index).to_vec());
+            cursor = Some(entries.0.get(cursor_index).to_vec());
         }
     }
 
@@ -814,14 +819,15 @@ impl DocumentTransaction<'_, '_> {
         }
         let mut doc_prefix = TupleBuf::new();
         write_collection_prefix(&mut doc_prefix, b'D', collection)?;
-        let mut unique_prefix = TupleBuf::new();
-        let unique_prefix_slice = if definition.unique {
-            write_index_prefix(&mut unique_prefix, b'U', collection, &definition.name)?;
-            Some(unique_prefix.as_slice())
+        let unique_prefix = if definition.unique {
+            let mut buf = TupleBuf::new();
+            write_index_prefix(&mut buf, b'U', collection, &definition.name)?;
+            Some(buf)
         } else {
             None
         };
-        let mut entries = IndexEntries::new();
+        let unique_prefix_slice = unique_prefix.as_ref().map(TupleBuf::as_slice);
+        let mut entries = IndexEntriesGuard::acquire();
         let mut tuple_buf = TupleBuf::new();
         let outcome = self
             .visit_index_page_stored(
@@ -834,12 +840,12 @@ impl DocumentTransaction<'_, '_> {
                 before.as_slice(),
                 query.limit,
                 &options,
-                &mut entries,
+                &mut entries.0,
                 &mut tuple_buf,
                 |id, stored| {
                     let document = match stored {
-                        StoredDocument::Flat(flat) => Value::Object(flat.to_map()),
-                        StoredDocument::Full(document) => std::mem::take(document),
+                        StoredDocumentRef::Flat(flat) => Value::Object(flat.to_map()),
+                        StoredDocumentRef::Full(document) => std::mem::take(document),
                     };
                     visit(DocumentEntry {
                         id: id.to_owned(),
@@ -851,7 +857,7 @@ impl DocumentTransaction<'_, '_> {
             .unwrap_or_else(|never| match never {});
         let cursor = outcome
             .cursor_index
-            .map(|index| entries.get(index).to_vec());
+            .map(|index| entries.0.get(index).to_vec());
         Ok(IndexScan {
             next: cursor,
             plan: plan(outcome.entries_read, outcome.returned),
@@ -874,7 +880,7 @@ impl DocumentTransaction<'_, '_> {
         options: &IndexScanOptions<'_>,
         entries: &mut IndexEntries,
         tuple_buf: &mut TupleBuf,
-        mut visit: impl FnMut(&str, &mut StoredDocument<'_>) -> Result<ControlFlow<()>, E>,
+        mut visit: impl FnMut(&str, StoredDocumentRef<'_, '_>) -> Result<ControlFlow<()>, E>,
     ) -> io::Result<Result<StoredPageOutcome, E>> {
         entries.clear();
         let mut nonempty_entry = false;
@@ -898,7 +904,82 @@ impl DocumentTransaction<'_, '_> {
         let mut cursor_index = None;
         let mut stopped = false;
         let mut visitor_error: Option<E> = None;
-        if !entries.is_empty() {
+        if entries_read == 1 && unique_prefix.is_none() {
+            if options.candidate_limit == Some(0) {
+                return Err(key::invalid("document scan exceeds the operation limit"));
+            }
+            let entry = entries.get(0);
+            let id = entry_id(entry, index_prefix, definition.fields.len())?;
+            let mut doc_key_buf = TupleBuf::new();
+            doc_key_buf.extend_from_slice(doc_prefix);
+            doc_key_buf.extend_from_slice(id.as_bytes());
+            let document_key = doc_key_buf.as_slice();
+            let mut next_document_bytes = 0_usize;
+            let found = self.visit_document_bytes_single(
+                document_key,
+                |len| {
+                    next_document_bytes = document_key
+                        .len()
+                        .checked_add(len)
+                        .ok_or_else(|| key::invalid("document scan byte count overflow"))?;
+                    if options
+                        .byte_limit
+                        .is_some_and(|limit| next_document_bytes > limit)
+                    {
+                        return Err(key::invalid("document scan exceeds the operation limit"));
+                    }
+                    if options.reject_response_overflow
+                        && options.response_byte_limit.is_some_and(|limit| {
+                            id.len().checked_add(len).is_none_or(|total| total > limit)
+                        })
+                    {
+                        return Err(key::invalid("lookup response exceeds its byte limit"));
+                    }
+                    Ok(())
+                },
+                |encoded| {
+                    let next_used = id
+                        .len()
+                        .checked_add(encoded.len())
+                        .ok_or_else(|| key::invalid("query response size overflow"))?;
+                    if options
+                        .response_byte_limit
+                        .is_some_and(|limit| next_used > limit)
+                    {
+                        return Ok(None);
+                    }
+                    Self::visit_decoded_stored(encoded, &metadata.schema, |stored| {
+                        index::verify_entry_stored_ref(
+                            definition,
+                            &stored,
+                            index_prefix,
+                            id,
+                            entry,
+                            tuple_buf,
+                        )?;
+                        match visit(id, stored) {
+                            Ok(ControlFlow::Continue(())) => {}
+                            Ok(ControlFlow::Break(())) => {
+                                stopped = true;
+                            }
+                            Err(err) => {
+                                visitor_error = Some(err);
+                            }
+                        }
+                        Ok(Some(next_used))
+                    })
+                },
+            )?;
+            let Some(outcome) = found else {
+                return Err(invalid_data("index references a missing document"));
+            };
+            if let Some(next_used) = outcome {
+                document_key_value_bytes = next_document_bytes;
+                used = next_used;
+                returned = 1;
+                cursor_index = Some(0);
+            }
+        } else if !entries.is_empty() {
             let peek_limit = if options.unique_equality {
                 1
             } else {
@@ -987,59 +1068,60 @@ impl DocumentTransaction<'_, '_> {
                             {
                                 return Ok(None);
                             }
-                            let mut stored = Self::decode_stored(encoded, &metadata.schema)?;
-                            index::verify_entry_stored(
-                                definition,
-                                &stored,
-                                index_prefix,
-                                id,
-                                entry,
-                                tuple_buf,
-                            )?;
-                            if let Some(unique_prefix) = unique_prefix {
-                                let mut unique_key_buf = TupleBuf::new();
-                                unique_key_buf.extend_from_slice(unique_prefix);
-                                unique_key_buf.extend_from_slice(tuple_buf.as_slice());
-                                unique_verifier.verify_owner(
-                                    unique_key_buf.as_slice(),
+                            Self::visit_decoded_stored(encoded, &metadata.schema, |stored| {
+                                index::verify_entry_stored_ref(
+                                    definition,
+                                    &stored,
+                                    index_prefix,
                                     id,
-                                    has_upcoming,
-                                    |push_key| {
-                                        let mut peek_unique_buf = TupleBuf::new();
-                                        peek_unique_buf.extend_from_slice(unique_prefix);
-                                        for next_index in index + 1..upcoming_end {
-                                            let next_entry = entries.get(next_index);
-                                            let Some((next_tuple, _)) = peek_tuple_and_id(
-                                                next_entry,
-                                                index_prefix,
-                                                definition.fields.len(),
-                                            ) else {
-                                                break;
-                                            };
-                                            if unique_prefix.len() + next_tuple.len()
-                                                > crate::record::MAX_KEY
-                                            {
-                                                break;
-                                            }
-                                            peek_unique_buf.truncate(unique_prefix.len());
-                                            peek_unique_buf.extend_from_slice(next_tuple);
-                                            if !push_key(peek_unique_buf.as_slice()) {
-                                                break;
-                                            }
-                                        }
-                                    },
+                                    entry,
+                                    tuple_buf,
                                 )?;
-                            }
-                            match visit(id, &mut stored) {
-                                Ok(ControlFlow::Continue(())) => {}
-                                Ok(ControlFlow::Break(())) => {
-                                    stopped = true;
+                                if let Some(unique_prefix) = unique_prefix {
+                                    let mut unique_key_buf = TupleBuf::new();
+                                    unique_key_buf.extend_from_slice(unique_prefix);
+                                    unique_key_buf.extend_from_slice(tuple_buf.as_slice());
+                                    unique_verifier.verify_owner(
+                                        unique_key_buf.as_slice(),
+                                        id,
+                                        has_upcoming,
+                                        |push_key| {
+                                            let mut peek_unique_buf = TupleBuf::new();
+                                            peek_unique_buf.extend_from_slice(unique_prefix);
+                                            for next_index in index + 1..upcoming_end {
+                                                let next_entry = entries.get(next_index);
+                                                let Some((next_tuple, _)) = peek_tuple_and_id(
+                                                    next_entry,
+                                                    index_prefix,
+                                                    definition.fields.len(),
+                                                ) else {
+                                                    break;
+                                                };
+                                                if unique_prefix.len() + next_tuple.len()
+                                                    > crate::record::MAX_KEY
+                                                {
+                                                    break;
+                                                }
+                                                peek_unique_buf.truncate(unique_prefix.len());
+                                                peek_unique_buf.extend_from_slice(next_tuple);
+                                                if !push_key(peek_unique_buf.as_slice()) {
+                                                    break;
+                                                }
+                                            }
+                                        },
+                                    )?;
                                 }
-                                Err(err) => {
-                                    visitor_error = Some(err);
+                                match visit(id, stored) {
+                                    Ok(ControlFlow::Continue(())) => {}
+                                    Ok(ControlFlow::Break(())) => {
+                                        stopped = true;
+                                    }
+                                    Err(err) => {
+                                        visitor_error = Some(err);
+                                    }
                                 }
-                            }
-                            Ok(Some(next_used))
+                                Ok(Some(next_used))
+                            })
                         },
                     )?;
                     let Some(outcome) = found else {
@@ -1182,15 +1264,16 @@ mod query_helper_tests {
 
     #[test]
     fn stack_index_bounds_match_allocating_bounds_including_max_key_truncation() {
-        let long_s = "a".repeat(256);
-        let max_s = "\u{7f}".repeat(256);
-        let cases: Vec<(
-            &str,
-            &str,
+        type BoundCase<'a> = (
+            &'a str,
+            &'a str,
             Vec<IndexValue>,
             Option<IndexBound>,
             Option<IndexBound>,
-        )> = vec![
+        );
+        let long_s = "a".repeat(256);
+        let max_s = "\u{7f}".repeat(256);
+        let cases: Vec<BoundCase<'_>> = vec![
             ("items", "idx", vec![], None, None),
             (
                 "items",
@@ -1334,8 +1417,8 @@ mod query_helper_tests {
                     || 256,
                     |id, stored| {
                         let got = match stored {
-                            StoredDocument::Flat(f) => f.get("id").and_then(|v| v.as_i64()),
-                            StoredDocument::Full(v) => v.get("id").and_then(Value::as_i64),
+                            Ok(f) => f.get("id").and_then(|v| v.as_i64()),
+                            Err(v) => v.get("id").and_then(Value::as_i64),
                         };
                         ids.push((id.to_owned(), got.unwrap()));
                         Ok::<ControlFlow<()>, ()>(ControlFlow::Continue(()))
@@ -1376,9 +1459,9 @@ mod query_helper_tests {
                     false,
                     || 256,
                     |id, stored| {
-                        let note = match &stored {
-                            StoredDocument::Flat(f) => f.get("note").map(|v| format!("{v:?}")),
-                            StoredDocument::Full(v) => v.get("note").map(ToString::to_string),
+                        let note = match stored {
+                            Ok(f) => f.get("note").map(|v| format!("{v:?}")),
+                            Err(v) => v.get("note").map(ToString::to_string),
                         };
                         rev_ids.push((id.to_owned(), note));
                         Ok::<ControlFlow<()>, ()>(ControlFlow::Continue(()))

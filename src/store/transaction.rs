@@ -400,6 +400,44 @@ impl Transaction<'_> {
         Ok(count)
     }
 
+    /// Visits a single key's verified value bytes with the same admission,
+    /// staged-overlay, read-set, and checksum semantics as `get_admitted`,
+    /// reusing a bounded thread-local scratch buffer instead of allocating.
+    pub(crate) fn visit_point_admitted<R>(
+        &self,
+        key: &[u8],
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+        visit: impl FnOnce(&[u8]) -> io::Result<R>,
+    ) -> io::Result<Option<R>> {
+        crate::cancellation::check(self.cancellation.as_ref())?;
+        record::validate_key(key)?;
+        let snapshot = self.snapshot.read_index()?;
+        if !self.staged.is_empty() {
+            if let Some(value) = self.staged.get(key) {
+                if let Some(value) = value {
+                    admit(value.len())?;
+                    return visit(value).map(Some);
+                }
+                return Ok(None);
+            }
+        }
+        if let Some(read_set) = &self.read_set {
+            read_set
+                .lock()
+                .map_err(|_| io::Error::other("transaction read set poisoned"))?
+                .point(key)?;
+        }
+        let Some(&location) = snapshot.index.get(key) else {
+            return Ok(None);
+        };
+        admit(location.length)?;
+        let log = snapshot
+            .log
+            .as_ref()
+            .expect("active snapshot retains its log");
+        read_location_borrowed(log, location, visit).map(Some)
+    }
+
     pub(crate) fn with_point_session<T>(
         &self,
         action: impl FnOnce(&mut OrdinaryPointSession<'_>) -> io::Result<T>,
@@ -488,6 +526,76 @@ impl Transaction<'_> {
     }
 }
 
+const POINT_SCRATCH_MAX_BYTES: usize = 8192;
+
+enum PointScratchSlot {
+    Uninit,
+    Idle(Vec<u8>),
+    InUse,
+}
+
+thread_local! {
+    static POINT_READ_SCRATCH: std::cell::RefCell<PointScratchSlot> =
+        const { std::cell::RefCell::new(PointScratchSlot::Uninit) };
+}
+
+struct PointScratchGuard(Vec<u8>);
+
+impl Drop for PointScratchGuard {
+    fn drop(&mut self) {
+        let buf = std::mem::take(&mut self.0);
+        let next = if buf.capacity() <= POINT_SCRATCH_MAX_BYTES {
+            PointScratchSlot::Idle(buf)
+        } else {
+            PointScratchSlot::Uninit
+        };
+        let _ = POINT_READ_SCRATCH.try_with(|slot| {
+            if let Ok(mut guard) = slot.try_borrow_mut() {
+                *guard = next;
+            }
+        });
+    }
+}
+
+fn read_location_borrowed<R>(
+    log: &crate::log::Log,
+    location: ValueLocation,
+    visit: impl FnOnce(&[u8]) -> io::Result<R>,
+) -> io::Result<R> {
+    if location.length == 0 {
+        log.read_into(location, &mut [])?;
+        return visit(&[]);
+    }
+    if location.length <= POINT_SCRATCH_MAX_BYTES {
+        let acquired = POINT_READ_SCRATCH
+            .try_with(|slot| {
+                let mut guard = slot.try_borrow_mut().ok()?;
+                match std::mem::replace(&mut *guard, PointScratchSlot::InUse) {
+                    PointScratchSlot::Idle(buf) => Some(buf),
+                    PointScratchSlot::Uninit => Some(vec![0_u8; location.length.max(512)]),
+                    PointScratchSlot::InUse => None,
+                }
+            })
+            .ok()
+            .flatten();
+        if let Some(mut buf) = acquired {
+            if buf.len() < location.length {
+                buf.resize(location.length, 0);
+            }
+            let mut guard = PointScratchGuard(buf);
+            log.read_into(location, &mut guard.0[..location.length])?;
+            return visit(&guard.0[..location.length]);
+        }
+        if location.length <= 128 {
+            let mut stack_buf = [0_u8; 128];
+            log.read_into(location, &mut stack_buf[..location.length])?;
+            return visit(&stack_buf[..location.length]);
+        }
+    }
+    let bytes = log.read(location)?;
+    visit(&bytes)
+}
+
 pub(crate) struct OrdinaryPointSession<'a> {
     tx: &'a Transaction<'a>,
     snapshot_index: &'a BTreeMap<Vec<u8>, ValueLocation>,
@@ -545,7 +653,7 @@ fn lookup_with_cursor<'a>(
     (found, false)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn visit_ordinary_sub_read(
     tx: &Transaction<'_>,
     snapshot_index: &BTreeMap<Vec<u8>, ValueLocation>,
@@ -585,10 +693,8 @@ fn visit_ordinary_sub_read(
         return Ok(false);
     };
     admit(location.length)?;
-    if !has_upcoming && !*used_read_ahead && location.length <= 256 {
-        let mut stack_buf = [0_u8; 256];
-        log.read_into(location, &mut stack_buf[..location.length])?;
-        visit(&stack_buf[..location.length])?;
+    if !has_upcoming && !*used_read_ahead && location.length <= POINT_SCRATCH_MAX_BYTES {
+        read_location_borrowed(log, location, visit)?;
         return Ok(true);
     }
     *used_read_ahead = true;
@@ -747,7 +853,7 @@ impl OrdinaryPointSession<'_> {
             return Ok(None);
         };
         admit(location.length)?;
-        if !has_upcoming && !*used_read_ahead && location.length <= 4096 {
+        if !has_upcoming && !*used_read_ahead && location.length <= POINT_SCRATCH_MAX_BYTES {
             let mut sub_read =
                 |sub_key: &[u8],
                  sub_upcoming: bool,
@@ -769,19 +875,8 @@ impl OrdinaryPointSession<'_> {
                         sub_visit,
                     )
                 };
-            if location.length <= 128 {
-                let mut stack_buf = [0_u8; 128];
-                log.read_into(location, &mut stack_buf[..location.length])?;
-                return visit(&stack_buf[..location.length], &mut sub_read).map(Some);
-            }
-            if location.length <= 512 {
-                let mut stack_buf = [0_u8; 512];
-                log.read_into(location, &mut stack_buf[..location.length])?;
-                return visit(&stack_buf[..location.length], &mut sub_read).map(Some);
-            }
-            let mut stack_buf = [0_u8; 4096];
-            log.read_into(location, &mut stack_buf[..location.length])?;
-            return visit(&stack_buf[..location.length], &mut sub_read).map(Some);
+            return read_location_borrowed(log, location, |bytes| visit(bytes, &mut sub_read))
+                .map(Some);
         }
         *used_read_ahead = true;
         let value = read_ahead.read_slice_with_peek(location, |push| {

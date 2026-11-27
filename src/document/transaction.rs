@@ -33,6 +33,13 @@ pub(crate) enum StoredDocument<'a> {
     Full(Value),
 }
 
+/// Borrowed view of a decoded stored document, avoiding moving a 352-byte
+/// inline `FlatDocument` across stack frames.
+pub(super) enum StoredDocumentRef<'a, 'b> {
+    Flat(&'b super::flat::FlatDocument<'a>),
+    Full(&'b mut Value),
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Metadata {
@@ -387,6 +394,56 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         }
     }
 
+    /// Visits a single document's verified bytes without opening a full point
+    /// session, used when an index page contains only one non-unique entry.
+    /// Falls back to `with_point_reader` for snapshot and retained backends.
+    pub(super) fn visit_document_bytes_single<R>(
+        &self,
+        key: &[u8],
+        mut admit: impl FnMut(usize) -> io::Result<()>,
+        visit: impl FnOnce(&[u8]) -> io::Result<R>,
+    ) -> io::Result<Option<R>> {
+        match &self.backend {
+            BackendTransaction::Ordinary(tx) => {
+                self.charge_read(1, key.len())?;
+                tx.visit_point_admitted(
+                    key,
+                    |len| {
+                        if len > MAX_DOCUMENT_BYTES {
+                            return Err(invalid_data("stored document exceeds size limit"));
+                        }
+                        admit(len)?;
+                        self.charge_read(0, len)
+                    },
+                    visit,
+                )
+            }
+            BackendTransaction::Checkpoint(tx) => {
+                self.charge_read(1, key.len())?;
+                tx.visit_point_admitted(
+                    key,
+                    |len| {
+                        if len > MAX_DOCUMENT_BYTES {
+                            return Err(invalid_data("stored document exceeds size limit"));
+                        }
+                        admit(len)?;
+                        self.charge_read(0, len)
+                    },
+                    visit,
+                )
+            }
+            _ => self.with_point_reader(|reader| {
+                reader.visit_document_bytes_with_peek(
+                    key,
+                    false,
+                    admit,
+                    |_| {},
+                    |bytes, _| visit(bytes),
+                )
+            }),
+        }
+    }
+
     pub(super) fn has_index_entry(&self, key: &[u8]) -> io::Result<bool> {
         Ok(self
             .read_admitted(key, |len| {
@@ -597,15 +654,12 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
     /// the key and value buffer on memo hits.
     pub(super) fn metadata_fast(&self, collection: &str) -> io::Result<Arc<Metadata>> {
         key::name(collection)?;
-        let mut key_buf = [0_u8; 160];
-        let prefix = key::PREFIX;
-        let key_len = prefix.len() + 1 + 2 + collection.len();
-        key_buf[..prefix.len()].copy_from_slice(prefix);
-        key_buf[prefix.len()] = b'M';
-        key_buf[prefix.len() + 1..prefix.len() + 3]
-            .copy_from_slice(&(collection.len() as u16).to_be_bytes());
-        key_buf[prefix.len() + 3..key_len].copy_from_slice(collection.as_bytes());
-        let key = &key_buf[..key_len];
+        let mut key_buf = index::TupleBuf::new();
+        key_buf.extend_from_slice(key::PREFIX);
+        key_buf.extend_from_slice(b"M");
+        key_buf.extend_from_slice(&(collection.len() as u16).to_be_bytes());
+        key_buf.extend_from_slice(collection.as_bytes());
+        let key = key_buf.as_slice();
 
         let decode_slice = |bytes: &[u8]| -> io::Result<Arc<Metadata>> {
             let found = METADATA_MEMO.with(|memo| {
@@ -613,6 +667,9 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
                 let at = memo.iter().position(|(name, stored, _)| {
                     name == collection && stored.as_slice() == bytes
                 })?;
+                if at == 0 {
+                    return Some(Arc::clone(&memo[0].2));
+                }
                 let entry = memo.remove(at);
                 let metadata = Arc::clone(&entry.2);
                 memo.insert(0, entry);
@@ -647,27 +704,11 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         let decoded = match &self.backend {
             BackendTransaction::Ordinary(tx) => {
                 self.charge_read(1, key.len())?;
-                tx.with_point_session(|session| {
-                    session.visit_admitted_with_peek(
-                        key,
-                        false,
-                        |len| self.charge_read(0, len),
-                        |_| {},
-                        |bytes, _| decode_slice(bytes),
-                    )
-                })?
+                tx.visit_point_admitted(key, |len| self.charge_read(0, len), decode_slice)?
             }
             BackendTransaction::Checkpoint(tx) => {
                 self.charge_read(1, key.len())?;
-                tx.with_point_session(|session| {
-                    session.visit_admitted_with_peek(
-                        key,
-                        false,
-                        |len| self.charge_read(0, len),
-                        |_| {},
-                        |bytes, _| decode_slice(bytes),
-                    )
-                })?
+                tx.visit_point_admitted(key, |len| self.charge_read(0, len), decode_slice)?
             }
             _ => {
                 let bytes = self.read(key)?;
@@ -819,6 +860,28 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
             }
         }
         Self::decode_document(bytes, schema).map(StoredDocument::Full)
+    }
+
+    /// Decodes a stored document identically to `decode_stored` and passes a
+    /// borrowed `StoredDocumentRef` to `visit`, keeping any inline
+    /// `FlatDocument` in place without copying it across return values.
+    #[inline]
+    pub(super) fn visit_decoded_stored<R>(
+        bytes: &[u8],
+        schema: &CollectionSchema,
+        visit: impl FnOnce(StoredDocumentRef<'_, '_>) -> io::Result<R>,
+    ) -> io::Result<R> {
+        if bytes.len() > MAX_DOCUMENT_BYTES {
+            return Err(invalid_data("stored document exceeds size limit"));
+        }
+        if let Some(flat) = super::flat::parse(bytes) {
+            if let Some(valid) = schema.validate_flat(&flat) {
+                valid.map_err(|_| invalid_data("stored document violates its schema"))?;
+                return visit(StoredDocumentRef::Flat(&flat));
+            }
+        }
+        let mut full = Self::decode_document(bytes, schema)?;
+        visit(StoredDocumentRef::Full(&mut full))
     }
 
     /// Visits one bounded page of a collection's stored documents in ID

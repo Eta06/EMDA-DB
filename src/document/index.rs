@@ -1,8 +1,10 @@
 //! Deterministic scalar index keys and atomic index maintenance helpers.
+#[cfg(test)]
+use super::transaction::StoredDocument;
 use super::{
     flat::{FlatDocument, FlatScalar},
     key, schema,
-    transaction::StoredDocument,
+    transaction::StoredDocumentRef,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -201,6 +203,7 @@ pub(super) struct TupleBuf {
 }
 
 impl TupleBuf {
+    #[inline]
     pub(super) fn new() -> Self {
         Self {
             inline: [0; INLINE_TUPLE_BYTES],
@@ -210,12 +213,14 @@ impl TupleBuf {
         }
     }
 
+    #[inline]
     pub(super) fn clear(&mut self) {
         self.len = 0;
         self.spilled = false;
         self.spill.clear();
     }
 
+    #[inline]
     pub(super) fn as_slice(&self) -> &[u8] {
         if self.spilled {
             &self.spill
@@ -224,14 +229,17 @@ impl TupleBuf {
         }
     }
 
+    #[inline]
     pub(super) fn len(&self) -> usize {
         self.len
     }
 
+    #[inline]
     pub(super) fn extend_from_slice(&mut self, bytes: &[u8]) {
         self.extend_bytes(bytes);
     }
 
+    #[inline]
     pub(super) fn truncate(&mut self, len: usize) {
         if len < self.len {
             self.len = len;
@@ -259,6 +267,7 @@ impl TupleBuf {
         unreachable!("reserved prefixes contain non-0xff bytes")
     }
 
+    #[cold]
     fn spill_for(&mut self, extra: usize) {
         if !self.spilled {
             self.spill.clear();
@@ -270,6 +279,7 @@ impl TupleBuf {
 }
 
 impl ByteSink for TupleBuf {
+    #[inline]
     fn push_byte(&mut self, byte: u8) {
         if !self.spilled && self.len < INLINE_TUPLE_BYTES {
             self.inline[self.len] = byte;
@@ -281,6 +291,7 @@ impl ByteSink for TupleBuf {
         self.len += 1;
     }
 
+    #[inline]
     fn extend_bytes(&mut self, bytes: &[u8]) {
         if !self.spilled && self.len + bytes.len() <= INLINE_TUPLE_BYTES {
             self.inline[self.len..self.len + bytes.len()].copy_from_slice(bytes);
@@ -337,6 +348,7 @@ pub(super) fn encode_json(value: &Value, out: &mut Vec<u8>) -> io::Result<()> {
     encode_json_into(value, out)
 }
 
+#[inline]
 fn encode_flat_scalar(value: FlatScalar<'_>, out: &mut impl ByteSink) -> io::Result<()> {
     match value {
         FlatScalar::Null => out.push_byte(0x10),
@@ -358,6 +370,7 @@ fn encode_flat_scalar(value: FlatScalar<'_>, out: &mut impl ByteSink) -> io::Res
     Ok(())
 }
 
+#[inline]
 fn flat_field<'a>(document: &FlatDocument<'a>, path: &[String]) -> Option<FlatScalar<'a>> {
     // A flat document contains only top-level scalar members, so any nested
     // path is absent, matching `schema::field`.
@@ -381,6 +394,7 @@ fn matches_partial(document: &Value, filter: &Option<PartialFilter>) -> bool {
     }
 }
 
+#[inline]
 fn matches_partial_flat(document: &FlatDocument<'_>, filter: &Option<PartialFilter>) -> bool {
     match filter {
         None => true,
@@ -421,6 +435,7 @@ fn encode_indexed_tuple_into(
     Ok(true)
 }
 
+#[inline]
 fn encode_indexed_tuple_flat(
     definition: &IndexDefinition,
     document: &FlatDocument<'_>,
@@ -442,9 +457,9 @@ fn encode_indexed_tuple_flat(
 /// `index_prefix` and `id`, leaving the encoded tuple in `tuple_buf` for any
 /// unique-owner check. Enforces the same representability, membership, key-size,
 /// and exact-entry checks as `keys` without allocating key buffers.
-pub(super) fn verify_entry_stored(
+pub(super) fn verify_entry_stored_ref(
     definition: &IndexDefinition,
-    document: &StoredDocument<'_>,
+    document: &StoredDocumentRef<'_, '_>,
     index_prefix: &[u8],
     id: &str,
     entry: &[u8],
@@ -453,8 +468,8 @@ pub(super) fn verify_entry_stored(
     let invalid = |msg| io::Error::new(io::ErrorKind::InvalidData, msg);
     tuple_buf.clear();
     let belongs = match document {
-        StoredDocument::Flat(flat) => encode_indexed_tuple_flat(definition, flat, tuple_buf),
-        StoredDocument::Full(value) => encode_indexed_tuple_into(definition, value, tuple_buf),
+        StoredDocumentRef::Flat(flat) => encode_indexed_tuple_flat(definition, flat, tuple_buf),
+        StoredDocumentRef::Full(value) => encode_indexed_tuple_into(definition, value, tuple_buf),
     }
     .map_err(|_| invalid("document cannot be represented by its index"))?;
     if !belongs {
@@ -480,6 +495,38 @@ pub(super) fn verify_entry_stored(
         return Err(invalid("document index entry does not match the document"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn verify_entry_stored(
+    definition: &IndexDefinition,
+    document: &StoredDocument<'_>,
+    index_prefix: &[u8],
+    id: &str,
+    entry: &[u8],
+    tuple_buf: &mut TupleBuf,
+) -> io::Result<()> {
+    match document {
+        StoredDocument::Flat(flat) => verify_entry_stored_ref(
+            definition,
+            &StoredDocumentRef::Flat(flat),
+            index_prefix,
+            id,
+            entry,
+            tuple_buf,
+        ),
+        StoredDocument::Full(value) => {
+            let mut copy = value.clone();
+            verify_entry_stored_ref(
+                definition,
+                &StoredDocumentRef::Full(&mut copy),
+                index_prefix,
+                id,
+                entry,
+                tuple_buf,
+            )
+        }
+    }
 }
 
 pub(super) struct Keys {

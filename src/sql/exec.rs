@@ -3807,22 +3807,12 @@ fn exec_pk_sorted_select(
         }
         Ok(rows)
     } else {
-        enum PkSortKey {
-            Int(i64),
-            Text(String),
-        }
-        impl PkSortKey {
-            fn cmp_order(&self, other: &Self, desc: bool) -> Ordering {
-                let ord = match (self, other) {
-                    (Self::Int(a), Self::Int(b)) => a.cmp(b),
-                    (Self::Text(a), Self::Text(b)) => a.as_bytes().cmp(b.as_bytes()),
-                    _ => unreachable!("table rows share one primary-key type"),
-                };
-                if desc { ord.reverse() } else { ord }
-            }
-        }
-        let mut first: Option<(PkSortKey, Vec<SqlValue>)> = None;
-        let mut rest: Vec<(PkSortKey, Vec<SqlValue>)> = Vec::new();
+        const INLINE_PK_KEYS: usize = 16;
+        let is_int_pk = table.columns[table.primary_key_index].col_type == SqlType::Integer;
+        let mut rows: Vec<Vec<SqlValue>> = Vec::new();
+        let mut int_keys_inline = [0_i64; INLINE_PK_KEYS];
+        let mut int_keys_spill: Vec<i64> = Vec::new();
+        let mut text_keys: Vec<String> = Vec::new();
         let mut in_order = true;
         visit_access_rows_ref(
             tx,
@@ -3833,7 +3823,7 @@ fn exec_pk_sorted_select(
             limits,
             None,
             |doc_id, verified_pk, row| {
-                let count = usize::from(first.is_some()) + rest.len();
+                let count = rows.len();
                 if count >= limits.max_select_rows {
                     return Err(SqlError::Bounds(format!(
                         "SELECT result exceeds max_select_rows ({})",
@@ -3847,36 +3837,78 @@ fn exec_pk_sorted_select(
                     )));
                 }
                 let projected = project_row_ref(row, table, &plan.proj_indices, verified_pk)?;
-                let key = match verified_pk {
-                    Some(n) => PkSortKey::Int(n),
-                    None => PkSortKey::Text(doc_id.to_owned()),
-                };
-                if first.is_none() && rest.is_empty() {
-                    first = Some((key, projected));
-                } else {
-                    if let Some(first_pair) = first.take() {
-                        rest.reserve(16);
-                        rest.push(first_pair);
+                if count == 1 {
+                    rows.reserve(15);
+                }
+                if is_int_pk {
+                    let key = verified_pk.expect("integer primary key verified");
+                    if in_order && count > 0 {
+                        let prev = if count <= INLINE_PK_KEYS {
+                            int_keys_inline[count - 1]
+                        } else {
+                            *int_keys_spill.last().expect("spilled key")
+                        };
+                        let ord = prev.cmp(&key);
+                        if if desc {
+                            ord == Ordering::Less
+                        } else {
+                            ord == Ordering::Greater
+                        } {
+                            in_order = false;
+                        }
                     }
+                    if count < INLINE_PK_KEYS {
+                        int_keys_inline[count] = key;
+                    } else {
+                        if count == INLINE_PK_KEYS {
+                            int_keys_spill.reserve(INLINE_PK_KEYS * 2);
+                            int_keys_spill.extend_from_slice(&int_keys_inline);
+                        }
+                        int_keys_spill.push(key);
+                    }
+                } else {
                     if in_order {
-                        if let Some((prev_key, _)) = rest.last() {
-                            if prev_key.cmp_order(&key, desc) == Ordering::Greater {
+                        if let Some(prev) = text_keys.last() {
+                            let ord = prev.as_bytes().cmp(doc_id.as_bytes());
+                            if if desc {
+                                ord == Ordering::Less
+                            } else {
+                                ord == Ordering::Greater
+                            } {
                                 in_order = false;
                             }
                         }
                     }
-                    rest.push((key, projected));
+                    text_keys.push(doc_id.to_owned());
                 }
+                rows.push(projected);
                 Ok(ControlFlow::Continue(()))
             },
         )?;
-        if rest.is_empty() {
-            return Ok(first.map_or_else(Vec::new, |(_, row)| vec![row]));
+        if in_order || rows.len() <= 1 {
+            return Ok(rows);
         }
-        if !in_order {
-            rest.sort_unstable_by(|a, b| a.0.cmp_order(&b.0, desc));
+        let mut order: Vec<usize> = (0..rows.len()).collect();
+        if is_int_pk {
+            let keys: &[i64] = if rows.len() <= INLINE_PK_KEYS {
+                &int_keys_inline[..rows.len()]
+            } else {
+                &int_keys_spill
+            };
+            if desc {
+                order.sort_unstable_by(|&a, &b| keys[b].cmp(&keys[a]));
+            } else {
+                order.sort_unstable_by(|&a, &b| keys[a].cmp(&keys[b]));
+            }
+        } else if desc {
+            order.sort_unstable_by(|&a, &b| text_keys[b].as_bytes().cmp(text_keys[a].as_bytes()));
+        } else {
+            order.sort_unstable_by(|&a, &b| text_keys[a].as_bytes().cmp(text_keys[b].as_bytes()));
         }
-        Ok(rest.into_iter().map(|(_, row)| row).collect())
+        Ok(order
+            .into_iter()
+            .map(|idx| std::mem::take(&mut rows[idx]))
+            .collect())
     }
 }
 
@@ -4296,6 +4328,7 @@ fn visit_access_rows_ref(
     }
 }
 
+#[inline]
 fn project_row_ref(
     row: RowRef<'_>,
     table: &TableDef,
@@ -4420,19 +4453,19 @@ fn visit_index_rows_ref(
                 )));
             }
             match stored {
-                StoredDocument::Flat(doc) => {
+                Ok(doc) => {
                     let pk_col = &table.columns[table.primary_key_index];
-                    let verified_pk = verify_pk_value(table, id, decode_flat_col(&doc, pk_col)?)?;
-                    if eval_where_flat(filter, table, &doc, params)? {
+                    let verified_pk = verify_pk_value(table, id, decode_flat_col(doc, pk_col)?)?;
+                    if eval_where_flat(filter, table, doc, params)? {
                         if let Some(cap) = stream_cap.get() {
                             stream_cap.set(Some(cap.saturating_sub(1)));
                         }
-                        on_match(id, verified_pk, RowRef::Flat(&doc))
+                        on_match(id, verified_pk, RowRef::Flat(doc))
                     } else {
                         Ok(ControlFlow::Continue(()))
                     }
                 }
-                StoredDocument::Full(document) => {
+                Err(document) => {
                     let obj = document.as_object().ok_or_else(|| {
                         SqlError::Io(io::Error::new(
                             io::ErrorKind::InvalidData,
