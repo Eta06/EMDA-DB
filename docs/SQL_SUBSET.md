@@ -292,6 +292,7 @@ WHERE o.total > ? ORDER BY o.total DESC LIMIT 10
 - **Interruption.** If the process stops during those steps, the table stays invisible and its storage stays marked. `CREATE TABLE` with the same name fails until a `DROP TABLE [IF EXISTS] name` finishes the deletion.
 - **Index jobs.** A table with an index still being built or dropped is refused with `Constraint`; finish or drop that index first.
 - Dropping a table does not drop other tables that refer to it; there are no foreign keys yet.
+- `DROP TABLE` is rejected inside `SqlDatabase::transaction` with `Unsupported`, because a large table is dropped in several transactions.
 
 ## Adding columns
 
@@ -302,6 +303,7 @@ WHERE o.total > ? ORDER BY o.total DESC LIMIT 10
 - The new column can be indexed with `CREATE INDEX` and used in every statement. Cached plans for the table are invalidated because the catalog entry changed.
 - A duplicate column name is a `Syntax` error, and a table holds at most `max_columns` columns (`Bounds`).
 - `DROP COLUMN`, `RENAME`, `ALTER COLUMN`, `ADD CONSTRAINT`, `PRIMARY KEY`, `UNIQUE`, `DEFAULT`, `CHECK`, `REFERENCES` and several actions in one statement return `Unsupported`. Add uniqueness with `CREATE UNIQUE INDEX`.
+- It can run inside `SqlDatabase::transaction`; later statements in the same transaction see the new column, and a rollback discards it.
 - The table's document schema is not extended, so it does not type-check the new field as defense in depth; the SQL layer still checks every value it writes.
 
 ## Statement and catalog caching

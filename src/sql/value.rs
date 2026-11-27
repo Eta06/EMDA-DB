@@ -227,8 +227,10 @@ impl SqlType {
     }
 }
 
-/// Result of executing one SQL statement.
+/// Result of executing one SQL statement. New statement kinds add
+/// variants, so matches need a wildcard arm.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum SqlOutcome {
     TableCreated,
     IndexCreated,

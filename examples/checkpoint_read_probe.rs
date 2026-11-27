@@ -57,7 +57,7 @@ fn exec_count(db: &SqlDatabase<'_>, sql: &str, params: &[SqlValue]) -> Result<us
         SqlOutcome::Inserted { rows }
         | SqlOutcome::Updated { rows }
         | SqlOutcome::Deleted { rows } => rows,
-        SqlOutcome::TableCreated | SqlOutcome::IndexCreated | SqlOutcome::IndexDropped => 0,
+        _ => 0,
     })
 }
 

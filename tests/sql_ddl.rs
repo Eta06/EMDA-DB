@@ -385,3 +385,42 @@ fn added_columns_survive_reopen() {
         }
     );
 }
+
+#[test]
+fn ddl_inside_explicit_transactions() {
+    for_both(|db, backend| {
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)", &[])
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1)", &[]).unwrap();
+        // ADD COLUMN is visible to later statements in the same transaction.
+        db.transaction(|tx| {
+            tx.execute("ALTER TABLE t ADD COLUMN note TEXT", &[])?;
+            tx.execute("INSERT INTO t VALUES (2, 'two')", &[])?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(count(db, "t"), 2, "{backend}");
+        // A rollback discards both the column and the row.
+        let rolled_back: Result<(), SqlError> = db.transaction(|tx| {
+            tx.execute("ALTER TABLE t ADD COLUMN extra INTEGER", &[])?;
+            tx.execute("INSERT INTO t VALUES (3, NULL, 3)", &[])?;
+            Err(SqlError::Constraint("roll back".into()))
+        });
+        assert!(rolled_back.is_err());
+        assert!(
+            matches!(
+                db.execute("SELECT extra FROM t", &[]),
+                Err(SqlError::NoSuchColumn { .. })
+            ),
+            "{backend}"
+        );
+        assert_eq!(count(db, "t"), 2, "{backend}");
+        let dropped: Result<SqlOutcome, SqlError> =
+            db.transaction(|tx| tx.execute("DROP TABLE t", &[]));
+        assert!(
+            matches!(dropped, Err(SqlError::Unsupported { .. })),
+            "{backend}: {dropped:?}"
+        );
+        assert_eq!(count(db, "t"), 2, "{backend}");
+    });
+}

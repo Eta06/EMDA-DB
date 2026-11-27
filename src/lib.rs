@@ -83,7 +83,9 @@ pub use recovered_view::{
     RecoveredCheckpointView, RecoveredViewLimits,
 };
 pub use snapshot_reaper::{SnapshotReaper, SnapshotReaperStatus};
-pub use sql::{SqlDatabase, SqlError, SqlLimits, SqlOutcome, SqlStatement, SqlValue};
+pub use sql::{
+    SqlDatabase, SqlError, SqlLimits, SqlOutcome, SqlStatement, SqlTransaction, SqlValue,
+};
 pub use staging::{
     StagingCleanup, StagingCleanupFailure, cleanup_abandoned_staging,
     cleanup_abandoned_staging_detailed,
