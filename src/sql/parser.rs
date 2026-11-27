@@ -40,6 +40,7 @@ pub(crate) enum Statement {
     Delete(DeleteStmt),
     Join(Box<super::join::JoinSelect>),
     DropTable(super::ddl::DropTable),
+    AddColumn(super::ddl::AddColumn),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -234,6 +235,13 @@ pub(crate) enum Expr {
 
 pub(crate) fn parse_statement(sql: &str, limits: &SqlLimits) -> Result<SqlStatement, SqlError> {
     let tokens = tokenize(sql, limits)?;
+    if super::ddl::is_alter_table(&tokens) {
+        return Ok(SqlStatement {
+            inner: Statement::AddColumn(super::ddl::parse_alter_table(&tokens, limits)?),
+            param_count: 0,
+            stmt_id: NEXT_STMT_ID.fetch_add(1, Ordering::Relaxed),
+        });
+    }
     if super::ddl::is_drop_table(&tokens) {
         return Ok(SqlStatement {
             inner: Statement::DropTable(super::ddl::parse_drop_table(&tokens)?),

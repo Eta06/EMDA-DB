@@ -1,4 +1,4 @@
-//! DROP TABLE on both writable backends: atomic small drops, incremental
+//! DROP TABLE and ALTER TABLE ... ADD COLUMN on both writable backends: atomic
 //! large drops, resumption after an interrupted drop, and reopen.
 use database_engine::{
     CheckpointStore, DocumentDatabase, SqlDatabase, SqlError, SqlOutcome, SqlValue, Store,
@@ -217,4 +217,171 @@ fn drop_table_syntax_and_errors() {
             SqlOutcome::TableDropped
         );
     });
+}
+
+#[test]
+fn add_column_reads_null_for_existing_rows_and_is_usable_everywhere() {
+    for_both(|db, backend| {
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, k INTEGER)", &[])
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1, 10), (2, 20)", &[])
+            .unwrap();
+        // A cached plan for the old definition must not be reused.
+        let select_all = db.prepare("SELECT * FROM t WHERE id = 1").unwrap();
+        db.execute_prepared(&select_all, &[]).unwrap();
+        assert_eq!(
+            db.execute("ALTER TABLE t ADD COLUMN note VARCHAR(3)", &[])
+                .unwrap(),
+            SqlOutcome::TableAltered,
+            "{backend}"
+        );
+        assert_eq!(
+            db.execute_prepared(&select_all, &[]).unwrap(),
+            SqlOutcome::Rows {
+                columns: vec!["id".into(), "k".into(), "note".into()],
+                rows: vec![vec![
+                    SqlValue::Integer(1),
+                    SqlValue::Integer(10),
+                    SqlValue::Null
+                ]],
+            },
+            "{backend}"
+        );
+        db.execute("ALTER TABLE t ADD flag BOOLEAN", &[]).unwrap();
+        db.execute("INSERT INTO t VALUES (3, 30, 'abc', TRUE)", &[])
+            .unwrap();
+        assert!(matches!(
+            db.execute("INSERT INTO t VALUES (4, 40, 'abcd', TRUE)", &[]),
+            Err(SqlError::Constraint(_))
+        ));
+        db.execute("UPDATE t SET note = 'x' WHERE id = 1", &[])
+            .unwrap();
+        db.execute("CREATE INDEX t_note ON t (note)", &[]).unwrap();
+        let rows = |sql: &str| match db.execute(sql, &[]).unwrap() {
+            SqlOutcome::Rows { rows, .. } => rows,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            rows("SELECT id FROM t WHERE note IS NULL"),
+            vec![vec![SqlValue::Integer(2)]]
+        );
+        assert_eq!(
+            rows("SELECT id FROM t WHERE note = 'x'"),
+            vec![vec![SqlValue::Integer(1)]]
+        );
+        assert_eq!(
+            rows("SELECT COUNT(note), COUNT(*) FROM t"),
+            vec![vec![SqlValue::Integer(2), SqlValue::Integer(3)]]
+        );
+        assert_eq!(
+            rows("SELECT a.id FROM t a JOIN t b ON b.note = a.note ORDER BY a.id"),
+            vec![vec![SqlValue::Integer(1)], vec![SqlValue::Integer(3)]]
+        );
+    });
+}
+
+#[test]
+fn add_column_rules_and_errors() {
+    for_both(|db, backend| {
+        db.execute("CREATE TABLE empty (id INTEGER PRIMARY KEY)", &[])
+            .unwrap();
+        db.execute("CREATE TABLE filled (id INTEGER PRIMARY KEY)", &[])
+            .unwrap();
+        db.execute("INSERT INTO filled VALUES (1)", &[]).unwrap();
+        db.execute("ALTER TABLE empty ADD COLUMN must INTEGER NOT NULL", &[])
+            .unwrap();
+        assert!(matches!(
+            db.execute("INSERT INTO empty (id) VALUES (1)", &[]),
+            Err(SqlError::Constraint(_))
+        ));
+        assert!(
+            matches!(
+                db.execute("ALTER TABLE filled ADD COLUMN must INTEGER NOT NULL", &[]),
+                Err(SqlError::Constraint(_))
+            ),
+            "{backend}"
+        );
+        assert!(matches!(
+            db.execute("ALTER TABLE filled ADD COLUMN id TEXT", &[]),
+            Err(SqlError::Syntax { .. })
+        ));
+        assert!(matches!(
+            db.execute("ALTER TABLE missing ADD COLUMN c TEXT", &[]),
+            Err(SqlError::NoSuchTable(_))
+        ));
+        for statement in [
+            "ALTER TABLE filled DROP COLUMN id",
+            "ALTER TABLE filled RENAME TO other",
+            "ALTER TABLE filled ADD CONSTRAINT u UNIQUE (id)",
+            "ALTER TABLE filled ADD COLUMN c INTEGER UNIQUE",
+            "ALTER TABLE filled ADD COLUMN c INTEGER PRIMARY KEY",
+            "ALTER TABLE filled ADD COLUMN c INTEGER DEFAULT 0",
+            "ALTER TABLE filled ADD COLUMN c INTEGER, ADD COLUMN d INTEGER",
+        ] {
+            assert!(
+                matches!(
+                    db.execute(statement, &[]),
+                    Err(SqlError::Unsupported { .. })
+                ),
+                "{backend}: {statement}"
+            );
+        }
+        // Truncated statements are syntax errors, never panics.
+        for statement in [
+            "ALTER TABLE",
+            "ALTER TABLE filled",
+            "ALTER TABLE filled ADD",
+            "ALTER TABLE filled ADD COLUMN",
+            "ALTER TABLE filled ADD COLUMN c",
+            "ALTER TABLE filled ADD COLUMN c VARCHAR(",
+            "ALTER TABLE filled ADD COLUMN c VARCHAR(3",
+            "ALTER TABLE filled ADD COLUMN c VARCHAR(0)",
+            "ALTER TABLE filled ADD COLUMN c BLOB",
+            "DROP TABLE IF",
+            "DROP TABLE IF EXISTS",
+        ] {
+            assert!(
+                matches!(db.execute(statement, &[]), Err(SqlError::Syntax { .. })),
+                "{backend}: {statement}: {:?}",
+                db.execute(statement, &[])
+            );
+        }
+        // A table holds at most max_columns columns.
+        db.execute("CREATE TABLE wide (id INTEGER PRIMARY KEY)", &[])
+            .unwrap();
+        for column in 1..64 {
+            db.execute(
+                &format!("ALTER TABLE wide ADD COLUMN c{column} INTEGER"),
+                &[],
+            )
+            .unwrap();
+        }
+        assert!(matches!(
+            db.execute("ALTER TABLE wide ADD COLUMN c64 INTEGER", &[]),
+            Err(SqlError::Bounds(_))
+        ));
+    });
+}
+
+#[test]
+fn added_columns_survive_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = Store::open(dir.path().join("s")).unwrap();
+        let db = SqlDatabase::new(DocumentDatabase::new(&store));
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)", &[])
+            .unwrap();
+        db.execute("INSERT INTO t VALUES (1)", &[]).unwrap();
+        db.execute("ALTER TABLE t ADD COLUMN r REAL", &[]).unwrap();
+        db.execute("INSERT INTO t VALUES (2, 2.5)", &[]).unwrap();
+    }
+    let store = Store::open(dir.path().join("s")).unwrap();
+    let db = SqlDatabase::new(DocumentDatabase::new(&store));
+    assert_eq!(
+        db.execute("SELECT r FROM t ORDER BY id", &[]).unwrap(),
+        SqlOutcome::Rows {
+            columns: vec!["r".into()],
+            rows: vec![vec![SqlValue::Null], vec![SqlValue::Real(2.5)]],
+        }
+    );
 }

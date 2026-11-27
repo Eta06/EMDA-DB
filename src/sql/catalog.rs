@@ -396,7 +396,7 @@ pub(crate) fn remove_index(
     save_table_def(tx, &cached.catalog_key, &updated)
 }
 
-fn save_table_def(
+pub(crate) fn save_table_def(
     tx: &mut DocumentTransaction<'_, '_>,
     catalog_key: &[u8],
     def: &TableDef,

@@ -1,4 +1,4 @@
-//! `DROP TABLE [IF EXISTS] name`.
+//! `DROP TABLE [IF EXISTS] name` and `ALTER TABLE name ADD [COLUMN] ...`.
 //!
 //! A table small enough for one maintenance transaction is dropped
 //! atomically: its catalog entry, rows and indexes disappear together. A
@@ -7,10 +7,10 @@
 //! longer sees the table. Bounded steps then remove the rows and indexes. If
 //! a crash interrupts those steps, the next `DROP TABLE [IF EXISTS]` of the
 //! same name finishes them; until then, creating a table of that name fails.
-use super::catalog::{self, IndexState};
+use super::catalog::{self, ColumnDef, IndexState};
 use super::exec::{self, SqlCache};
 use super::lexer::{Token, TokenKind};
-use super::value::{SqlError, SqlOutcome};
+use super::value::{SqlError, SqlLimits, SqlOutcome, SqlType};
 use crate::document::DocumentDatabase;
 use std::io;
 
@@ -35,22 +35,22 @@ pub(crate) fn is_drop_table(tokens: &[Token]) -> bool {
 
 pub(crate) fn parse_drop_table(tokens: &[Token]) -> Result<DropTable, SqlError> {
     let mut pos = 2;
-    let keyword = |pos: usize, word: &str| matches!(&tokens[pos].kind, TokenKind::Ident { text, quoted: false } if text == word);
+    let keyword = |pos: usize, word: &str| matches!(&at(tokens, pos).kind, TokenKind::Ident { text, quoted: false } if text == word);
     let if_exists = keyword(pos, "if");
     if if_exists {
         if !keyword(pos + 1, "exists") {
             return Err(SqlError::Syntax {
-                offset: tokens[pos + 1].offset,
+                offset: at(tokens, pos + 1).offset,
                 message: "expected EXISTS".into(),
             });
         }
         pos += 2;
     }
-    let name = match &tokens[pos].kind {
+    let name = match &at(tokens, pos).kind {
         TokenKind::Ident { text, .. } => text.clone(),
         _ => {
             return Err(SqlError::Syntax {
-                offset: tokens[pos].offset,
+                offset: at(tokens, pos).offset,
                 message: "expected table name".into(),
             });
         }
@@ -59,25 +59,31 @@ pub(crate) fn parse_drop_table(tokens: &[Token]) -> Result<DropTable, SqlError> 
     if keyword(pos, "cascade") || keyword(pos, "restrict") {
         return Err(SqlError::Unsupported {
             feature: "DROP TABLE CASCADE or RESTRICT".into(),
-            offset: Some(tokens[pos].offset),
+            offset: Some(at(tokens, pos).offset),
         });
     }
-    if matches!(tokens[pos].kind, TokenKind::Comma) {
+    if matches!(at(tokens, pos).kind, TokenKind::Comma) {
         return Err(SqlError::Unsupported {
             feature: "dropping several tables in one statement".into(),
-            offset: Some(tokens[pos].offset),
+            offset: Some(at(tokens, pos).offset),
         });
     }
-    if matches!(tokens[pos].kind, TokenKind::Semicolon) {
+    if matches!(at(tokens, pos).kind, TokenKind::Semicolon) {
         pos += 1;
     }
-    if !matches!(tokens[pos].kind, TokenKind::Eof) {
+    if !matches!(at(tokens, pos).kind, TokenKind::Eof) {
         return Err(SqlError::Syntax {
-            offset: tokens[pos].offset,
+            offset: at(tokens, pos).offset,
             message: "multiple statements or trailing tokens are not supported".into(),
         });
     }
     Ok(DropTable { name, if_exists })
+}
+
+/// The token at `pos`, or the final end-of-input token past the end, so
+/// truncated statements are syntax errors rather than out-of-bounds reads.
+fn at(tokens: &[Token], pos: usize) -> &Token {
+    &tokens[pos.min(tokens.len() - 1)]
 }
 
 enum Plan {
@@ -167,4 +173,205 @@ pub(crate) fn execute(
         }
     }
     Ok(SqlOutcome::TableDropped)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AddColumn {
+    table: String,
+    column: String,
+    column_type: SqlType,
+    not_null: bool,
+}
+
+/// Whether a tokenized statement starts with `ALTER TABLE`.
+pub(crate) fn is_alter_table(tokens: &[Token]) -> bool {
+    let keyword = |index: usize, word: &str| {
+        tokens.get(index).is_some_and(
+            |token| matches!(&token.kind, TokenKind::Ident { text, quoted: false } if text == word),
+        )
+    };
+    keyword(0, "alter") && keyword(1, "table")
+}
+
+/// Parses `ALTER TABLE name ADD [COLUMN] column type [NOT NULL]`.
+pub(crate) fn parse_alter_table(
+    tokens: &[Token],
+    limits: &SqlLimits,
+) -> Result<AddColumn, SqlError> {
+    let kw = |pos: usize, word: &str| matches!(&at(tokens, pos).kind, TokenKind::Ident { text, quoted: false } if text == word);
+    let syntax = |pos: usize, message: &str| SqlError::Syntax {
+        offset: at(tokens, pos).offset,
+        message: message.into(),
+    };
+    let unsupported = |pos: usize, feature: &str| SqlError::Unsupported {
+        feature: feature.into(),
+        offset: Some(at(tokens, pos).offset),
+    };
+    let ident = |pos: usize, what: &str| match &at(tokens, pos).kind {
+        TokenKind::Ident { text, .. } => Ok(text.clone()),
+        _ => Err(syntax(pos, &format!("expected {what}"))),
+    };
+    let mut pos = 2;
+    let table = ident(pos, "table name")?;
+    pos += 1;
+    if !kw(pos, "add") {
+        return Err(match &at(tokens, pos).kind {
+            TokenKind::Ident {
+                text,
+                quoted: false,
+            } => unsupported(
+                pos,
+                &format!("ALTER TABLE ... {}", text.to_ascii_uppercase()),
+            ),
+            _ => syntax(pos, "expected ADD"),
+        });
+    }
+    pos += 1;
+    if kw(pos, "constraint") || kw(pos, "primary") || kw(pos, "unique") || kw(pos, "foreign") {
+        return Err(unsupported(pos, "ALTER TABLE ... ADD CONSTRAINT"));
+    }
+    if kw(pos, "column") {
+        pos += 1;
+    }
+    let column = ident(pos, "column name")?;
+    pos += 1;
+    let type_name = match &at(tokens, pos).kind {
+        TokenKind::Ident {
+            text,
+            quoted: false,
+        } => text.clone(),
+        _ => return Err(syntax(pos, "expected column data type")),
+    };
+    let column_type = match type_name.as_str() {
+        "integer" | "int" | "bigint" => SqlType::Integer,
+        "real" | "double" | "float" => SqlType::Real,
+        "boolean" | "bool" => SqlType::Boolean,
+        "text" => SqlType::Text { max_chars: None },
+        "varchar" => {
+            if !matches!(at(tokens, pos + 1).kind, TokenKind::LParen) {
+                SqlType::Text { max_chars: None }
+            } else {
+                let n = match &at(tokens, pos + 2).kind {
+                    TokenKind::Integer(raw) => raw
+                        .parse::<usize>()
+                        .map_err(|_| SqlError::Bounds("VARCHAR length out of range".into()))?,
+                    _ => {
+                        return Err(syntax(
+                            pos + 2,
+                            "expected positive integer length in VARCHAR(n)",
+                        ));
+                    }
+                };
+                if n == 0 {
+                    return Err(syntax(pos + 2, "VARCHAR(n) length must be at least 1"));
+                }
+                if n > limits.max_text_bytes {
+                    return Err(SqlError::Bounds(format!(
+                        "VARCHAR({n}) exceeds max_text_bytes ({})",
+                        limits.max_text_bytes
+                    )));
+                }
+                if !matches!(at(tokens, pos + 3).kind, TokenKind::RParen) {
+                    return Err(syntax(pos + 3, "expected ')'"));
+                }
+                pos += 3;
+                SqlType::Text { max_chars: Some(n) }
+            }
+        }
+        _ => {
+            return Err(syntax(
+                pos,
+                &format!("unknown column data type '{type_name}'"),
+            ));
+        }
+    };
+    pos += 1;
+    let mut not_null = false;
+    loop {
+        if kw(pos, "not") && kw(pos + 1, "null") {
+            not_null = true;
+            pos += 2;
+        } else if kw(pos, "null") {
+            pos += 1;
+        } else if kw(pos, "primary") || kw(pos, "unique") {
+            return Err(unsupported(
+                pos,
+                "PRIMARY KEY or UNIQUE in ALTER TABLE ... ADD COLUMN",
+            ));
+        } else if kw(pos, "default") || kw(pos, "check") || kw(pos, "references") {
+            return Err(unsupported(pos, "DEFAULT, CHECK or REFERENCES"));
+        } else {
+            break;
+        }
+    }
+    if matches!(at(tokens, pos).kind, TokenKind::Comma) {
+        return Err(unsupported(
+            pos,
+            "several ALTER TABLE actions in one statement",
+        ));
+    }
+    if matches!(at(tokens, pos).kind, TokenKind::Semicolon) {
+        pos += 1;
+    }
+    if !matches!(at(tokens, pos).kind, TokenKind::Eof) {
+        return Err(syntax(
+            pos,
+            "multiple statements or trailing tokens are not supported",
+        ));
+    }
+    Ok(AddColumn {
+        table,
+        column,
+        column_type,
+        not_null,
+    })
+}
+
+/// Adds a column to the catalog in one transaction. Existing rows have no
+/// value for it, which reads as NULL, so rows are not rewritten. A NOT NULL
+/// column can therefore only be added to an empty table.
+pub(crate) fn execute_add_column(
+    db: &DocumentDatabase<'_>,
+    statement: &AddColumn,
+    limits: &SqlLimits,
+    cache: &SqlCache,
+) -> Result<SqlOutcome, SqlError> {
+    exec::run_tx(db, |tx| {
+        let table = catalog::load_table_cached(tx, &statement.table, cache.tables())?;
+        if table.def.column_index(&statement.column).is_some() {
+            return Err(SqlError::Syntax {
+                offset: 0,
+                message: format!(
+                    "column '{}' already exists in table '{}'",
+                    statement.column, statement.table
+                ),
+            });
+        }
+        if table.def.columns.len() >= limits.max_columns {
+            return Err(SqlError::Bounds(format!(
+                "table '{}' already has max_columns ({}) columns",
+                statement.table, limits.max_columns
+            )));
+        }
+        if statement.not_null
+            && !tx
+                .scan_documents(&statement.table, None, 1)
+                .map_err(exec::classify_io_error)?
+                .is_empty()
+        {
+            return Err(SqlError::Constraint(format!(
+                "cannot add NOT NULL column '{}' to non-empty table '{}': existing rows would be NULL",
+                statement.column, statement.table
+            )));
+        }
+        let mut updated = catalog::TableDef::clone(&table.def);
+        updated.columns.push(ColumnDef {
+            name: statement.column.clone(),
+            col_type: statement.column_type,
+            not_null: statement.not_null,
+        });
+        updated.validate()?;
+        catalog::save_table_def(tx, &table.catalog_key, &updated)?;
+        Ok(SqlOutcome::TableAltered)
+    })
 }

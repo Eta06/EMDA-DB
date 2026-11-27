@@ -55,7 +55,8 @@ impl Backend for SqlDatabase<'_> {
             SqlOutcome::TableCreated
             | SqlOutcome::IndexCreated
             | SqlOutcome::IndexDropped
-            | SqlOutcome::TableDropped => 0,
+            | SqlOutcome::TableDropped
+            | SqlOutcome::TableAltered => 0,
         })
     }
     fn prepare_only(&self, sql: &str) -> Result<()> {
