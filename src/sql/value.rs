@@ -23,6 +23,14 @@ pub const MAX_SQL_SELECT_ROWS: usize = 10_000;
 pub const DEFAULT_SQL_SORT_ROWS: usize = 32_768;
 /// Hard ceiling for `max_sort_rows`.
 pub const MAX_SQL_SORT_ROWS: usize = 131_072;
+/// Default maximum groups tracked by one `GROUP BY` statement.
+pub const DEFAULT_SQL_GROUPS: usize = 32_768;
+/// Hard ceiling for `max_groups`.
+pub const MAX_SQL_GROUPS: usize = 131_072;
+/// Default maximum distinct values tracked across `COUNT(DISTINCT ...)` in one statement.
+pub const DEFAULT_SQL_DISTINCT_VALUES: usize = 32_768;
+/// Hard ceiling for `max_distinct_values`.
+pub const MAX_SQL_DISTINCT_VALUES: usize = 131_072;
 /// Default maximum rows visited per statement.
 pub const DEFAULT_SQL_VISITED_ROWS: usize = 32_768;
 /// Hard ceiling for `max_visited_rows`.
@@ -61,6 +69,10 @@ pub struct SqlLimits {
     pub max_select_rows: usize,
     /// Maximum rows buffered by `ORDER BY` sort / top-K (`1..=131_072`).
     pub max_sort_rows: usize,
+    /// Maximum distinct groups in a `GROUP BY` statement (`1..=131_072`).
+    pub max_groups: usize,
+    /// Maximum distinct values tracked across `COUNT(DISTINCT ...)` in one statement (`1..=131_072`).
+    pub max_distinct_values: usize,
     /// Maximum rows visited during a single statement (`1..=131_072`).
     pub max_visited_rows: usize,
     /// Maximum `?` positional parameters (`0..=1_024`).
@@ -80,6 +92,8 @@ impl Default for SqlLimits {
             max_mutation_rows: MAX_SQL_MUTATION_ROWS,
             max_select_rows: MAX_SQL_SELECT_ROWS,
             max_sort_rows: DEFAULT_SQL_SORT_ROWS,
+            max_groups: DEFAULT_SQL_GROUPS,
+            max_distinct_values: DEFAULT_SQL_DISTINCT_VALUES,
             max_visited_rows: DEFAULT_SQL_VISITED_ROWS,
             max_params: MAX_SQL_PARAMS,
             max_text_bytes: MAX_SQL_TEXT_BYTES,
@@ -114,6 +128,13 @@ impl SqlLimits {
                 MAX_SQL_SELECT_ROWS,
             ),
             ("max_sort_rows", self.max_sort_rows, 1, MAX_SQL_SORT_ROWS),
+            ("max_groups", self.max_groups, 1, MAX_SQL_GROUPS),
+            (
+                "max_distinct_values",
+                self.max_distinct_values,
+                1,
+                MAX_SQL_DISTINCT_VALUES,
+            ),
             (
                 "max_visited_rows",
                 self.max_visited_rows,

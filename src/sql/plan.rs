@@ -98,7 +98,7 @@ pub(crate) enum CompiledSelectAccess {
 fn expr_has_param(expr: &BoundExpr) -> bool {
     match expr {
         BoundExpr::Param(_) => true,
-        BoundExpr::Literal(_) | BoundExpr::Column(_) => false,
+        BoundExpr::Literal(_) | BoundExpr::Column(_) | BoundExpr::Aggregate(_) => false,
         BoundExpr::IsNull { expr, .. } | BoundExpr::Not(expr) => expr_has_param(expr),
         BoundExpr::Compare { left, right, .. } => expr_has_param(left) || expr_has_param(right),
         BoundExpr::And(items) | BoundExpr::Or(items) => items.iter().any(expr_has_param),

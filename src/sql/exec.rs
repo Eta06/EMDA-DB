@@ -1,9 +1,10 @@
 //! Statement binding, expression evaluation, and transactional execution over `DocumentDatabase`.
 use super::catalog::{self, CachedTable, ColumnDef, IndexDef, IndexState, TableCache, TableDef};
 use super::parser::{
-    self, Assignment, CompareOp, CreateIndexStmt, CreateTableStmt, DeleteStmt, DropIndexStmt, Expr,
-    InsertStmt, LimitValue, LiteralValue, NullsOrder, SelectColumns, SelectStmt, SqlStatement,
-    Statement, UpdateStmt,
+    self, AggregateCall, AggregateKind, Assignment, CompareOp, CreateIndexStmt, CreateTableStmt,
+    DeleteStmt, DropIndexStmt, Expr, InsertStmt, LimitValue, LiteralValue, NullsOrder,
+    OrderByTarget, SelectColumns, SelectExpr, SelectItem, SelectStmt, SqlStatement, Statement,
+    UpdateStmt,
 };
 use super::plan::{self, AccessPlan, CompiledSelectAccess, ResolvedTemplatePlan, UpperBound};
 use super::value::{
@@ -18,7 +19,9 @@ use crate::{MAX_SCAN_ENTRIES, TransactionFailure};
 use parking_lot::RwLock;
 use serde_json::{Map, Number, Value};
 use std::cmp::Ordering;
+use std::collections::hash_map::RandomState;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::io;
 use std::ops::ControlFlow;
 use std::rc::Rc;
@@ -33,7 +36,7 @@ type DeletePlanMap = RwLock<HashMap<(u64, u64), Arc<Option<BoundFilter>>>>;
 pub(crate) struct SqlCache {
     tables: TableCache,
     stmts: RwLock<HashMap<String, Arc<SqlStatement>>>,
-    select_plans: RwLock<HashMap<(u64, u64), Arc<BoundSelectPlan>>>,
+    select_plans: RwLock<HashMap<(u64, u64), Arc<SelectPlan>>>,
     insert_plans: RwLock<HashMap<(u64, u64), Arc<BoundInsertPlan>>>,
     update_plans: RwLock<HashMap<(u64, u64), Arc<BoundUpdatePlan>>>,
     delete_plans: DeletePlanMap,
@@ -896,7 +899,7 @@ fn eval_insert_expr_to_json(
         other => {
             let bound = bind_expr(other, None, params, &table.name)?;
             let allow_int_to_real = bound.is_int_literal_or_param();
-            let val = eval_expr_ref(&bound, table, None, params)?.into_owned();
+            let val = eval_expr_ref(&bound, EvalContext::None, params)?.into_owned();
             RawVal::Owned(val, allow_int_to_real)
         }
     };
@@ -1297,6 +1300,11 @@ enum PkEqSource {
     TextLit(String),
 }
 
+enum SelectPlan {
+    Simple(BoundSelectPlan),
+    Aggregate(BoundAggregatePlan),
+}
+
 struct BoundSelectPlan {
     proj_indices: Vec<usize>,
     proj_is_last: Vec<bool>,
@@ -1306,6 +1314,43 @@ struct BoundSelectPlan {
     order_strategy: OrderStrategy,
     simple_pk_eq: Option<PkEqSource>,
     compiled_access: CompiledSelectAccess,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BoundAggregate {
+    kind: AggregateKind,
+    col_idx: Option<usize>,
+    col_type: Option<SqlType>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BoundSelectOutput {
+    GroupCol(usize),
+    Aggregate(usize),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BoundGroupOrderTarget {
+    GroupCol(usize),
+    Aggregate(usize),
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BoundGroupOrderBy {
+    target: BoundGroupOrderTarget,
+    desc: bool,
+    nulls_first: bool,
+}
+
+struct BoundAggregatePlan {
+    col_names: Vec<String>,
+    outputs: Vec<BoundSelectOutput>,
+    group_cols: Vec<usize>,
+    aggregates: Vec<BoundAggregate>,
+    filter: Option<BoundFilter>,
+    having: Option<BoundFilter>,
+    order_by: Vec<BoundGroupOrderBy>,
+    ungrouped_min_col: Option<usize>,
 }
 
 struct BoundUpdatePlan {
@@ -1431,21 +1476,139 @@ fn validate_filter_params(
     validate_constraints(&filter.param_constraints, params)
 }
 
+struct AggBindContext<'a> {
+    group_cols: &'a [usize],
+    aggregates: &'a mut Vec<BoundAggregate>,
+}
+
+fn intern_aggregate(
+    table: &TableDef,
+    agg: &AggregateCall,
+    aggregates: &mut Vec<BoundAggregate>,
+) -> Result<(usize, SqlType), SqlError> {
+    let (col_idx, col_type, result_type) = match agg.kind {
+        AggregateKind::CountStar => (None, None, SqlType::Integer),
+        AggregateKind::Count | AggregateKind::CountDistinct => {
+            let name = agg.column.as_deref().expect("COUNT column");
+            let idx = table
+                .column_index(name)
+                .ok_or_else(|| SqlError::NoSuchColumn {
+                    table: table.name.clone(),
+                    column: name.to_owned(),
+                })?;
+            (
+                Some(idx),
+                Some(table.columns[idx].col_type),
+                SqlType::Integer,
+            )
+        }
+        AggregateKind::Sum => {
+            let name = agg.column.as_deref().expect("SUM column");
+            let idx = table
+                .column_index(name)
+                .ok_or_else(|| SqlError::NoSuchColumn {
+                    table: table.name.clone(),
+                    column: name.to_owned(),
+                })?;
+            let ty = table.columns[idx].col_type;
+            if !ty.is_numeric() {
+                return Err(SqlError::Type(format!(
+                    "SUM cannot be applied to {} column '{}'",
+                    ty.display_name(),
+                    name
+                )));
+            }
+            (Some(idx), Some(ty), ty)
+        }
+        AggregateKind::Avg => {
+            let name = agg.column.as_deref().expect("AVG column");
+            let idx = table
+                .column_index(name)
+                .ok_or_else(|| SqlError::NoSuchColumn {
+                    table: table.name.clone(),
+                    column: name.to_owned(),
+                })?;
+            let ty = table.columns[idx].col_type;
+            if !ty.is_numeric() {
+                return Err(SqlError::Type(format!(
+                    "AVG cannot be applied to {} column '{}'",
+                    ty.display_name(),
+                    name
+                )));
+            }
+            (Some(idx), Some(ty), SqlType::Real)
+        }
+        AggregateKind::Min | AggregateKind::Max => {
+            let name = agg.column.as_deref().expect("MIN/MAX column");
+            let idx = table
+                .column_index(name)
+                .ok_or_else(|| SqlError::NoSuchColumn {
+                    table: table.name.clone(),
+                    column: name.to_owned(),
+                })?;
+            let ty = table.columns[idx].col_type;
+            (Some(idx), Some(ty), ty)
+        }
+    };
+
+    let bound = BoundAggregate {
+        kind: agg.kind,
+        col_idx,
+        col_type,
+    };
+    let pos = if let Some(existing) = aggregates.iter().position(|a| *a == bound) {
+        existing
+    } else {
+        let idx = aggregates.len();
+        aggregates.push(bound);
+        idx
+    };
+    Ok((pos, result_type))
+}
+
 fn bind_where_static(
     filter: Option<&Expr>,
     table: &TableDef,
 ) -> Result<Option<BoundFilter>, SqlError> {
-    let Some(expr) = filter else {
+    bind_boolean_clause_static(filter, table, "WHERE", None)
+}
+
+fn bind_having_static(
+    having: Option<&Expr>,
+    table: &TableDef,
+    group_cols: &[usize],
+    aggregates: &mut Vec<BoundAggregate>,
+) -> Result<Option<BoundFilter>, SqlError> {
+    let mut ctx = AggBindContext {
+        group_cols,
+        aggregates,
+    };
+    bind_boolean_clause_static(having, table, "HAVING", Some(&mut ctx))
+}
+
+fn bind_boolean_clause_static(
+    expr: Option<&Expr>,
+    table: &TableDef,
+    clause_name: &str,
+    agg_ctx: Option<&mut AggBindContext<'_>>,
+) -> Result<Option<BoundFilter>, SqlError> {
+    let Some(expr) = expr else {
         return Ok(None);
     };
     let mut param_constraints = Vec::new();
-    let (bound, ty) = bind_expr_static(expr, Some(table), &table.name, &mut param_constraints)?;
+    let (bound, ty) = bind_expr_static_with(
+        expr,
+        Some(table),
+        &table.name,
+        &mut param_constraints,
+        agg_ctx,
+    )?;
     match ty {
         StaticExprType::Null | StaticExprType::Typed(SqlType::Boolean) => {}
         StaticExprType::Param(p) => param_constraints.push(ParamConstraint::Boolean(p)),
         StaticExprType::Typed(other) => {
             return Err(SqlError::Type(format!(
-                "WHERE clause must evaluate to BOOLEAN, got {}",
+                "{clause_name} clause must evaluate to BOOLEAN, got {}",
                 other.display_name()
             )));
         }
@@ -1461,6 +1624,16 @@ fn bind_expr_static(
     table: Option<&TableDef>,
     table_name: &str,
     constraints: &mut Vec<ParamConstraint>,
+) -> Result<(BoundExpr, StaticExprType), SqlError> {
+    bind_expr_static_with(expr, table, table_name, constraints, None)
+}
+
+fn bind_expr_static_with(
+    expr: &Expr,
+    table: Option<&TableDef>,
+    table_name: &str,
+    constraints: &mut Vec<ParamConstraint>,
+    mut agg_ctx: Option<&mut AggBindContext<'_>>,
 ) -> Result<(BoundExpr, StaticExprType), SqlError> {
     match expr {
         Expr::Literal(lit) => {
@@ -1496,13 +1669,48 @@ fn bind_expr_static(
                     table: table.name.clone(),
                     column: name.clone(),
                 })?;
-            Ok((
-                BoundExpr::Column(idx),
-                StaticExprType::Typed(table.columns[idx].col_type),
-            ))
+            let ty = StaticExprType::Typed(table.columns[idx].col_type);
+            if let Some(ctx) = agg_ctx.as_deref() {
+                let group_pos = ctx
+                    .group_cols
+                    .iter()
+                    .position(|&g| g == idx)
+                    .ok_or_else(|| SqlError::Syntax {
+                        offset: 0,
+                        message: format!(
+                            "column '{}.{}' must appear in the GROUP BY clause or be used in an aggregate function",
+                            table.name, name
+                        ),
+                    })?;
+                Ok((BoundExpr::Column(group_pos), ty))
+            } else {
+                Ok((BoundExpr::Column(idx), ty))
+            }
+        }
+        Expr::Aggregate(agg) => {
+            let Some(table) = table else {
+                return Err(SqlError::Unsupported {
+                    feature: format!(
+                        "aggregate function '{}'",
+                        agg.kind.sql_name().to_ascii_uppercase()
+                    ),
+                    offset: Some(agg.offset),
+                });
+            };
+            let Some(ctx) = agg_ctx.as_deref_mut() else {
+                return Err(SqlError::Unsupported {
+                    feature: format!(
+                        "aggregate function '{}'",
+                        agg.kind.sql_name().to_ascii_uppercase()
+                    ),
+                    offset: Some(agg.offset),
+                });
+            };
+            let (agg_idx, ty) = intern_aggregate(table, agg, ctx.aggregates)?;
+            Ok((BoundExpr::Aggregate(agg_idx), StaticExprType::Typed(ty)))
         }
         Expr::IsNull { expr, negated } => {
-            let (bound, _) = bind_expr_static(expr, table, table_name, constraints)?;
+            let (bound, _) = bind_expr_static_with(expr, table, table_name, constraints, agg_ctx)?;
             Ok((
                 BoundExpr::IsNull {
                     expr: Box::new(bound),
@@ -1512,7 +1720,8 @@ fn bind_expr_static(
             ))
         }
         Expr::Not(inner) => {
-            let (bound, ty) = bind_expr_static(inner, table, table_name, constraints)?;
+            let (bound, ty) =
+                bind_expr_static_with(inner, table, table_name, constraints, agg_ctx)?;
             match ty {
                 StaticExprType::Null | StaticExprType::Typed(SqlType::Boolean) => {}
                 StaticExprType::Param(p) => constraints.push(ParamConstraint::Boolean(p)),
@@ -1531,7 +1740,13 @@ fn bind_expr_static(
         Expr::And(items) => {
             let mut bound_items = Vec::with_capacity(items.len());
             for item in items {
-                let (bound, ty) = bind_expr_static(item, table, table_name, constraints)?;
+                let (bound, ty) = bind_expr_static_with(
+                    item,
+                    table,
+                    table_name,
+                    constraints,
+                    agg_ctx.as_deref_mut(),
+                )?;
                 match ty {
                     StaticExprType::Null | StaticExprType::Typed(SqlType::Boolean) => {}
                     StaticExprType::Param(p) => constraints.push(ParamConstraint::Boolean(p)),
@@ -1552,7 +1767,13 @@ fn bind_expr_static(
         Expr::Or(items) => {
             let mut bound_items = Vec::with_capacity(items.len());
             for item in items {
-                let (bound, ty) = bind_expr_static(item, table, table_name, constraints)?;
+                let (bound, ty) = bind_expr_static_with(
+                    item,
+                    table,
+                    table_name,
+                    constraints,
+                    agg_ctx.as_deref_mut(),
+                )?;
                 match ty {
                     StaticExprType::Null | StaticExprType::Typed(SqlType::Boolean) => {}
                     StaticExprType::Param(p) => constraints.push(ParamConstraint::Boolean(p)),
@@ -1571,8 +1792,15 @@ fn bind_expr_static(
             ))
         }
         Expr::Compare { op, left, right } => {
-            let (l_bound, l_ty) = bind_expr_static(left, table, table_name, constraints)?;
-            let (r_bound, r_ty) = bind_expr_static(right, table, table_name, constraints)?;
+            let (l_bound, l_ty) = bind_expr_static_with(
+                left,
+                table,
+                table_name,
+                constraints,
+                agg_ctx.as_deref_mut(),
+            )?;
+            let (r_bound, r_ty) =
+                bind_expr_static_with(right, table, table_name, constraints, agg_ctx)?;
             match (l_ty, r_ty) {
                 (StaticExprType::Null, _) | (_, StaticExprType::Null) => {}
                 (StaticExprType::Typed(lt), StaticExprType::Typed(rt)) => {
@@ -1668,32 +1896,110 @@ fn project_row_with_pk(
     Ok(projected)
 }
 
+fn format_aggregate_name(agg: &AggregateCall) -> String {
+    match agg.kind {
+        AggregateKind::CountStar => "count(*)".to_owned(),
+        AggregateKind::CountDistinct => {
+            format!("count(distinct {})", agg.column.as_deref().unwrap_or(""))
+        }
+        AggregateKind::Count
+        | AggregateKind::Sum
+        | AggregateKind::Avg
+        | AggregateKind::Min
+        | AggregateKind::Max => format!(
+            "{}({})",
+            agg.kind.sql_name(),
+            agg.column.as_deref().unwrap_or("")
+        ),
+    }
+}
+
+fn find_unique_select_alias(
+    items: &[SelectItem],
+    name: &str,
+    offset: usize,
+) -> Result<Option<usize>, SqlError> {
+    let mut matched: Option<usize> = None;
+    for (idx, item) in items.iter().enumerate() {
+        if item.alias.as_deref() == Some(name) {
+            if matched.is_some() {
+                return Err(SqlError::Syntax {
+                    offset,
+                    message: format!("ORDER BY '{name}' is ambiguous"),
+                });
+            }
+            matched = Some(idx);
+        }
+    }
+    Ok(matched)
+}
+
 fn get_or_build_select_plan(
     stmt_id: u64,
     stmt: &SelectStmt,
     cached_table: &CachedTable,
     limits: &SqlLimits,
     cache: &SqlCache,
-) -> Result<Arc<BoundSelectPlan>, SqlError> {
+) -> Result<Arc<SelectPlan>, SqlError> {
     let key = (stmt_id, cached_table.generation);
     if let Some(plan) = cache.select_plans.read().get(&key) {
         return Ok(Arc::clone(plan));
     }
+
+    let select_has_aggregate = match &stmt.columns {
+        SelectColumns::All => false,
+        SelectColumns::Items(items) => items
+            .iter()
+            .any(|item| matches!(item.expr, SelectExpr::Aggregate(_))),
+    };
+    let order_has_aggregate = stmt
+        .order_by
+        .iter()
+        .any(|item| matches!(item.target, OrderByTarget::Aggregate(_)));
+    let is_aggregate_query = !stmt.group_by.is_empty()
+        || stmt.having.is_some()
+        || select_has_aggregate
+        || order_has_aggregate;
+
+    let plan = if is_aggregate_query {
+        build_aggregate_select_plan(stmt, cached_table, limits)?
+    } else {
+        build_simple_select_plan(stmt, cached_table, limits)?
+    };
+
+    let mut guard = cache.select_plans.write();
+    if guard.len() >= MAX_CACHED_PLANS {
+        guard.clear();
+    }
+    guard.insert(key, Arc::clone(&plan));
+    Ok(plan)
+}
+
+fn build_simple_select_plan(
+    stmt: &SelectStmt,
+    cached_table: &CachedTable,
+    limits: &SqlLimits,
+) -> Result<Arc<SelectPlan>, SqlError> {
     let table = &cached_table.def;
-    let (proj_indices, col_names) = match &stmt.columns {
+    let (proj_indices, col_names, select_items_for_alias) = match &stmt.columns {
         SelectColumns::All => (
             (0..table.columns.len()).collect::<Vec<_>>(),
             cached_table.all_column_names.clone(),
+            None,
         ),
-        SelectColumns::List(cols) => {
-            if cols.len() > limits.max_columns {
+        SelectColumns::Items(items) => {
+            if items.len() > limits.max_columns {
                 return Err(SqlError::Bounds(format!(
                     "SELECT column list exceeds max_columns ({})",
                     limits.max_columns
                 )));
             }
-            let mut indices = Vec::with_capacity(cols.len());
-            for name in cols {
+            let mut indices = Vec::with_capacity(items.len());
+            let mut names = Vec::with_capacity(items.len());
+            for item in items {
+                let SelectExpr::Column { name, .. } = &item.expr else {
+                    unreachable!("non-aggregate plan has only column select items")
+                };
                 let idx = table
                     .column_index(name)
                     .ok_or_else(|| SqlError::NoSuchColumn {
@@ -1701,8 +2007,9 @@ fn get_or_build_select_plan(
                         column: name.clone(),
                     })?;
                 indices.push(idx);
+                names.push(item.alias.clone().unwrap_or_else(|| name.clone()));
             }
-            (indices, cols.clone())
+            (indices, names, Some(items.as_slice()))
         }
     };
     let mut proj_is_last = Vec::with_capacity(proj_indices.len());
@@ -1720,12 +2027,28 @@ fn get_or_build_select_plan(
     }
     let mut order_by = Vec::with_capacity(stmt.order_by.len());
     for item in &stmt.order_by {
-        let col_idx = table
-            .column_index(&item.column)
-            .ok_or_else(|| SqlError::NoSuchColumn {
-                table: table.name.clone(),
-                column: item.column.clone(),
-            })?;
+        let OrderByTarget::Column(col_name) = &item.target else {
+            unreachable!("non-aggregate plan has only column ORDER BY items")
+        };
+        let col_idx = if let Some(items) = select_items_for_alias {
+            if let Some(pos) = find_unique_select_alias(items, col_name, item.offset)? {
+                proj_indices[pos]
+            } else {
+                table
+                    .column_index(col_name)
+                    .ok_or_else(|| SqlError::NoSuchColumn {
+                        table: table.name.clone(),
+                        column: col_name.clone(),
+                    })?
+            }
+        } else {
+            table
+                .column_index(col_name)
+                .ok_or_else(|| SqlError::NoSuchColumn {
+                    table: table.name.clone(),
+                    column: col_name.clone(),
+                })?
+        };
         let nulls_first = match item.nulls {
             Some(NullsOrder::First) => true,
             Some(NullsOrder::Last) => false,
@@ -1758,7 +2081,7 @@ fn get_or_build_select_plan(
         stmt.limit.is_some(),
     );
 
-    let plan = Arc::new(BoundSelectPlan {
+    Ok(Arc::new(SelectPlan::Simple(BoundSelectPlan {
         proj_indices,
         proj_is_last,
         col_names,
@@ -1767,13 +2090,179 @@ fn get_or_build_select_plan(
         order_strategy,
         simple_pk_eq,
         compiled_access,
-    });
-    let mut guard = cache.select_plans.write();
-    if guard.len() >= MAX_CACHED_PLANS {
-        guard.clear();
+    })))
+}
+
+fn build_aggregate_select_plan(
+    stmt: &SelectStmt,
+    cached_table: &CachedTable,
+    limits: &SqlLimits,
+) -> Result<Arc<SelectPlan>, SqlError> {
+    let table = &cached_table.def;
+    if stmt.group_by.len() > limits.max_columns {
+        return Err(SqlError::Bounds(format!(
+            "GROUP BY column count exceeds max_columns ({})",
+            limits.max_columns
+        )));
     }
-    guard.insert(key, Arc::clone(&plan));
-    Ok(plan)
+    let mut group_cols = Vec::with_capacity(stmt.group_by.len());
+    for item in &stmt.group_by {
+        let col_idx = table
+            .column_index(&item.column)
+            .ok_or_else(|| SqlError::NoSuchColumn {
+                table: table.name.clone(),
+                column: item.column.clone(),
+            })?;
+        if !group_cols.contains(&col_idx) {
+            group_cols.push(col_idx);
+        }
+    }
+
+    let mut aggregates = Vec::new();
+    let expanded_all_items;
+    let select_items: &[SelectItem] = match &stmt.columns {
+        SelectColumns::All => {
+            if table.columns.len() > limits.max_columns {
+                return Err(SqlError::Bounds(format!(
+                    "SELECT column list exceeds max_columns ({})",
+                    limits.max_columns
+                )));
+            }
+            expanded_all_items = table
+                .columns
+                .iter()
+                .map(|c| SelectItem {
+                    expr: SelectExpr::Column {
+                        name: c.name.clone(),
+                        offset: 0,
+                    },
+                    alias: None,
+                })
+                .collect::<Vec<_>>();
+            &expanded_all_items
+        }
+        SelectColumns::Items(items) => {
+            if items.len() > limits.max_columns {
+                return Err(SqlError::Bounds(format!(
+                    "SELECT column list exceeds max_columns ({})",
+                    limits.max_columns
+                )));
+            }
+            items
+        }
+    };
+
+    let mut outputs = Vec::with_capacity(select_items.len());
+    let mut col_names = Vec::with_capacity(select_items.len());
+    for item in select_items {
+        match &item.expr {
+            SelectExpr::Column { name, offset } => {
+                let col_idx = table
+                    .column_index(name)
+                    .ok_or_else(|| SqlError::NoSuchColumn {
+                        table: table.name.clone(),
+                        column: name.clone(),
+                    })?;
+                let group_pos = group_cols
+                    .iter()
+                    .position(|&g| g == col_idx)
+                    .ok_or_else(|| SqlError::Syntax {
+                        offset: *offset,
+                        message: format!(
+                            "column '{}.{}' must appear in the GROUP BY clause or be used in an aggregate function",
+                            table.name, name
+                        ),
+                    })?;
+                outputs.push(BoundSelectOutput::GroupCol(group_pos));
+                col_names.push(item.alias.clone().unwrap_or_else(|| name.clone()));
+            }
+            SelectExpr::Aggregate(agg) => {
+                let (agg_idx, _) = intern_aggregate(table, agg, &mut aggregates)?;
+                outputs.push(BoundSelectOutput::Aggregate(agg_idx));
+                col_names.push(
+                    item.alias
+                        .clone()
+                        .unwrap_or_else(|| format_aggregate_name(agg)),
+                );
+            }
+        }
+    }
+
+    let filter = bind_where_static(stmt.filter.as_ref(), table)?;
+    let having = bind_having_static(stmt.having.as_ref(), table, &group_cols, &mut aggregates)?;
+
+    if stmt.order_by.len() > limits.max_columns {
+        return Err(SqlError::Bounds(format!(
+            "ORDER BY item count exceeds max_columns ({})",
+            limits.max_columns
+        )));
+    }
+    let mut order_by = Vec::with_capacity(stmt.order_by.len());
+    for item in &stmt.order_by {
+        let target = match &item.target {
+            OrderByTarget::Column(name) => {
+                if let Some(pos) = find_unique_select_alias(select_items, name, item.offset)? {
+                    match outputs[pos] {
+                        BoundSelectOutput::GroupCol(g) => BoundGroupOrderTarget::GroupCol(g),
+                        BoundSelectOutput::Aggregate(a) => BoundGroupOrderTarget::Aggregate(a),
+                    }
+                } else {
+                    let col_idx =
+                        table
+                            .column_index(name)
+                            .ok_or_else(|| SqlError::NoSuchColumn {
+                                table: table.name.clone(),
+                                column: name.clone(),
+                            })?;
+                    let group_pos = group_cols
+                        .iter()
+                        .position(|&g| g == col_idx)
+                        .ok_or_else(|| SqlError::Syntax {
+                            offset: item.offset,
+                            message: format!(
+                                "column '{}.{}' must appear in the GROUP BY clause or be used in an aggregate function",
+                                table.name, name
+                            ),
+                        })?;
+                    BoundGroupOrderTarget::GroupCol(group_pos)
+                }
+            }
+            OrderByTarget::Aggregate(agg) => {
+                let (agg_idx, _) = intern_aggregate(table, agg, &mut aggregates)?;
+                BoundGroupOrderTarget::Aggregate(agg_idx)
+            }
+        };
+        let nulls_first = match item.nulls {
+            Some(NullsOrder::First) => true,
+            Some(NullsOrder::Last) => false,
+            None => !item.desc,
+        };
+        order_by.push(BoundGroupOrderBy {
+            target,
+            desc: item.desc,
+            nulls_first,
+        });
+    }
+
+    let ungrouped_min_col = if group_cols.is_empty()
+        && aggregates.len() == 1
+        && aggregates[0].kind == AggregateKind::Min
+    {
+        aggregates[0].col_idx
+    } else {
+        None
+    };
+
+    Ok(Arc::new(SelectPlan::Aggregate(BoundAggregatePlan {
+        col_names,
+        outputs,
+        group_cols,
+        aggregates,
+        filter,
+        having,
+        order_by,
+        ungrouped_min_col,
+    })))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1789,7 +2278,26 @@ fn exec_select(
     let cached_table = catalog::load_table_cached(tx, &stmt.table, &cache.tables)?;
     let plan = get_or_build_select_plan(stmt_id, stmt, &cached_table, limits, cache)?;
     let table = &cached_table.def;
+    match plan.as_ref() {
+        SelectPlan::Simple(simple) => {
+            exec_simple_select(tx, table, simple, stmt, params, limits, force_full_scan)
+        }
+        SelectPlan::Aggregate(agg) => {
+            exec_aggregate_select(tx, table, agg, stmt, params, limits, force_full_scan)
+        }
+    }
+}
 
+#[allow(clippy::too_many_arguments)]
+fn exec_simple_select(
+    tx: &DocumentTransaction<'_, '_>,
+    table: &TableDef,
+    plan: &BoundSelectPlan,
+    stmt: &SelectStmt,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    force_full_scan: bool,
+) -> Result<SqlOutcome, SqlError> {
     validate_filter_params(plan.filter.as_ref(), params)?;
 
     let limit = resolve_limit_value(stmt.limit, params, "LIMIT")?;
@@ -1941,7 +2449,7 @@ fn exec_select(
                 exec_streaming_select(
                     tx,
                     table,
-                    &plan,
+                    plan,
                     access,
                     bound_filter,
                     params,
@@ -1953,7 +2461,7 @@ fn exec_select(
                 exec_pk_sorted_select(
                     tx,
                     table,
-                    &plan,
+                    plan,
                     access,
                     bound_filter,
                     params,
@@ -1975,7 +2483,7 @@ fn exec_select(
                 exec_pk_sorted_select(
                     tx,
                     table,
-                    &plan,
+                    plan,
                     access,
                     bound_filter,
                     params,
@@ -2090,7 +2598,7 @@ fn exec_select(
                 exec_streaming_select(
                     tx,
                     table,
-                    &plan,
+                    plan,
                     access,
                     bound_filter,
                     params,
@@ -2220,6 +2728,771 @@ fn exec_select(
             }
         }
     };
+
+    Ok(SqlOutcome::Rows {
+        columns: plan.col_names.clone(),
+        rows,
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ScalarKey {
+    Null,
+    Integer(i64),
+    Real(u64),
+    Text(String),
+    Boolean(bool),
+}
+
+fn canonical_f64_bits(f: f64) -> u64 {
+    if f == 0.0 {
+        0.0_f64.to_bits()
+    } else {
+        f.to_bits()
+    }
+}
+
+impl ScalarKey {
+    fn from_value_ref(v: SqlValueRef<'_>) -> Self {
+        match v {
+            SqlValueRef::Null => Self::Null,
+            SqlValueRef::Integer(n) => Self::Integer(n),
+            SqlValueRef::Real(f) => Self::Real(canonical_f64_bits(f)),
+            SqlValueRef::Text(s) => Self::Text(s.to_owned()),
+            SqlValueRef::Boolean(b) => Self::Boolean(b),
+        }
+    }
+
+    fn as_value_ref(&self) -> SqlValueRef<'_> {
+        match self {
+            Self::Null => SqlValueRef::Null,
+            Self::Integer(n) => SqlValueRef::Integer(*n),
+            Self::Real(bits) => SqlValueRef::Real(f64::from_bits(*bits)),
+            Self::Text(s) => SqlValueRef::Text(s.as_str()),
+            Self::Boolean(b) => SqlValueRef::Boolean(*b),
+        }
+    }
+
+    fn into_sql_value(self) -> SqlValue {
+        match self {
+            Self::Null => SqlValue::Null,
+            Self::Integer(n) => SqlValue::Integer(n),
+            Self::Real(bits) => SqlValue::Real(f64::from_bits(bits)),
+            Self::Text(s) => SqlValue::Text(s),
+            Self::Boolean(b) => SqlValue::Boolean(b),
+        }
+    }
+
+    fn cmp_asc_nulls_first(&self, other: &Self) -> Ordering {
+        compare_order_cell_ref(self.as_value_ref(), other.as_value_ref(), false, true)
+    }
+}
+
+fn hash_value_ref(v: SqlValueRef<'_>, hasher: &mut impl Hasher) {
+    match v {
+        SqlValueRef::Null => 0_u8.hash(hasher),
+        SqlValueRef::Integer(n) => {
+            1_u8.hash(hasher);
+            n.hash(hasher);
+        }
+        SqlValueRef::Real(f) => {
+            2_u8.hash(hasher);
+            canonical_f64_bits(f).hash(hasher);
+        }
+        SqlValueRef::Text(s) => {
+            3_u8.hash(hasher);
+            s.hash(hasher);
+        }
+        SqlValueRef::Boolean(b) => {
+            4_u8.hash(hasher);
+            b.hash(hasher);
+        }
+    }
+}
+
+fn value_ref_eq_scalar(v: SqlValueRef<'_>, k: &ScalarKey) -> bool {
+    match (v, k) {
+        (SqlValueRef::Null, ScalarKey::Null) => true,
+        (SqlValueRef::Integer(a), ScalarKey::Integer(b)) => a == *b,
+        (SqlValueRef::Real(a), ScalarKey::Real(b)) => canonical_f64_bits(a) == *b,
+        (SqlValueRef::Text(a), ScalarKey::Text(b)) => a == b.as_str(),
+        (SqlValueRef::Boolean(a), ScalarKey::Boolean(b)) => a == *b,
+        _ => false,
+    }
+}
+
+fn compare_value_ref_to_scalar(v: SqlValueRef<'_>, k: &ScalarKey) -> Ordering {
+    compare_non_null(v, k.as_value_ref()).expect("aggregate column has uniform type")
+}
+
+fn compare_order_cell_ref(
+    a: SqlValueRef<'_>,
+    b: SqlValueRef<'_>,
+    desc: bool,
+    nulls_first: bool,
+) -> Ordering {
+    match (a, b) {
+        (SqlValueRef::Null, SqlValueRef::Null) => Ordering::Equal,
+        (SqlValueRef::Null, _) => {
+            if nulls_first {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        }
+        (_, SqlValueRef::Null) => {
+            if nulls_first {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }
+        }
+        _ => {
+            let ord = compare_non_null(a, b).expect("ORDER BY values have matching column types");
+            if desc { ord.reverse() } else { ord }
+        }
+    }
+}
+
+struct DistinctSet {
+    values: Vec<ScalarKey>,
+    buckets: HashMap<u64, Vec<usize>>,
+}
+
+impl DistinctSet {
+    fn new() -> Self {
+        Self {
+            values: Vec::new(),
+            buckets: HashMap::new(),
+        }
+    }
+
+    fn insert(
+        &mut self,
+        val: SqlValueRef<'_>,
+        hash_builder: &RandomState,
+        total_distinct: &mut usize,
+        max_distinct: usize,
+    ) -> Result<(), SqlError> {
+        let mut hasher = hash_builder.build_hasher();
+        hash_value_ref(val, &mut hasher);
+        let h = hasher.finish();
+        if let Some(bucket) = self.buckets.get(&h) {
+            if bucket
+                .iter()
+                .any(|&idx| value_ref_eq_scalar(val, &self.values[idx]))
+            {
+                return Ok(());
+            }
+        }
+        if *total_distinct >= max_distinct {
+            return Err(SqlError::Bounds(format!(
+                "COUNT(DISTINCT) distinct value count exceeds max_distinct_values ({max_distinct})"
+            )));
+        }
+        *total_distinct += 1;
+        let idx = self.values.len();
+        self.values.push(ScalarKey::from_value_ref(val));
+        self.buckets.entry(h).or_default().push(idx);
+        Ok(())
+    }
+}
+
+enum AggAcc {
+    Count(u64),
+    CountDistinct(DistinctSet),
+    SumInt { sum: i128, has_value: bool },
+    SumReal { sum: f64, has_value: bool },
+    AvgInt { sum: i128, count: u64 },
+    AvgReal { sum: f64, count: u64 },
+    Min(Option<ScalarKey>),
+    Max(Option<ScalarKey>),
+}
+
+impl AggAcc {
+    fn new(spec: &BoundAggregate) -> Self {
+        match (spec.kind, spec.col_type) {
+            (AggregateKind::CountStar | AggregateKind::Count, _) => Self::Count(0),
+            (AggregateKind::CountDistinct, _) => Self::CountDistinct(DistinctSet::new()),
+            (AggregateKind::Sum, Some(SqlType::Integer)) => Self::SumInt {
+                sum: 0,
+                has_value: false,
+            },
+            (AggregateKind::Sum, Some(SqlType::Real)) => Self::SumReal {
+                sum: 0.0,
+                has_value: false,
+            },
+            (AggregateKind::Avg, Some(SqlType::Integer)) => Self::AvgInt { sum: 0, count: 0 },
+            (AggregateKind::Avg, Some(SqlType::Real)) => Self::AvgReal { sum: 0.0, count: 0 },
+            (AggregateKind::Min, _) => Self::Min(None),
+            (AggregateKind::Max, _) => Self::Max(None),
+            _ => unreachable!("validated aggregate type"),
+        }
+    }
+
+    fn update(
+        &mut self,
+        val: Option<SqlValueRef<'_>>,
+        hash_builder: &RandomState,
+        total_distinct: &mut usize,
+        max_distinct: usize,
+    ) -> Result<(), SqlError> {
+        let Some(v) = val else {
+            if let Self::Count(c) = self {
+                *c += 1;
+            }
+            return Ok(());
+        };
+        if matches!(v, SqlValueRef::Null) {
+            return Ok(());
+        }
+        match self {
+            Self::Count(c) => *c += 1,
+            Self::CountDistinct(set) => {
+                set.insert(v, hash_builder, total_distinct, max_distinct)?;
+            }
+            Self::SumInt { sum, has_value } => {
+                let SqlValueRef::Integer(n) = v else {
+                    unreachable!("checked integer column")
+                };
+                *sum += i128::from(n);
+                *has_value = true;
+            }
+            Self::SumReal { sum, has_value } => {
+                let SqlValueRef::Real(f) = v else {
+                    unreachable!("checked real column")
+                };
+                *sum += f;
+                *has_value = true;
+            }
+            Self::AvgInt { sum, count } => {
+                let SqlValueRef::Integer(n) = v else {
+                    unreachable!("checked integer column")
+                };
+                *sum += i128::from(n);
+                *count += 1;
+            }
+            Self::AvgReal { sum, count } => {
+                let SqlValueRef::Real(f) = v else {
+                    unreachable!("checked real column")
+                };
+                *sum += f;
+                *count += 1;
+            }
+            Self::Min(cur) => match cur {
+                None => *cur = Some(ScalarKey::from_value_ref(v)),
+                Some(existing) => {
+                    if compare_value_ref_to_scalar(v, existing) == Ordering::Less {
+                        *cur = Some(ScalarKey::from_value_ref(v));
+                    }
+                }
+            },
+            Self::Max(cur) => match cur {
+                None => *cur = Some(ScalarKey::from_value_ref(v)),
+                Some(existing) => {
+                    if compare_value_ref_to_scalar(v, existing) == Ordering::Greater {
+                        *cur = Some(ScalarKey::from_value_ref(v));
+                    }
+                }
+            },
+        }
+        Ok(())
+    }
+
+    fn finalize(self) -> Result<SqlValue, SqlError> {
+        match self {
+            Self::Count(c) => Ok(SqlValue::Integer(c as i64)),
+            Self::CountDistinct(set) => Ok(SqlValue::Integer(set.values.len() as i64)),
+            Self::SumInt { sum, has_value } => {
+                if !has_value {
+                    Ok(SqlValue::Null)
+                } else {
+                    i64::try_from(sum).map(SqlValue::Integer).map_err(|_| {
+                        SqlError::Bounds(
+                            "SUM(INTEGER) overflow: sum exceeds signed 64-bit integer range".into(),
+                        )
+                    })
+                }
+            }
+            Self::SumReal { sum, has_value } => {
+                if !has_value {
+                    Ok(SqlValue::Null)
+                } else if !sum.is_finite() {
+                    Err(SqlError::Bounds(
+                        "SUM(REAL) overflow: sum is not finite".into(),
+                    ))
+                } else {
+                    Ok(SqlValue::Real(if sum == 0.0 { 0.0 } else { sum }))
+                }
+            }
+            Self::AvgInt { sum, count } => {
+                if count == 0 {
+                    Ok(SqlValue::Null)
+                } else {
+                    let avg = (sum as f64) / (count as f64);
+                    Ok(SqlValue::Real(if avg == 0.0 { 0.0 } else { avg }))
+                }
+            }
+            Self::AvgReal { sum, count } => {
+                if count == 0 {
+                    Ok(SqlValue::Null)
+                } else {
+                    let avg = sum / (count as f64);
+                    if !avg.is_finite() {
+                        Err(SqlError::Bounds(
+                            "AVG(REAL) overflow: result is not finite".into(),
+                        ))
+                    } else {
+                        Ok(SqlValue::Real(if avg == 0.0 { 0.0 } else { avg }))
+                    }
+                }
+            }
+            Self::Min(val) | Self::Max(val) => {
+                Ok(val.map_or(SqlValue::Null, ScalarKey::into_sql_value))
+            }
+        }
+    }
+}
+
+struct GroupEntry {
+    keys: Vec<ScalarKey>,
+    accs: Vec<AggAcc>,
+}
+
+struct GroupTable {
+    entries: Vec<GroupEntry>,
+    buckets: HashMap<u64, Vec<usize>>,
+    hash_builder: RandomState,
+    max_groups: usize,
+}
+
+impl GroupTable {
+    fn new(max_groups: usize, hash_builder: RandomState) -> Self {
+        Self {
+            entries: Vec::new(),
+            buckets: HashMap::new(),
+            hash_builder,
+            max_groups,
+        }
+    }
+
+    fn get_or_insert(
+        &mut self,
+        row_keys: &[SqlValueRef<'_>],
+        agg_specs: &[BoundAggregate],
+    ) -> Result<&mut Vec<AggAcc>, SqlError> {
+        let mut hasher = self.hash_builder.build_hasher();
+        for &v in row_keys {
+            hash_value_ref(v, &mut hasher);
+        }
+        let h = hasher.finish();
+        if let Some(bucket) = self.buckets.get(&h) {
+            for &idx in bucket {
+                if self.entries[idx]
+                    .keys
+                    .iter()
+                    .zip(row_keys.iter())
+                    .all(|(k, &v)| value_ref_eq_scalar(v, k))
+                {
+                    return Ok(&mut self.entries[idx].accs);
+                }
+            }
+        }
+        if self.entries.len() >= self.max_groups {
+            return Err(SqlError::Bounds(format!(
+                "group count exceeds max_groups ({})",
+                self.max_groups
+            )));
+        }
+        let idx = self.entries.len();
+        let keys = row_keys
+            .iter()
+            .map(|&v| ScalarKey::from_value_ref(v))
+            .collect();
+        let accs = agg_specs.iter().map(AggAcc::new).collect();
+        self.entries.push(GroupEntry { keys, accs });
+        self.buckets.entry(h).or_default().push(idx);
+        Ok(&mut self.entries[idx].accs)
+    }
+}
+
+struct FinalGroup {
+    keys: Vec<ScalarKey>,
+    aggs: Vec<SqlValue>,
+}
+
+struct HeapGroupRow {
+    group: FinalGroup,
+    specs: Rc<[BoundGroupOrderBy]>,
+}
+
+impl PartialEq for HeapGroupRow {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for HeapGroupRow {}
+
+impl PartialOrd for HeapGroupRow {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for HeapGroupRow {
+    fn cmp(&self, other: &Self) -> Ordering {
+        compare_final_groups(&self.group, &other.group, &self.specs)
+    }
+}
+
+fn group_order_val(group: &FinalGroup, target: BoundGroupOrderTarget) -> SqlValueRef<'_> {
+    match target {
+        BoundGroupOrderTarget::GroupCol(pos) => group.keys[pos].as_value_ref(),
+        BoundGroupOrderTarget::Aggregate(idx) => SqlValueRef::from_value(&group.aggs[idx]),
+    }
+}
+
+fn compare_group_keys_asc(a: &[ScalarKey], b: &[ScalarKey]) -> Ordering {
+    for (ak, bk) in a.iter().zip(b.iter()) {
+        let ord = ak.cmp_asc_nulls_first(bk);
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    Ordering::Equal
+}
+
+fn compare_final_groups(a: &FinalGroup, b: &FinalGroup, specs: &[BoundGroupOrderBy]) -> Ordering {
+    for spec in specs {
+        let av = group_order_val(a, spec.target);
+        let bv = group_order_val(b, spec.target);
+        let ord = compare_order_cell_ref(av, bv, spec.desc, spec.nulls_first);
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    compare_group_keys_asc(&a.keys, &b.keys)
+}
+
+fn decode_col_with_pk<'a>(
+    obj: &'a Map<String, Value>,
+    table: &TableDef,
+    col_idx: usize,
+    verified_pk: Option<i64>,
+) -> Result<SqlValueRef<'a>, SqlError> {
+    if col_idx == table.primary_key_index {
+        if let Some(n) = verified_pk {
+            return Ok(SqlValueRef::Integer(n));
+        }
+    }
+    decode_col_ref(obj, &table.columns[col_idx])
+}
+
+struct DistinctBudget<'a> {
+    hash_builder: &'a RandomState,
+    total_distinct: usize,
+    max_distinct: usize,
+}
+
+fn update_group_accs(
+    accs: &mut [AggAcc],
+    agg_specs: &[BoundAggregate],
+    obj: &Map<String, Value>,
+    table: &TableDef,
+    verified_pk: Option<i64>,
+    distinct: &mut DistinctBudget<'_>,
+) -> Result<(), SqlError> {
+    for (acc, spec) in accs.iter_mut().zip(agg_specs.iter()) {
+        let val = match spec.col_idx {
+            None => None,
+            Some(col_idx) => Some(decode_col_with_pk(obj, table, col_idx, verified_pk)?),
+        };
+        acc.update(
+            val,
+            distinct.hash_builder,
+            &mut distinct.total_distinct,
+            distinct.max_distinct,
+        )?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn exec_aggregate_select(
+    tx: &DocumentTransaction<'_, '_>,
+    table: &TableDef,
+    plan: &BoundAggregatePlan,
+    stmt: &SelectStmt,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    force_full_scan: bool,
+) -> Result<SqlOutcome, SqlError> {
+    validate_filter_params(plan.filter.as_ref(), params)?;
+    validate_filter_params(plan.having.as_ref(), params)?;
+
+    let limit = resolve_limit_value(stmt.limit, params, "LIMIT")?;
+    let offset = resolve_limit_value(stmt.offset, params, "OFFSET")?.unwrap_or(0);
+
+    if limit == Some(0) {
+        return Ok(SqlOutcome::Rows {
+            columns: plan.col_names.clone(),
+            rows: Vec::new(),
+        });
+    }
+
+    let bound_filter = plan.filter.as_ref().map(|f| &f.expr);
+    let mut access = if force_full_scan {
+        AccessPlan::FullScan
+    } else {
+        plan::plan_access(bound_filter, table, &[], false, params)
+    };
+
+    // Provably equivalent MIN(pk) or MIN(ready_index_leading_col) first-entry optimization.
+    let mut stop_on_first_non_null_min = false;
+    let mut stream_cap: Option<usize> = None;
+    if !force_full_scan {
+        if let Some(min_col_idx) = plan.ungrouped_min_col {
+            if min_col_idx == table.primary_key_index {
+                let pk_ordered = matches!(
+                    access,
+                    AccessPlan::PkPoint { .. }
+                        | AccessPlan::PkRange { .. }
+                        | AccessPlan::FullScan
+                        | AccessPlan::Index {
+                            preserves_pk_asc: true,
+                            ..
+                        }
+                );
+                if pk_ordered {
+                    stop_on_first_non_null_min = true;
+                    if bound_filter.is_none() {
+                        stream_cap = Some(1);
+                    }
+                }
+            } else if bound_filter.is_none() {
+                if let Some((index_idx, _)) = table
+                    .indexes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, idx)| {
+                        idx.state == IndexState::Ready
+                            && idx.columns.first() == Some(&min_col_idx)
+                            && idx.columns[1..].iter().all(|&c| table.columns[c].not_null)
+                    })
+                    .min_by_key(|(_, idx)| idx.columns.len())
+                {
+                    access = AccessPlan::Index {
+                        index_idx,
+                        equal: Vec::new(),
+                        lower: None,
+                        upper: None,
+                        unique_equality: false,
+                        preserves_pk_asc: false,
+                        satisfies_order_by: false,
+                    };
+                    stop_on_first_non_null_min = true;
+                    stream_cap = Some(1);
+                }
+            } else if let AccessPlan::Index {
+                index_idx,
+                ref equal,
+                ..
+            } = access
+            {
+                if table.indexes[index_idx].columns.get(equal.len()) == Some(&min_col_idx) {
+                    stop_on_first_non_null_min = true;
+                }
+            }
+        }
+    }
+
+    let hash_builder = RandomState::new();
+    let mut distinct = DistinctBudget {
+        hash_builder: &hash_builder,
+        total_distinct: 0,
+        max_distinct: limits.max_distinct_values,
+    };
+
+    let raw_groups: Vec<GroupEntry> = if plan.group_cols.is_empty() {
+        let mut accs: Vec<AggAcc> = plan.aggregates.iter().map(AggAcc::new).collect();
+        if !matches!(access, AccessPlan::Empty) {
+            visit_access_rows(
+                tx,
+                table,
+                access,
+                bound_filter,
+                params,
+                limits,
+                stream_cap,
+                |_doc_id, verified_pk, obj| {
+                    update_group_accs(
+                        &mut accs,
+                        &plan.aggregates,
+                        &obj,
+                        table,
+                        verified_pk,
+                        &mut distinct,
+                    )?;
+                    if stop_on_first_non_null_min && matches!(&accs[0], AggAcc::Min(Some(_))) {
+                        Ok(ControlFlow::Break(()))
+                    } else {
+                        Ok(ControlFlow::Continue(()))
+                    }
+                },
+            )?;
+        }
+        vec![GroupEntry {
+            keys: Vec::new(),
+            accs,
+        }]
+    } else {
+        let mut table_groups = GroupTable::new(limits.max_groups, hash_builder.clone());
+        if !matches!(access, AccessPlan::Empty) {
+            visit_access_rows(
+                tx,
+                table,
+                access,
+                bound_filter,
+                params,
+                limits,
+                None,
+                |_doc_id, verified_pk, obj| {
+                    let accs = if plan.group_cols.len() == 1 {
+                        let key = decode_col_with_pk(&obj, table, plan.group_cols[0], verified_pk)?;
+                        table_groups.get_or_insert(&[key], &plan.aggregates)?
+                    } else {
+                        let mut keys = Vec::with_capacity(plan.group_cols.len());
+                        for &col_idx in &plan.group_cols {
+                            keys.push(decode_col_with_pk(&obj, table, col_idx, verified_pk)?);
+                        }
+                        table_groups.get_or_insert(&keys, &plan.aggregates)?
+                    };
+                    update_group_accs(
+                        accs,
+                        &plan.aggregates,
+                        &obj,
+                        table,
+                        verified_pk,
+                        &mut distinct,
+                    )?;
+                    Ok(ControlFlow::Continue(()))
+                },
+            )?;
+        }
+        table_groups.entries
+    };
+
+    let having_expr = plan.having.as_ref().map(|f| &f.expr);
+    let mut surviving = Vec::new();
+    for entry in raw_groups {
+        let mut aggs = Vec::with_capacity(entry.accs.len());
+        for acc in entry.accs {
+            aggs.push(acc.finalize()?);
+        }
+        if eval_having_doc(having_expr, &entry.keys, &aggs, params)? {
+            surviving.push(FinalGroup {
+                keys: entry.keys,
+                aggs,
+            });
+        }
+    }
+
+    let ordered_groups: Vec<FinalGroup> = if surviving.is_empty() {
+        Vec::new()
+    } else if plan.order_by.is_empty() {
+        if !plan.group_cols.is_empty() && surviving.len() > 1 {
+            surviving.sort_unstable_by(|a, b| compare_group_keys_asc(&a.keys, &b.keys));
+        }
+        let result_len = surviving
+            .len()
+            .saturating_sub(offset)
+            .min(limit.unwrap_or(usize::MAX));
+        if result_len > limits.max_select_rows {
+            return Err(SqlError::Bounds(format!(
+                "SELECT result exceeds max_select_rows ({})",
+                limits.max_select_rows
+            )));
+        }
+        surviving
+            .into_iter()
+            .skip(offset)
+            .take(limit.unwrap_or(usize::MAX))
+            .collect()
+    } else if let Some(lim) = limit {
+        let keep_cap = (offset as u128).saturating_add(lim as u128);
+        let specs: Rc<[BoundGroupOrderBy]> = Rc::from(plan.order_by.as_slice());
+        let mut heap: BinaryHeap<HeapGroupRow> = BinaryHeap::new();
+        for group in surviving {
+            if (heap.len() as u128) < keep_cap {
+                if heap.len() >= limits.max_sort_rows {
+                    return Err(SqlError::Bounds(format!(
+                        "sort row count exceeds max_sort_rows ({})",
+                        limits.max_sort_rows
+                    )));
+                }
+                if offset == 0 && heap.len() >= limits.max_select_rows {
+                    return Err(SqlError::Bounds(format!(
+                        "SELECT result exceeds max_select_rows ({})",
+                        limits.max_select_rows
+                    )));
+                }
+                heap.push(HeapGroupRow {
+                    group,
+                    specs: Rc::clone(&specs),
+                });
+            } else if let Some(mut top) = heap.peek_mut() {
+                if compare_final_groups(&group, &top.group, &specs) == Ordering::Less {
+                    top.group = group;
+                }
+            }
+        }
+        if heap.len() <= offset {
+            Vec::new()
+        } else {
+            let result_len = heap.len() - offset;
+            if result_len > limits.max_select_rows {
+                return Err(SqlError::Bounds(format!(
+                    "SELECT result exceeds max_select_rows ({})",
+                    limits.max_select_rows
+                )));
+            }
+            heap.into_sorted_vec()
+                .into_iter()
+                .skip(offset)
+                .map(|h| h.group)
+                .collect()
+        }
+    } else {
+        if surviving.len() > limits.max_sort_rows {
+            return Err(SqlError::Bounds(format!(
+                "sort row count exceeds max_sort_rows ({})",
+                limits.max_sort_rows
+            )));
+        }
+        let result_len = surviving.len().saturating_sub(offset);
+        if result_len > limits.max_select_rows {
+            return Err(SqlError::Bounds(format!(
+                "SELECT result exceeds max_select_rows ({})",
+                limits.max_select_rows
+            )));
+        }
+        surviving.sort_unstable_by(|a, b| compare_final_groups(a, b, &plan.order_by));
+        surviving.into_iter().skip(offset).collect()
+    };
+
+    let mut rows = Vec::with_capacity(ordered_groups.len());
+    for group in ordered_groups {
+        let mut row = Vec::with_capacity(plan.outputs.len());
+        for output in &plan.outputs {
+            let val = match *output {
+                BoundSelectOutput::GroupCol(pos) => group.keys[pos].clone().into_sql_value(),
+                BoundSelectOutput::Aggregate(idx) => group.aggs[idx].clone(),
+            };
+            row.push(val);
+        }
+        rows.push(row);
+    }
 
     Ok(SqlOutcome::Rows {
         columns: plan.col_names.clone(),
@@ -2542,7 +3815,8 @@ fn exec_update(
             let mut updates = Vec::with_capacity(plan.assignments.len());
             for (col_idx, bound) in &plan.assignments {
                 let col = &table.columns[*col_idx];
-                let val = eval_expr_ref(bound, table, Some(&obj), params)?.into_owned();
+                let val = eval_expr_ref(bound, EvalContext::Doc { table, obj: &obj }, params)?
+                    .into_owned();
                 let allow_int_to_real = bound.is_int_literal_or_param();
                 let coerced = coerce_for_column(
                     &val,
@@ -3094,6 +4368,7 @@ pub(crate) enum BoundExpr {
     Literal(SqlValue),
     Param(usize),
     Column(usize),
+    Aggregate(usize),
     IsNull {
         expr: Box<BoundExpr>,
         negated: bool,
@@ -3106,6 +4381,19 @@ pub(crate) enum BoundExpr {
     },
     And(Vec<BoundExpr>),
     Or(Vec<BoundExpr>),
+}
+
+#[derive(Clone, Copy)]
+enum EvalContext<'a> {
+    None,
+    Doc {
+        table: &'a TableDef,
+        obj: &'a Map<String, Value>,
+    },
+    Group {
+        keys: &'a [ScalarKey],
+        aggs: &'a [SqlValue],
+    },
 }
 
 impl BoundExpr {
@@ -3201,6 +4489,13 @@ fn bind_expr_with_type(
                 ExprType::Typed(table.columns[idx].col_type),
             ))
         }
+        Expr::Aggregate(agg) => Err(SqlError::Unsupported {
+            feature: format!(
+                "aggregate function '{}'",
+                agg.kind.sql_name().to_ascii_uppercase()
+            ),
+            offset: Some(agg.offset),
+        }),
         Expr::IsNull { expr, negated } => {
             let (bound, _) = bind_expr_with_type(expr, table, params, table_name)?;
             Ok((
@@ -3299,7 +4594,7 @@ fn eval_where_doc(
     let Some(expr) = filter else {
         return Ok(true);
     };
-    match eval_expr_ref(expr, table, Some(obj), params)? {
+    match eval_expr_ref(expr, EvalContext::Doc { table, obj }, params)? {
         SqlValueRef::Boolean(b) => Ok(b),
         SqlValueRef::Null => Ok(false),
         other => Err(SqlError::Type(format!(
@@ -3309,21 +4604,44 @@ fn eval_where_doc(
     }
 }
 
+fn eval_having_doc(
+    having: Option<&BoundExpr>,
+    keys: &[ScalarKey],
+    aggs: &[SqlValue],
+    params: &[SqlValue],
+) -> Result<bool, SqlError> {
+    let Some(expr) = having else {
+        return Ok(true);
+    };
+    match eval_expr_ref(expr, EvalContext::Group { keys, aggs }, params)? {
+        SqlValueRef::Boolean(b) => Ok(b),
+        SqlValueRef::Null => Ok(false),
+        other => Err(SqlError::Type(format!(
+            "HAVING clause must evaluate to BOOLEAN, got {}",
+            other.kind_name()
+        ))),
+    }
+}
+
 fn eval_expr_ref<'a>(
     expr: &'a BoundExpr,
-    table: &TableDef,
-    obj: Option<&'a Map<String, Value>>,
+    ctx: EvalContext<'a>,
     params: &'a [SqlValue],
 ) -> Result<SqlValueRef<'a>, SqlError> {
     match expr {
         BoundExpr::Literal(v) => Ok(SqlValueRef::from_value(v)),
         BoundExpr::Param(idx) => Ok(SqlValueRef::from_value(&params[*idx])),
-        BoundExpr::Column(idx) => {
-            let map = obj.expect("column expression requires a row object");
-            decode_col_ref(map, &table.columns[*idx])
-        }
+        BoundExpr::Column(idx) => match ctx {
+            EvalContext::Doc { table, obj } => decode_col_ref(obj, &table.columns[*idx]),
+            EvalContext::Group { keys, .. } => Ok(keys[*idx].as_value_ref()),
+            EvalContext::None => unreachable!("column expression requires a row or group context"),
+        },
+        BoundExpr::Aggregate(idx) => match ctx {
+            EvalContext::Group { aggs, .. } => Ok(SqlValueRef::from_value(&aggs[*idx])),
+            _ => unreachable!("aggregate expression requires a group context"),
+        },
         BoundExpr::IsNull { expr, negated } => {
-            let val = eval_expr_ref(expr, table, obj, params)?;
+            let val = eval_expr_ref(expr, ctx, params)?;
             let is_null = matches!(val, SqlValueRef::Null);
             Ok(SqlValueRef::Boolean(if *negated {
                 !is_null
@@ -3331,7 +4649,7 @@ fn eval_expr_ref<'a>(
                 is_null
             }))
         }
-        BoundExpr::Not(inner) => match eval_expr_ref(inner, table, obj, params)? {
+        BoundExpr::Not(inner) => match eval_expr_ref(inner, ctx, params)? {
             SqlValueRef::Boolean(b) => Ok(SqlValueRef::Boolean(!b)),
             SqlValueRef::Null => Ok(SqlValueRef::Null),
             other => Err(SqlError::Type(format!(
@@ -3342,7 +4660,7 @@ fn eval_expr_ref<'a>(
         BoundExpr::And(items) => {
             let mut has_unknown = false;
             for item in items {
-                match eval_expr_ref(item, table, obj, params)? {
+                match eval_expr_ref(item, ctx, params)? {
                     SqlValueRef::Boolean(false) => return Ok(SqlValueRef::Boolean(false)),
                     SqlValueRef::Boolean(true) => {}
                     SqlValueRef::Null => has_unknown = true,
@@ -3363,7 +4681,7 @@ fn eval_expr_ref<'a>(
         BoundExpr::Or(items) => {
             let mut has_unknown = false;
             for item in items {
-                match eval_expr_ref(item, table, obj, params)? {
+                match eval_expr_ref(item, ctx, params)? {
                     SqlValueRef::Boolean(true) => return Ok(SqlValueRef::Boolean(true)),
                     SqlValueRef::Boolean(false) => {}
                     SqlValueRef::Null => has_unknown = true,
@@ -3382,8 +4700,8 @@ fn eval_expr_ref<'a>(
             }
         }
         BoundExpr::Compare { op, left, right } => {
-            let lv = eval_expr_ref(left, table, obj, params)?;
-            let rv = eval_expr_ref(right, table, obj, params)?;
+            let lv = eval_expr_ref(left, ctx, params)?;
+            let rv = eval_expr_ref(right, ctx, params)?;
             if matches!(lv, SqlValueRef::Null) || matches!(rv, SqlValueRef::Null) {
                 return Ok(SqlValueRef::Null);
             }

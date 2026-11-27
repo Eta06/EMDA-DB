@@ -80,10 +80,58 @@ pub(crate) struct InsertStmt {
     pub(crate) rows: Vec<Vec<Expr>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum AggregateKind {
+    CountStar,
+    Count,
+    CountDistinct,
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+impl AggregateKind {
+    pub(crate) fn sql_name(self) -> &'static str {
+        match self {
+            Self::CountStar | Self::Count | Self::CountDistinct => "count",
+            Self::Sum => "sum",
+            Self::Avg => "avg",
+            Self::Min => "min",
+            Self::Max => "max",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AggregateCall {
+    pub(crate) kind: AggregateKind,
+    pub(crate) column: Option<String>,
+    pub(crate) offset: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SelectExpr {
+    Column { name: String, offset: usize },
+    Aggregate(AggregateCall),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SelectItem {
+    pub(crate) expr: SelectExpr,
+    pub(crate) alias: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum SelectColumns {
     All,
-    List(Vec<String>),
+    Items(Vec<SelectItem>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GroupByItem {
+    pub(crate) column: String,
+    pub(crate) offset: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,8 +141,15 @@ pub(crate) enum NullsOrder {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum OrderByTarget {
+    Column(String),
+    Aggregate(AggregateCall),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct OrderByItem {
-    pub(crate) column: String,
+    pub(crate) target: OrderByTarget,
+    pub(crate) offset: usize,
     pub(crate) desc: bool,
     pub(crate) nulls: Option<NullsOrder>,
 }
@@ -110,6 +165,8 @@ pub(crate) struct SelectStmt {
     pub(crate) columns: SelectColumns,
     pub(crate) table: String,
     pub(crate) filter: Option<Expr>,
+    pub(crate) group_by: Vec<GroupByItem>,
+    pub(crate) having: Option<Expr>,
     pub(crate) order_by: Vec<OrderByItem>,
     pub(crate) limit: Option<LimitValue>,
     pub(crate) offset: Option<LimitValue>,
@@ -159,6 +216,7 @@ pub(crate) enum Expr {
     Literal(LiteralValue),
     Param(usize),
     Column(String),
+    Aggregate(AggregateCall),
     IsNull {
         expr: Box<Expr>,
         negated: bool,
@@ -1032,11 +1090,23 @@ impl Parser<'_> {
                     message: "cannot mix '*' with explicit columns in SELECT".into(),
                 });
             }
+            if self.at_kw("as") {
+                return Err(SqlError::Syntax {
+                    offset: self.peek().offset,
+                    message: "cannot alias '*' in SELECT".into(),
+                });
+            }
+            if is_arithmetic_or_concat(&self.peek().kind) {
+                return Err(SqlError::Unsupported {
+                    feature: "arithmetic / concatenation operators".into(),
+                    offset: Some(self.peek().offset),
+                });
+            }
             SelectColumns::All
         } else {
-            let mut cols = Vec::new();
+            let mut items = Vec::new();
             loop {
-                if cols.len() >= self.limits.max_columns {
+                if items.len() >= self.limits.max_columns {
                     return Err(SqlError::Bounds(format!(
                         "SELECT column list exceeds max_columns ({})",
                         self.limits.max_columns
@@ -1049,50 +1119,98 @@ impl Parser<'_> {
                     });
                 }
                 let tok = self.peek().clone();
-                if let TokenKind::Ident { text, quoted } = &tok.kind {
+                let expr = if let TokenKind::Ident { text, quoted } = &tok.kind {
                     if matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::LParen)) {
-                        return Err(SqlError::Unsupported {
-                            feature: format!("aggregate or function call '{}'", text),
-                            offset: Some(tok.offset),
-                        });
-                    }
-                    if matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::Dot)) {
+                        if !quoted && is_supported_aggregate_name(text) {
+                            let fn_name = text.clone();
+                            SelectExpr::Aggregate(self.parse_aggregate_call(&fn_name, tok.offset)?)
+                        } else {
+                            return Err(SqlError::Unsupported {
+                                feature: format!("aggregate or function call '{text}'"),
+                                offset: Some(tok.offset),
+                            });
+                        }
+                    } else if matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::Dot)) {
                         return Err(SqlError::Unsupported {
                             feature: "qualified column names (table.column)".into(),
                             offset: Some(tok.offset),
                         });
-                    }
-                    if !quoted && is_reserved_keyword(text) {
+                    } else if !quoted && is_reserved_keyword(text) {
                         return Err(SqlError::Syntax {
                             offset: tok.offset,
                             message: format!(
-                                "expected column name in SELECT list, found keyword '{}'",
+                                "expected column or aggregate in SELECT list, found keyword '{}'",
                                 text.to_ascii_uppercase()
                             ),
                         });
+                    } else {
+                        let col = text.clone();
+                        self.advance();
+                        SelectExpr::Column {
+                            name: col,
+                            offset: tok.offset,
+                        }
                     }
-                    let col = text.clone();
-                    self.advance();
-                    if self.at_kw("as") {
+                } else {
+                    if matches!(
+                        tok.kind,
+                        TokenKind::Integer(_)
+                            | TokenKind::Real(_)
+                            | TokenKind::String(_)
+                            | TokenKind::Minus
+                            | TokenKind::Question
+                    ) && self
+                        .peek_n(1)
+                        .is_some_and(|t| is_arithmetic_or_concat(&t.kind))
+                    {
                         return Err(SqlError::Unsupported {
-                            feature: "column aliases (AS)".into(),
+                            feature: "arithmetic / concatenation operators".into(),
+                            offset: Some(tok.offset),
+                        });
+                    }
+                    return Err(SqlError::Syntax {
+                        offset: tok.offset,
+                        message: "expected '*', column name, or aggregate in SELECT list".into(),
+                    });
+                };
+                if self.at_kw("over") {
+                    return Err(SqlError::Unsupported {
+                        feature: "window functions (OVER)".into(),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                if self.at_kw("filter") {
+                    return Err(SqlError::Unsupported {
+                        feature: "FILTER clause on aggregates".into(),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                if is_arithmetic_or_concat(&self.peek().kind) {
+                    return Err(SqlError::Unsupported {
+                        feature: "arithmetic / concatenation operators".into(),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                let alias = if self.eat_kw("as") {
+                    let (alias_name, _) = self.expect_ident("column alias")?;
+                    if is_arithmetic_or_concat(&self.peek().kind) {
+                        return Err(SqlError::Unsupported {
+                            feature: "arithmetic / concatenation operators".into(),
                             offset: Some(self.peek().offset),
                         });
                     }
-                    cols.push(col);
+                    Some(alias_name)
                 } else {
-                    return Err(SqlError::Syntax {
-                        offset: tok.offset,
-                        message: "expected '*' or column name in SELECT list".into(),
-                    });
-                }
+                    None
+                };
+                items.push(SelectItem { expr, alias });
                 if matches!(self.peek().kind, TokenKind::Comma) {
                     self.advance();
                     continue;
                 }
                 break;
             }
-            SelectColumns::List(cols)
+            SelectColumns::Items(items)
         };
 
         self.expect_kw("from")?;
@@ -1116,6 +1234,8 @@ impl Parser<'_> {
             });
         }
         if !(self.at_kw("where")
+            || self.at_kw("group")
+            || self.at_kw("having")
             || self.at_kw("order")
             || self.at_kw("limit")
             || self.at_kw("offset"))
@@ -1128,7 +1248,52 @@ impl Parser<'_> {
         } else {
             None
         };
+        if !(self.at_kw("group")
+            || self.at_kw("having")
+            || self.at_kw("order")
+            || self.at_kw("limit")
+            || self.at_kw("offset"))
+        {
+            self.check_trailing_unsupported()?;
+        }
+
+        let group_by = if self.eat_kw("group") {
+            self.parse_group_by()?
+        } else {
+            Vec::new()
+        };
+        if !(self.at_kw("having")
+            || self.at_kw("order")
+            || self.at_kw("limit")
+            || self.at_kw("offset"))
+        {
+            if self.at_kw("where") {
+                return Err(SqlError::Syntax {
+                    offset: self.peek().offset,
+                    message: "WHERE must precede GROUP BY".into(),
+                });
+            }
+            self.check_trailing_unsupported()?;
+        }
+
+        let having = if self.eat_kw("having") {
+            Some(self.parse_expr_with_aggs(1, true)?)
+        } else {
+            None
+        };
+        if self.at_kw("group") {
+            return Err(SqlError::Syntax {
+                offset: self.peek().offset,
+                message: "GROUP BY must precede HAVING".into(),
+            });
+        }
         if !(self.at_kw("order") || self.at_kw("limit") || self.at_kw("offset")) {
+            if self.at_kw("where") {
+                return Err(SqlError::Syntax {
+                    offset: self.peek().offset,
+                    message: "WHERE must precede HAVING".into(),
+                });
+            }
             self.check_trailing_unsupported()?;
         }
 
@@ -1137,7 +1302,19 @@ impl Parser<'_> {
         } else {
             Vec::new()
         };
+        if self.at_kw("group") || self.at_kw("having") {
+            return Err(SqlError::Syntax {
+                offset: self.peek().offset,
+                message: "GROUP BY and HAVING must precede ORDER BY".into(),
+            });
+        }
         if !(self.at_kw("limit") || self.at_kw("offset")) {
+            if self.at_kw("where") {
+                return Err(SqlError::Syntax {
+                    offset: self.peek().offset,
+                    message: "WHERE must precede ORDER BY".into(),
+                });
+            }
             self.check_trailing_unsupported()?;
         }
 
@@ -1158,21 +1335,35 @@ impl Parser<'_> {
             None
         };
 
+        if self.at_kw("where") {
+            return Err(SqlError::Syntax {
+                offset: self.peek().offset,
+                message: "WHERE must precede LIMIT".into(),
+            });
+        }
+        if self.at_kw("group") || self.at_kw("having") {
+            return Err(SqlError::Syntax {
+                offset: self.peek().offset,
+                message: "GROUP BY and HAVING must precede LIMIT".into(),
+            });
+        }
         if self.at_kw("order") {
             return Err(SqlError::Syntax {
                 offset: self.peek().offset,
                 message: "ORDER BY must precede LIMIT".into(),
             });
         }
-        if matches!(
-            self.peek().kind,
-            TokenKind::Plus
-                | TokenKind::Minus
-                | TokenKind::Star
-                | TokenKind::Slash
-                | TokenKind::Percent
-                | TokenKind::Concat
-        ) {
+        if self.at_kw("window") || self.at_kw("qualify") || self.at_kw("fetch") {
+            let kw = match &self.peek().kind {
+                TokenKind::Ident { text, .. } => text.to_ascii_uppercase(),
+                _ => unreachable!(),
+            };
+            return Err(SqlError::Unsupported {
+                feature: format!("{kw} clause"),
+                offset: Some(self.peek().offset),
+            });
+        }
+        if is_arithmetic_or_concat(&self.peek().kind) {
             return Err(SqlError::Unsupported {
                 feature: "arithmetic / concatenation operators".into(),
                 offset: Some(self.peek().offset),
@@ -1184,10 +1375,253 @@ impl Parser<'_> {
             columns,
             table,
             filter,
+            group_by,
+            having,
             order_by,
             limit,
             offset,
         })
+    }
+
+    fn parse_aggregate_call(
+        &mut self,
+        fn_name: &str,
+        fn_offset: usize,
+    ) -> Result<AggregateCall, SqlError> {
+        self.advance();
+        self.expect_kind(&TokenKind::LParen, "'('")?;
+        if matches!(self.peek().kind, TokenKind::RParen) {
+            return Err(SqlError::Syntax {
+                offset: self.peek().offset,
+                message: format!("{}() requires an argument", fn_name.to_ascii_uppercase()),
+            });
+        }
+        let (kind, column) = match fn_name {
+            "count" => {
+                if matches!(self.peek().kind, TokenKind::Star) {
+                    self.advance();
+                    if is_arithmetic_or_concat(&self.peek().kind) {
+                        return Err(SqlError::Unsupported {
+                            feature: "arithmetic / concatenation operators".into(),
+                            offset: Some(self.peek().offset),
+                        });
+                    }
+                    self.expect_kind(&TokenKind::RParen, "')'")?;
+                    (AggregateKind::CountStar, None)
+                } else if self.eat_kw("distinct") {
+                    if matches!(self.peek().kind, TokenKind::Star) {
+                        return Err(SqlError::Syntax {
+                            offset: self.peek().offset,
+                            message: "COUNT(DISTINCT *) is not valid".into(),
+                        });
+                    }
+                    let col = self.parse_aggregate_column_arg("COUNT(DISTINCT ...)")?;
+                    self.expect_kind(&TokenKind::RParen, "')'")?;
+                    (AggregateKind::CountDistinct, Some(col))
+                } else if self.at_kw("all")
+                    && !matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::RParen))
+                {
+                    return Err(SqlError::Unsupported {
+                        feature: "ALL modifier in COUNT(...)".into(),
+                        offset: Some(self.peek().offset),
+                    });
+                } else {
+                    let col = self.parse_aggregate_column_arg("COUNT")?;
+                    self.expect_kind(&TokenKind::RParen, "')'")?;
+                    (AggregateKind::Count, Some(col))
+                }
+            }
+            "sum" | "avg" | "min" | "max" => {
+                let upper = fn_name.to_ascii_uppercase();
+                if matches!(self.peek().kind, TokenKind::Star) {
+                    return Err(SqlError::Syntax {
+                        offset: self.peek().offset,
+                        message: format!("'*' is only valid in COUNT(*), not {upper}"),
+                    });
+                }
+                if self.at_kw("distinct")
+                    && !matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::RParen))
+                {
+                    return Err(SqlError::Unsupported {
+                        feature: format!("DISTINCT in {upper}"),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                if self.at_kw("all")
+                    && !matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::RParen))
+                {
+                    return Err(SqlError::Unsupported {
+                        feature: format!("ALL modifier in {upper}(...)"),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                let col = self.parse_aggregate_column_arg(&upper)?;
+                self.expect_kind(&TokenKind::RParen, "')'")?;
+                let kind = match fn_name {
+                    "sum" => AggregateKind::Sum,
+                    "avg" => AggregateKind::Avg,
+                    "min" => AggregateKind::Min,
+                    "max" => AggregateKind::Max,
+                    _ => unreachable!(),
+                };
+                (kind, Some(col))
+            }
+            _ => unreachable!(),
+        };
+        Ok(AggregateCall {
+            kind,
+            column,
+            offset: fn_offset,
+        })
+    }
+
+    fn parse_aggregate_column_arg(&mut self, ctx: &str) -> Result<String, SqlError> {
+        let tok = self.peek().clone();
+        match &tok.kind {
+            TokenKind::LParen => Err(SqlError::Unsupported {
+                feature: format!("expression argument in {ctx}"),
+                offset: Some(tok.offset),
+            }),
+            TokenKind::Ident { text, quoted } => {
+                if matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::LParen)) {
+                    return Err(SqlError::Unsupported {
+                        feature: format!("nested aggregate or function call '{text}(...)'"),
+                        offset: Some(tok.offset),
+                    });
+                }
+                if matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::Dot)) {
+                    return Err(SqlError::Unsupported {
+                        feature: "qualified column names (table.column)".into(),
+                        offset: Some(tok.offset),
+                    });
+                }
+                if !quoted && matches!(text.as_str(), "null" | "true" | "false") {
+                    return Err(SqlError::Unsupported {
+                        feature: format!("non-column argument in {ctx}"),
+                        offset: Some(tok.offset),
+                    });
+                }
+                let (col, _) = self.expect_ident(&format!("column name in {ctx}"))?;
+                if matches!(self.peek().kind, TokenKind::Comma) {
+                    return Err(SqlError::Unsupported {
+                        feature: format!("multi-argument call in {ctx}"),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                if is_arithmetic_or_concat(&self.peek().kind) {
+                    return Err(SqlError::Unsupported {
+                        feature: "arithmetic / concatenation operators".into(),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                if matches!(
+                    self.peek().kind,
+                    TokenKind::Eq
+                        | TokenKind::Ne
+                        | TokenKind::Lt
+                        | TokenKind::Le
+                        | TokenKind::Gt
+                        | TokenKind::Ge
+                ) || self.at_kw("is")
+                    || self.at_kw("and")
+                    || self.at_kw("or")
+                {
+                    return Err(SqlError::Unsupported {
+                        feature: format!("expression argument in {ctx}"),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                Ok(col)
+            }
+            TokenKind::Integer(_)
+            | TokenKind::Real(_)
+            | TokenKind::String(_)
+            | TokenKind::Minus
+            | TokenKind::Question => Err(SqlError::Unsupported {
+                feature: format!("non-column argument in {ctx}"),
+                offset: Some(tok.offset),
+            }),
+            _ => Err(SqlError::Syntax {
+                offset: tok.offset,
+                message: format!("expected column name in {ctx}"),
+            }),
+        }
+    }
+
+    fn parse_group_by(&mut self) -> Result<Vec<GroupByItem>, SqlError> {
+        self.expect_kw("by")?;
+        if self.at_kw("rollup") || self.at_kw("cube") || self.at_kw("grouping") {
+            let feature = match &self.peek().kind {
+                TokenKind::Ident { text, .. } => format!("GROUP BY {}", text.to_ascii_uppercase()),
+                _ => "GROUP BY extension".into(),
+            };
+            return Err(SqlError::Unsupported {
+                feature,
+                offset: Some(self.peek().offset),
+            });
+        }
+        let mut items = Vec::new();
+        loop {
+            if items.len() >= self.limits.max_columns {
+                return Err(SqlError::Bounds(format!(
+                    "GROUP BY column count exceeds max_columns ({})",
+                    self.limits.max_columns
+                )));
+            }
+            let tok = self.peek().clone();
+            match &tok.kind {
+                TokenKind::Integer(_) => {
+                    return Err(SqlError::Unsupported {
+                        feature: "GROUP BY column position".into(),
+                        offset: Some(tok.offset),
+                    });
+                }
+                TokenKind::Minus
+                    if matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::Integer(_))) =>
+                {
+                    return Err(SqlError::Unsupported {
+                        feature: "GROUP BY column position".into(),
+                        offset: Some(tok.offset),
+                    });
+                }
+                TokenKind::LParen => {
+                    return Err(SqlError::Unsupported {
+                        feature: "expressions in GROUP BY".into(),
+                        offset: Some(tok.offset),
+                    });
+                }
+                _ => {}
+            }
+            let (column, col_offset) = self.expect_ident("column name in GROUP BY")?;
+            if matches!(self.peek().kind, TokenKind::Dot) {
+                return Err(SqlError::Unsupported {
+                    feature: "qualified column names (table.column)".into(),
+                    offset: Some(col_offset),
+                });
+            }
+            if matches!(self.peek().kind, TokenKind::LParen) {
+                return Err(SqlError::Unsupported {
+                    feature: format!("function or aggregate call '{column}(...)' in GROUP BY"),
+                    offset: Some(col_offset),
+                });
+            }
+            if is_arithmetic_or_concat(&self.peek().kind) {
+                return Err(SqlError::Unsupported {
+                    feature: "expressions in GROUP BY".into(),
+                    offset: Some(self.peek().offset),
+                });
+            }
+            items.push(GroupByItem {
+                column,
+                offset: col_offset,
+            });
+            if matches!(self.peek().kind, TokenKind::Comma) {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+        Ok(items)
     }
 
     fn parse_order_by(&mut self) -> Result<Vec<OrderByItem>, SqlError> {
@@ -1224,28 +1658,35 @@ impl Parser<'_> {
                 }
                 _ => {}
             }
-            let (column, col_offset) = self.expect_ident("column name in ORDER BY")?;
-            if matches!(self.peek().kind, TokenKind::Dot) {
-                return Err(SqlError::Unsupported {
-                    feature: "qualified column names (table.column)".into(),
-                    offset: Some(col_offset),
+            let (target, item_offset) = if let TokenKind::Ident { text, quoted } = &tok.kind {
+                if matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::LParen)) {
+                    if !quoted && is_supported_aggregate_name(text) {
+                        let fn_name = text.clone();
+                        let agg = self.parse_aggregate_call(&fn_name, tok.offset)?;
+                        (OrderByTarget::Aggregate(agg), tok.offset)
+                    } else {
+                        return Err(SqlError::Unsupported {
+                            feature: format!("function or aggregate call '{text}(...)'"),
+                            offset: Some(tok.offset),
+                        });
+                    }
+                } else {
+                    let (column, col_offset) = self.expect_ident("column name in ORDER BY")?;
+                    if matches!(self.peek().kind, TokenKind::Dot) {
+                        return Err(SqlError::Unsupported {
+                            feature: "qualified column names (table.column)".into(),
+                            offset: Some(col_offset),
+                        });
+                    }
+                    (OrderByTarget::Column(column), col_offset)
+                }
+            } else {
+                return Err(SqlError::Syntax {
+                    offset: tok.offset,
+                    message: "expected column name or aggregate in ORDER BY".into(),
                 });
-            }
-            if matches!(self.peek().kind, TokenKind::LParen) {
-                return Err(SqlError::Unsupported {
-                    feature: format!("function or aggregate call '{column}(...)'"),
-                    offset: Some(col_offset),
-                });
-            }
-            if matches!(
-                self.peek().kind,
-                TokenKind::Plus
-                    | TokenKind::Minus
-                    | TokenKind::Star
-                    | TokenKind::Slash
-                    | TokenKind::Percent
-                    | TokenKind::Concat
-            ) {
+            };
+            if is_arithmetic_or_concat(&self.peek().kind) {
                 return Err(SqlError::Unsupported {
                     feature: "expressions in ORDER BY".into(),
                     offset: Some(self.peek().offset),
@@ -1271,7 +1712,8 @@ impl Parser<'_> {
                 None
             };
             items.push(OrderByItem {
-                column,
+                target,
+                offset: item_offset,
                 desc,
                 nulls,
             });
@@ -1442,37 +1884,41 @@ impl Parser<'_> {
     }
 
     fn parse_expr(&mut self, depth: usize) -> Result<Expr, SqlError> {
-        self.check_depth(depth)?;
-        self.parse_or(depth)
+        self.parse_expr_with_aggs(depth, false)
     }
 
-    fn parse_or(&mut self, depth: usize) -> Result<Expr, SqlError> {
-        let first = self.parse_and(depth)?;
+    fn parse_expr_with_aggs(&mut self, depth: usize, allow_aggs: bool) -> Result<Expr, SqlError> {
+        self.check_depth(depth)?;
+        self.parse_or(depth, allow_aggs)
+    }
+
+    fn parse_or(&mut self, depth: usize, allow_aggs: bool) -> Result<Expr, SqlError> {
+        let first = self.parse_and(depth, allow_aggs)?;
         if !self.at_kw("or") {
             return Ok(first);
         }
         let mut items = vec![first];
         while self.eat_kw("or") {
             self.check_depth(depth + 1)?;
-            items.push(self.parse_and(depth + 1)?);
+            items.push(self.parse_and(depth + 1, allow_aggs)?);
         }
         Ok(Expr::Or(items))
     }
 
-    fn parse_and(&mut self, depth: usize) -> Result<Expr, SqlError> {
-        let first = self.parse_not(depth)?;
+    fn parse_and(&mut self, depth: usize, allow_aggs: bool) -> Result<Expr, SqlError> {
+        let first = self.parse_not(depth, allow_aggs)?;
         if !self.at_kw("and") {
             return Ok(first);
         }
         let mut items = vec![first];
         while self.eat_kw("and") {
             self.check_depth(depth + 1)?;
-            items.push(self.parse_not(depth + 1)?);
+            items.push(self.parse_not(depth + 1, allow_aggs)?);
         }
         Ok(Expr::And(items))
     }
 
-    fn parse_not(&mut self, depth: usize) -> Result<Expr, SqlError> {
+    fn parse_not(&mut self, depth: usize, allow_aggs: bool) -> Result<Expr, SqlError> {
         if self.eat_kw("not") {
             self.check_depth(depth + 1)?;
             if self.at_kw("exists") {
@@ -1481,15 +1927,15 @@ impl Parser<'_> {
                     offset: Some(self.peek().offset),
                 });
             }
-            let inner = self.parse_not(depth + 1)?;
+            let inner = self.parse_not(depth + 1, allow_aggs)?;
             Ok(Expr::Not(Box::new(inner)))
         } else {
-            self.parse_comparison(depth)
+            self.parse_comparison(depth, allow_aggs)
         }
     }
 
-    fn parse_comparison(&mut self, depth: usize) -> Result<Expr, SqlError> {
-        let left = self.parse_primary(depth)?;
+    fn parse_comparison(&mut self, depth: usize, allow_aggs: bool) -> Result<Expr, SqlError> {
+        let left = self.parse_primary(depth, allow_aggs)?;
         if self.eat_kw("is") {
             let negated = self.eat_kw("not");
             if !self.eat_kw("null") {
@@ -1553,7 +1999,7 @@ impl Parser<'_> {
         };
         self.advance();
         self.check_depth(depth + 1)?;
-        let right = self.parse_primary(depth + 1)?;
+        let right = self.parse_primary(depth + 1, allow_aggs)?;
         if matches!(
             self.peek().kind,
             TokenKind::Eq
@@ -1575,7 +2021,7 @@ impl Parser<'_> {
         })
     }
 
-    fn parse_primary(&mut self, depth: usize) -> Result<Expr, SqlError> {
+    fn parse_primary(&mut self, depth: usize, allow_aggs: bool) -> Result<Expr, SqlError> {
         self.check_depth(depth)?;
         let offset = self.peek().offset;
         match &self.peek().kind {
@@ -1588,7 +2034,7 @@ impl Parser<'_> {
                     });
                 }
                 self.check_depth(depth + 1)?;
-                let inner = self.parse_expr(depth + 1)?;
+                let inner = self.parse_expr_with_aggs(depth + 1, allow_aggs)?;
                 if matches!(self.peek().kind, TokenKind::Comma) {
                     return Err(SqlError::Unsupported {
                         feature: "tuple / row expressions".into(),
@@ -1694,6 +2140,12 @@ impl Parser<'_> {
                     }
                 }
                 if matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::LParen)) {
+                    if allow_aggs && !quoted && is_supported_aggregate_name(text) {
+                        let fn_name = text.clone();
+                        return Ok(Expr::Aggregate(
+                            self.parse_aggregate_call(&fn_name, offset)?,
+                        ));
+                    }
                     return Err(SqlError::Unsupported {
                         feature: format!("function or aggregate call '{text}(...)'"),
                         offset: Some(offset),
@@ -1716,6 +2168,22 @@ impl Parser<'_> {
             }),
         }
     }
+}
+
+fn is_supported_aggregate_name(word: &str) -> bool {
+    matches!(word, "count" | "sum" | "avg" | "min" | "max")
+}
+
+fn is_arithmetic_or_concat(kind: &TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Plus
+            | TokenKind::Minus
+            | TokenKind::Star
+            | TokenKind::Slash
+            | TokenKind::Percent
+            | TokenKind::Concat
+    )
 }
 
 fn parse_signed_integer(raw: &str, negated: bool, offset: usize) -> Result<i64, SqlError> {
