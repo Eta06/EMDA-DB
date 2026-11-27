@@ -12,10 +12,12 @@
 use super::catalog::{self, CachedTable, IndexState, TableDef};
 use super::exec::{self, SqlCache};
 use super::lexer::{Token, TokenKind};
-use super::parser::{AggregateKind, CompareOp, LimitValue};
+use super::parser::{AggregateKind, CompareOp, LimitValue, SqlStatement};
 
 #[path = "join_aggregate.rs"]
 mod aggregate;
+#[path = "join_derived.rs"]
+mod derived;
 #[path = "join_full.rs"]
 mod full;
 use super::value::{
@@ -25,6 +27,7 @@ use super::value::{
 use crate::MAX_SCAN_ENTRIES;
 use crate::document::flat::FlatScalar;
 use crate::document::{DocumentDatabase, DocumentTransaction, IndexValue, StoredDocument};
+pub(crate) use derived::is_derived_select;
 use parking_lot::RwLock;
 use serde_json::Value;
 use std::cmp::Ordering;
@@ -50,6 +53,8 @@ pub(crate) struct JoinSelect {
     having: Option<JExpr>,
     /// The only join is a `FULL [OUTER] JOIN`, stored as its `LEFT` half.
     full: bool,
+    /// A derived table or CTE read as `tables[0]` instead of a stored table.
+    source: Option<Box<SqlStatement>>,
     cached_plan: RwLock<Option<Arc<JoinPlan>>>,
 }
 
@@ -66,6 +71,7 @@ impl Clone for JoinSelect {
             group_by: self.group_by.clone(),
             having: self.having.clone(),
             full: self.full,
+            source: self.source.clone(),
             cached_plan: RwLock::new(None),
         }
     }
@@ -83,6 +89,7 @@ impl PartialEq for JoinSelect {
             && self.group_by == other.group_by
             && self.having == other.having
             && self.full == other.full
+            && self.source == other.source
     }
 }
 
@@ -154,6 +161,27 @@ pub(crate) fn is_join_select(tokens: &[Token]) -> bool {
     let keyword = |token: &Token, word: &str| matches!(&token.kind, TokenKind::Ident { text, quoted: false } if text == word);
     tokens.first().is_some_and(|token| keyword(token, "select"))
         && tokens.iter().any(|token| keyword(token, "join"))
+}
+
+/// Parses a derived-table or CTE SELECT, returning it and its parameter count.
+pub(crate) fn parse_derived(
+    tokens: Vec<Token>,
+    sql: &str,
+    limits: &SqlLimits,
+) -> Result<(JoinSelect, usize), SqlError> {
+    let mut parser = JoinParser {
+        tokens,
+        pos: 0,
+        params: 0,
+        depth: 0,
+        limits,
+    };
+    let select = parser.derived_select(sql)?;
+    parser.eat(&TokenKind::Semicolon);
+    if !matches!(parser.peek().kind, TokenKind::Eof) {
+        return Err(parser.syntax("unexpected tokens after the statement"));
+    }
+    Ok((select, parser.params))
 }
 
 /// Parses a join SELECT, returning the statement and its parameter count.
@@ -371,37 +399,7 @@ impl JoinParser<'_> {
         } else {
             None
         };
-        let mut order_by = Vec::new();
-        if self.eat_kw("order") {
-            self.expect_kw("by")?;
-            loop {
-                let column = self.col_ref()?;
-                let descending = if self.eat_kw("desc") {
-                    true
-                } else {
-                    self.eat_kw("asc");
-                    false
-                };
-                let nulls_first = if self.eat_kw("nulls") {
-                    if self.eat_kw("first") {
-                        Some(true)
-                    } else {
-                        self.expect_kw("last")?;
-                        Some(false)
-                    }
-                } else {
-                    None
-                };
-                order_by.push(OrderItem {
-                    column,
-                    descending,
-                    nulls_first,
-                });
-                if !self.eat(&TokenKind::Comma) {
-                    break;
-                }
-            }
-        }
+        let order_by = self.order_by_clause()?;
         let (mut limit, mut offset) = (None, None);
         if self.eat_kw("limit") {
             limit = Some(self.limit_value()?);
@@ -441,8 +439,44 @@ impl JoinParser<'_> {
             group_by,
             having,
             full,
+            source: None,
             cached_plan: RwLock::new(None),
         })
+    }
+
+    fn order_by_clause(&mut self) -> Result<Vec<OrderItem>, SqlError> {
+        let mut order_by = Vec::new();
+        if self.eat_kw("order") {
+            self.expect_kw("by")?;
+            loop {
+                let column = self.col_ref()?;
+                let descending = if self.eat_kw("desc") {
+                    true
+                } else {
+                    self.eat_kw("asc");
+                    false
+                };
+                let nulls_first = if self.eat_kw("nulls") {
+                    if self.eat_kw("first") {
+                        Some(true)
+                    } else {
+                        self.expect_kw("last")?;
+                        Some(false)
+                    }
+                } else {
+                    None
+                };
+                order_by.push(OrderItem {
+                    column,
+                    descending,
+                    nulls_first,
+                });
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+        Ok(order_by)
     }
 
     /// The aggregate named `name`, if `name(` starts one.
@@ -3439,6 +3473,9 @@ fn run(
     limits: &SqlLimits,
     cache: &SqlCache,
 ) -> Result<SqlOutcome, SqlError> {
+    if let Some(source) = &statement.source {
+        return derived::run(tx, statement, source, params, limits, cache);
+    }
     if statement.full {
         if aggregate::is_aggregate(statement) {
             return Err(SqlError::Unsupported {
@@ -3794,6 +3831,20 @@ pub(crate) fn explain(
     limits: &SqlLimits,
     cache: &SqlCache,
 ) -> Result<Vec<Vec<SqlValue>>, SqlError> {
+    if let Some(source) = &statement.source {
+        let kind = match &source.inner {
+            super::parser::Statement::Join(_) => "join",
+            _ => "single-table SELECT",
+        };
+        return Ok(vec![vec![
+            SqlValue::Text("derived".into()),
+            SqlValue::Text(statement.tables[0].alias.clone()),
+            SqlValue::Text(format!(
+                "materialize the source {kind}, at most max_select_rows rows"
+            )),
+            SqlValue::Text("WHERE, grouping, ORDER BY and LIMIT apply to its rows".into()),
+        ]]);
+    }
     if statement.full {
         let mut left_half = statement.clone();
         left_half.full = false;

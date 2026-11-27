@@ -361,6 +361,14 @@ pub(crate) fn parse_statement(sql: &str, limits: &SqlLimits) -> Result<SqlStatem
             stmt_id: NEXT_STMT_ID.fetch_add(1, Ordering::Relaxed),
         });
     }
+    if super::join::is_derived_select(&tokens) {
+        let (select, param_count) = super::join::parse_derived(tokens, sql, limits)?;
+        return Ok(SqlStatement {
+            inner: Statement::Join(Box::new(select)),
+            param_count,
+            stmt_id: NEXT_STMT_ID.fetch_add(1, Ordering::Relaxed),
+        });
+    }
     if is_top_level_join_select(&tokens) && super::join::is_join_select(&tokens) {
         let (join, param_count) = super::join::parse(tokens, limits)?;
         return Ok(SqlStatement {

@@ -32,14 +32,57 @@ pub(super) fn is_aggregate(statement: &JoinSelect) -> bool {
 /// One resolved column: table position and column position.
 type Resolved = (usize, usize);
 
-struct Resolver<'a> {
-    names: Vec<String>,
-    aliases: Vec<String>,
-    defs: Vec<&'a catalog::TableDef>,
+pub(super) struct Resolver<'a> {
+    pub(super) names: Vec<String>,
+    pub(super) aliases: Vec<String>,
+    pub(super) defs: Vec<&'a catalog::TableDef>,
+    /// A materialized source instead of tables: its alias, column names and
+    /// column types. Its columns resolve to table 0.
+    pub(super) rows: Option<(String, Vec<String>, Vec<SqlType>)>,
+}
+
+/// A resolved column's name and type.
+pub(super) struct Col {
+    pub(super) name: String,
+    pub(super) col_type: SqlType,
 }
 
 impl Resolver<'_> {
-    fn resolve(&self, column: &ColRef) -> Result<(Resolved, &ColumnDef), SqlError> {
+    pub(super) fn resolve(&self, column: &ColRef) -> Result<(Resolved, Col), SqlError> {
+        if let Some((alias, names, types)) = &self.rows {
+            if column.qualifier.as_ref().is_some_and(|q| q != alias) {
+                return Err(SqlError::Syntax {
+                    offset: column.offset,
+                    message: format!(
+                        "unknown table or alias '{}'",
+                        column.qualifier.as_deref().unwrap_or_default()
+                    ),
+                });
+            }
+            let found: Vec<usize> = names
+                .iter()
+                .enumerate()
+                .filter(|(_, name)| **name == column.column)
+                .map(|(i, _)| i)
+                .collect();
+            return match found.as_slice() {
+                [i] => Ok((
+                    (0, *i),
+                    Col {
+                        name: names[*i].clone(),
+                        col_type: types[*i],
+                    },
+                )),
+                [] => Err(SqlError::NoSuchColumn {
+                    table: alias.clone(),
+                    column: column.column.clone(),
+                }),
+                _ => Err(SqlError::Syntax {
+                    offset: column.offset,
+                    message: format!("column name '{}' is ambiguous", column.column),
+                }),
+            };
+        }
         let found: Vec<Resolved> = match &column.qualifier {
             Some(qualifier) => {
                 let table = self
@@ -63,7 +106,16 @@ impl Resolver<'_> {
                 .collect(),
         };
         match found.as_slice() {
-            [one] => Ok((*one, &self.defs[one.0].columns[one.1])),
+            [one] => {
+                let def: &ColumnDef = &self.defs[one.0].columns[one.1];
+                Ok((
+                    *one,
+                    Col {
+                        name: def.name.clone(),
+                        col_type: def.col_type,
+                    },
+                ))
+            }
             [] => Err(SqlError::NoSuchColumn {
                 table: column
                     .qualifier
@@ -122,7 +174,7 @@ enum Output {
     Agg(usize),
 }
 
-struct Bound {
+pub(super) struct Bound {
     group_cols: Vec<usize>,
     aggs: Vec<(AggCall, BoundAggregate)>,
     outputs: Vec<Output>,
@@ -130,7 +182,7 @@ struct Bound {
     /// Output aliases, for `ORDER BY` and `HAVING`.
     aliases: Vec<Option<String>>,
     /// Columns the inner join returns, in order.
-    needed: Vec<Resolved>,
+    pub(super) needed: Vec<Resolved>,
 }
 
 fn aggregate_name(call: &AggCall) -> String {
@@ -145,7 +197,7 @@ fn aggregate_name(call: &AggCall) -> String {
     }
 }
 
-fn bind(statement: &JoinSelect, resolver: &Resolver<'_>) -> Result<Bound, SqlError> {
+pub(super) fn bind(statement: &JoinSelect, resolver: &Resolver<'_>) -> Result<Bound, SqlError> {
     let mut needed: Vec<Resolved> = Vec::new();
     let mut need = |r: Resolved| match needed.iter().position(|x| *x == r) {
         Some(i) => i,
@@ -368,7 +420,7 @@ fn eval_having(
 
 /// SQL comparison: `None` when either side is NULL; numbers compare exactly
 /// across INTEGER and REAL; other kinds must match.
-fn compare(left: &SqlValue, right: &SqlValue) -> Result<Option<Ordering>, SqlError> {
+pub(super) fn compare(left: &SqlValue, right: &SqlValue) -> Result<Option<Ordering>, SqlError> {
     Ok(match (left, right) {
         (SqlValue::Null, _) | (_, SqlValue::Null) => None,
         (SqlValue::Integer(a), SqlValue::Integer(b)) => Some(a.cmp(b)),
@@ -434,6 +486,7 @@ impl Prepared {
             names: self.names.clone(),
             aliases: self.aliases.clone(),
             defs: self.tables.iter().map(|t| &*t.def).collect(),
+            rows: None,
         }
     }
 
@@ -479,6 +532,7 @@ pub(super) fn prepare(
             group_by: Vec::new(),
             having: None,
             full: false,
+            source: None,
             cached_plan: RwLock::new(None),
         },
     };
@@ -516,8 +570,6 @@ pub(super) fn run(
 ) -> Result<SqlOutcome, SqlError> {
     let prepared = prepare(tx, statement, cache)?;
     let (resolver, bound, inner) = (&prepared.resolver(), &prepared.bound, &prepared.inner);
-    let group_keys: Vec<Resolved> = bound.group_cols.iter().map(|&i| bound.needed[i]).collect();
-    let order = order_plan(&statement.order_by, bound, resolver, &group_keys)?;
     let inner_limits = SqlLimits {
         max_select_rows: limits.max_sort_rows,
         ..*limits
@@ -534,6 +586,21 @@ pub(super) fn run(
         Err(error) => return Err(error),
     };
 
+    group_rows(&rows, bound, statement, resolver, params, limits)
+}
+
+/// Groups rows holding the bound's needed columns, then applies `HAVING`,
+/// `ORDER BY`, `OFFSET` and `LIMIT`.
+pub(super) fn group_rows(
+    rows: &[Vec<SqlValue>],
+    bound: &Bound,
+    statement: &JoinSelect,
+    resolver: &Resolver<'_>,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+) -> Result<SqlOutcome, SqlError> {
+    let group_keys: Vec<Resolved> = bound.group_cols.iter().map(|&i| bound.needed[i]).collect();
+    let order = order_plan(&statement.order_by, bound, resolver, &group_keys)?;
     let hash_builder = RandomState::new();
     let mut total_distinct = 0usize;
     let mut index: HashMap<Vec<Key>, usize> = HashMap::new();
@@ -545,7 +612,7 @@ pub(super) fn run(
         ));
         index.insert(Vec::new(), 0);
     }
-    for row in &rows {
+    for row in rows {
         let keys: Vec<SqlValue> = bound.group_cols.iter().map(|&i| row[i].clone()).collect();
         let key: Vec<Key> = keys.iter().map(Key::of).collect();
         let slot = match index.get(&key) {

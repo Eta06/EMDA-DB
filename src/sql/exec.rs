@@ -171,6 +171,26 @@ pub(crate) fn execute_statement_in_tx(
     execute_statement_in_validated_tx(tx, stmt, params, limits, cache, force_full_scan)
 }
 
+/// Runs a `SELECT` or join statement without parameters inside `tx`, for a
+/// derived table or CTE body.
+pub(crate) fn run_read_in_tx(
+    tx: &DocumentTransaction<'_, '_>,
+    stmt: &SqlStatement,
+    limits: &SqlLimits,
+    cache: &SqlCache,
+) -> Result<SqlOutcome, SqlError> {
+    match &stmt.inner {
+        Statement::Select(select) => {
+            exec_select(tx, stmt.stmt_id, select, &[], limits, cache, false)
+        }
+        Statement::Join(join) => super::join::execute_in_tx(tx, join, &[], limits, cache),
+        _ => Err(SqlError::Unsupported {
+            feature: "a derived table or CTE that is not a SELECT".into(),
+            offset: None,
+        }),
+    }
+}
+
 fn execute_statement_in_validated_tx(
     tx: &mut DocumentTransaction<'_, '_>,
     stmt: &SqlStatement,

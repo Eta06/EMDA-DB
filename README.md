@@ -73,6 +73,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     `ON DELETE CASCADE`/`SET NULL`, up to 64 per table, always enforced.
   - Uncorrelated `[NOT] IN`, `[NOT] EXISTS` and scalar subqueries, nested
     up to four deep, materializing at most 32,768 values by default.
+  - Derived tables and non-recursive `WITH` CTEs read as one materialized
+    source of at most 10,000 rows.
   - Serializable multi-statement transactions of up to 1,024 staged keys
     and 16 MiB.
   - `EXPLAIN SELECT`.
@@ -88,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Being built now
 
 - **SQL.** `FULL` joins combined with other joins, correlated
-  subqueries, composite foreign keys, `ON UPDATE` actions, more
+  subqueries, recursive CTEs, composite foreign keys, `ON UPDATE` actions, more
   `ALTER TABLE` actions, and faster scans, aggregates and indexed reads.
 - **Service and operations.** A network API with authentication, project
   isolation and quotas, safe scale-to-zero, replication and failover.

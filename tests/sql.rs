@@ -838,7 +838,7 @@ fn unsupported_sql_features_return_unsupported_naming_feature() {
         "SELECT COUNT(*) + 1 FROM a",
         "SELECT SUM(COUNT(*)) FROM a",
         "SELECT * FROM a WHERE COUNT(*) > 1",
-        "SELECT * FROM (SELECT * FROM a)",
+        "SELECT * FROM (SELECT * FROM a) AS d JOIN b ON b.id = d.id",
         "SELECT * FROM a WHERE (id, b) IN (SELECT id, b FROM b)",
         "SELECT * FROM a WHERE EXISTS (WITH c AS (SELECT id FROM b) SELECT * FROM c)",
         "CREATE INDEX idx ON a (id) WHERE id > 0",

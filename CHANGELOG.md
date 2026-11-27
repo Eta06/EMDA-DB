@@ -4,6 +4,12 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add SQL derived tables `FROM (SELECT ...) AS name` and non-recursive
+  `WITH` CTEs. The source query, any supported `SELECT` or join, runs in
+  the statement's transaction and its rows (at most `max_select_rows`)
+  feed an outer `WHERE`, select list or aggregates with `GROUP BY` and
+  `HAVING`, `ORDER BY`, `OFFSET` and `LIMIT`. Ten queries match SQLite on
+  both backends.
 - Add SQL `FULL [OUTER] JOIN` as the only join of a statement: the left
   join followed by the right table's unmatched rows, with `WHERE`, `ORDER
   BY`, `OFFSET` and `LIMIT` applied to the union within `max_select_rows`.
