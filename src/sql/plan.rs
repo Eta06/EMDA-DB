@@ -9,6 +9,7 @@ use crate::document::{IndexBound, IndexValue};
 
 const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
 const SMALL_PK_RANGE_THRESHOLD: usize = 8;
+pub(crate) const SMALL_PK_IN_THRESHOLD: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum UpperBound {
@@ -36,6 +37,9 @@ pub(crate) enum AccessPlan {
     Empty,
     PkPoint {
         doc_id: String,
+    },
+    PkPoints {
+        doc_ids: Vec<String>,
     },
     PkRange {
         after_id: Option<String>,
@@ -95,13 +99,50 @@ pub(crate) enum CompiledSelectAccess {
     Dynamic,
 }
 
-fn expr_has_param(expr: &BoundExpr) -> bool {
+fn expr_is_dynamic(expr: &BoundExpr) -> bool {
     match expr {
-        BoundExpr::Param(_) => true,
+        BoundExpr::Param(_)
+        | BoundExpr::Exists(_)
+        | BoundExpr::InSubquery { .. }
+        | BoundExpr::InSet { .. }
+        | BoundExpr::ScalarSubquery(_)
+        | BoundExpr::ScalarValue(_) => true,
         BoundExpr::Literal(_) | BoundExpr::Column(_) | BoundExpr::Aggregate(_) => false,
-        BoundExpr::IsNull { expr, .. } | BoundExpr::Not(expr) => expr_has_param(expr),
-        BoundExpr::Compare { left, right, .. } => expr_has_param(left) || expr_has_param(right),
-        BoundExpr::And(items) | BoundExpr::Or(items) => items.iter().any(expr_has_param),
+        BoundExpr::IsNull { expr, .. } | BoundExpr::Not(expr) => expr_is_dynamic(expr),
+        BoundExpr::Compare { left, right, .. } => expr_is_dynamic(left) || expr_is_dynamic(right),
+        BoundExpr::And(items) | BoundExpr::Or(items) => items.iter().any(expr_is_dynamic),
+    }
+}
+
+fn expr_has_only_params(expr: &BoundExpr) -> bool {
+    match expr {
+        BoundExpr::Param(_)
+        | BoundExpr::Literal(_)
+        | BoundExpr::Column(_)
+        | BoundExpr::Aggregate(_) => true,
+        BoundExpr::IsNull { expr, .. } | BoundExpr::Not(expr) => expr_has_only_params(expr),
+        BoundExpr::Compare { left, right, .. } => {
+            expr_has_only_params(left) && expr_has_only_params(right)
+        }
+        BoundExpr::And(items) | BoundExpr::Or(items) => items.iter().all(expr_has_only_params),
+        BoundExpr::Exists(_)
+        | BoundExpr::InSubquery { .. }
+        | BoundExpr::InSet { .. }
+        | BoundExpr::ScalarSubquery(_)
+        | BoundExpr::ScalarValue(_) => false,
+    }
+}
+
+fn single_pk_value(set: &super::subquery::SubqueryInSet, pk_type: SqlType) -> Option<SqlValue> {
+    match pk_type {
+        SqlType::Integer => set.ints.iter().next().copied().map(SqlValue::Integer),
+        SqlType::Text { .. } => set
+            .texts
+            .iter()
+            .find(|s| s.len() <= MAX_SQL_TEXT_PK_BYTES)
+            .cloned()
+            .map(SqlValue::Text),
+        _ => None,
     }
 }
 
@@ -143,7 +184,13 @@ pub(crate) fn compile_select_access(
     let Some(expr) = filter else {
         return CompiledSelectAccess::Static(plan_access(None, table, order_by, has_limit, &[]));
     };
-    if !expr_has_param(expr) {
+    if expr_is_dynamic(expr) {
+        if expr_has_only_params(expr) {
+            // Fall through to compiled index template matching below.
+        } else {
+            return CompiledSelectAccess::Dynamic;
+        }
+    } else {
         return CompiledSelectAccess::Static(plan_access(
             Some(expr),
             table,
@@ -588,6 +635,8 @@ pub(crate) fn plan_access(
         .collect();
     let mut proven_non_null: Vec<bool> = table.columns.iter().map(|c| c.not_null).collect();
     let mut proven_null: Vec<bool> = vec![false; col_count];
+    let pk_idx = table.primary_key_index;
+    let mut pk_in_doc_ids: Option<Vec<String>> = None;
 
     if let Some(expr) = filter {
         let single;
@@ -603,6 +652,9 @@ pub(crate) fn plan_access(
 
         for &conj in conjuncts {
             match conj {
+                BoundExpr::Literal(SqlValue::Boolean(false) | SqlValue::Null) => {
+                    return AccessPlan::Empty;
+                }
                 BoundExpr::IsNull {
                     expr: inner,
                     negated,
@@ -637,6 +689,9 @@ pub(crate) fn plan_access(
                     }
                 }
                 BoundExpr::Not(inner) => {
+                    if matches!(inner.as_ref(), BoundExpr::Literal(SqlValue::Boolean(true))) {
+                        return AccessPlan::Empty;
+                    }
                     if let BoundExpr::Column(col_idx) = inner.as_ref() {
                         proven_non_null[*col_idx] = true;
                         if proven_null[*col_idx] {
@@ -653,6 +708,64 @@ pub(crate) fn plan_access(
                             }
                         ) {
                             return AccessPlan::Empty;
+                        }
+                    }
+                }
+                BoundExpr::InSet {
+                    expr: inner,
+                    set,
+                    negated,
+                } => {
+                    if set.is_empty() {
+                        if !*negated {
+                            return AccessPlan::Empty;
+                        }
+                        continue;
+                    }
+                    if !*negated && set.non_null_len() == 0 {
+                        return AccessPlan::Empty;
+                    }
+                    if *negated && set.has_null {
+                        return AccessPlan::Empty;
+                    }
+                    if !*negated {
+                        if let BoundExpr::Column(col_idx) = inner.as_ref() {
+                            proven_non_null[*col_idx] = true;
+                            if proven_null[*col_idx] {
+                                return AccessPlan::Empty;
+                            }
+                            if *col_idx == pk_idx {
+                                let pk_type = table.columns[pk_idx].col_type;
+                                if let Some(doc_ids) =
+                                    super::subquery::plan_in_pk_candidates(set, pk_type)
+                                {
+                                    if doc_ids.is_empty() {
+                                        return AccessPlan::Empty;
+                                    }
+                                    if doc_ids.len() == 1 {
+                                        if let Some(single_val) = single_pk_value(set, pk_type) {
+                                            if !tighten_col_bound(
+                                                &mut bounds[pk_idx],
+                                                true,
+                                                CompareOp::Eq,
+                                                &single_val,
+                                            ) {
+                                                return AccessPlan::Empty;
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                    match &mut pk_in_doc_ids {
+                                        None => pk_in_doc_ids = Some(doc_ids),
+                                        Some(prev) => {
+                                            prev.retain(|id| doc_ids.binary_search(id).is_ok());
+                                            if prev.is_empty() {
+                                                return AccessPlan::Empty;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -685,10 +798,34 @@ pub(crate) fn plan_access(
         }
     }
 
-    let pk_idx = table.primary_key_index;
     let pk_plan = build_pk_plan(&bounds[pk_idx], table.columns[pk_idx].col_type);
     if matches!(pk_plan, AccessPlan::PkPoint { .. }) {
         return pk_plan;
+    }
+
+    if let Some(mut doc_ids) = pk_in_doc_ids.take() {
+        if let AccessPlan::PkRange {
+            ref after_id,
+            ref upper,
+            ..
+        } = pk_plan
+        {
+            doc_ids.retain(|id| {
+                after_id
+                    .as_ref()
+                    .is_none_or(|a| id.as_bytes() > a.as_bytes())
+                    && !upper.is_past(id)
+            });
+        }
+        if doc_ids.is_empty() {
+            return AccessPlan::Empty;
+        }
+        if doc_ids.len() == 1 {
+            return AccessPlan::PkPoint {
+                doc_id: doc_ids.pop().expect("len 1"),
+            };
+        }
+        pk_in_doc_ids = Some(doc_ids);
     }
 
     let mut candidates: Vec<IndexCandidate> = Vec::new();
@@ -715,6 +852,24 @@ pub(crate) fn plan_access(
         .iter()
         .filter(|c| c.where_useful)
         .max_by_key(|c| c.rank_key());
+
+    if let Some(doc_ids) = pk_in_doc_ids {
+        let pk_small_range = matches!(
+            pk_plan,
+            AccessPlan::PkRange {
+                max_exact_rows: Some(r),
+                ..
+            } if r <= SMALL_PK_RANGE_THRESHOLD && r <= doc_ids.len()
+        );
+        let prefer_index = best_where_idx.is_some_and(|cand| {
+            cand.equal_len > 0
+                && cand.has_non_bool_equality
+                && doc_ids.len() > SMALL_PK_RANGE_THRESHOLD
+        });
+        if !pk_small_range && !prefer_index {
+            return AccessPlan::PkPoints { doc_ids };
+        }
+    }
 
     match (&pk_plan, best_where_idx) {
         (
@@ -1204,9 +1359,11 @@ fn extract_col_predicate<'a>(
     params: &'a [SqlValue],
 ) -> Option<(usize, CompareOp, &'a SqlValue)> {
     match (left, right) {
-        (BoundExpr::Column(idx), BoundExpr::Literal(val)) => Some((*idx, op, val)),
+        (BoundExpr::Column(idx), BoundExpr::Literal(val))
+        | (BoundExpr::Column(idx), BoundExpr::ScalarValue(val)) => Some((*idx, op, val)),
         (BoundExpr::Column(idx), BoundExpr::Param(p)) => Some((*idx, op, &params[*p])),
-        (BoundExpr::Literal(val), BoundExpr::Column(idx)) => Some((*idx, flip_op(op), val)),
+        (BoundExpr::Literal(val), BoundExpr::Column(idx))
+        | (BoundExpr::ScalarValue(val), BoundExpr::Column(idx)) => Some((*idx, flip_op(op), val)),
         (BoundExpr::Param(p), BoundExpr::Column(idx)) => Some((*idx, flip_op(op), &params[*p])),
         _ => None,
     }

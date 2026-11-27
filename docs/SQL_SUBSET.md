@@ -123,7 +123,7 @@ select         := SELECT ("*" | select_item ("," select_item)*) FROM ident
                   [HAVING having_expr]
                   [ORDER BY order_item ("," order_item)*]
                   [LIMIT limit_val [OFFSET limit_val]]
-select_item    := (ident | agg_call) [AS ident]
+select_item    := (ident | agg_call | literal | "?" | subquery | exists_expr | in_subquery) [AS ident]
 agg_call       := COUNT "(" "*" ")"
                 | COUNT "(" [DISTINCT] ident ")"
                 | (SUM | AVG | MIN | MAX) "(" ident ")"
@@ -140,12 +140,19 @@ or_expr        := and_expr (OR and_expr)*
 and_expr       := not_expr (AND not_expr)*
 not_expr       := NOT not_expr | cmp_expr
 cmp_expr       := primary [ ("=" | "<>" | "!=" | "<" | "<=" | ">" | ">=") primary
+                            | in_subquery_rhs
                             | IS [NOT] NULL ]
 primary        := literal
                 | "-" numeric_literal
                 | "?"
                 | ident
+                | exists_expr
+                | subquery
                 | "(" expr ")"
+exists_expr    := EXISTS subquery
+in_subquery    := primary [NOT] in_subquery_rhs
+in_subquery_rhs := IN subquery
+subquery       := "(" (select | join_select) ")"
 literal        := integer_lit | real_lit | string_lit | TRUE | FALSE | NULL
 ```
 
@@ -156,7 +163,7 @@ Notes on specific constructs:
 - `LIMIT` and `OFFSET` values must be non-negative `INTEGER` literals or `?` parameters (`SqlError::Bounds` for negative `INTEGER` values; `SqlError::Type` for `NULL`, `REAL`, `TEXT`, or `BOOLEAN`; `SqlError::Syntax` for out-of-`i64`-range integer literals).
 - Aggregate and grouping queries follow standard SQL / PostgreSQL strictness: in any query with `GROUP BY`, `HAVING`, or an aggregate call in `SELECT` or `ORDER BY`, every non-aggregated column in `SELECT`, `HAVING`, or `ORDER BY` must appear in `GROUP BY` (rejected as `SqlError::Syntax`, with no SQLite-style "bare column" leniency). `HAVING` may reference grouping columns and aggregates only (not `SELECT` aliases); `ORDER BY` may reference grouping columns, select-item aliases (`AS alias`), or aggregate expressions (`COUNT(*)`, `SUM(col)`, etc.). Arithmetic expressions, nested aggregates, aggregates in `WHERE` or `GROUP BY`, `SUM`/`AVG`/`MIN`/`MAX` with `DISTINCT`, `GROUP BY` column positions/`ROLLUP`/`CUBE`/`GROUPING SETS`, `OVER`, and `FILTER` fail with `SqlError::Unsupported` (or `Syntax` for invalid forms such as `SUM(*)` or `COUNT(DISTINCT *)`).
 - Secondary indexes (`CREATE [UNIQUE] INDEX` and `UNIQUE` constraints) support `INTEGER`, `TEXT`/`VARCHAR(n)`, and `BOOLEAN` columns (1–4 columns per index, up to 16 indexes per table). `DROP INDEX [IF EXISTS] name ON table` drops an explicit secondary index cleanly, and refuses dropping an index that backs a table or column `UNIQUE` constraint with `SqlError::Constraint`. `REAL` columns in indexes/unique constraints, partial `CREATE INDEX ... WHERE ...`, `ASC`/`DESC` index ordering, `USING ...`, `DROP INDEX name` (without `ON table`), `DROP INDEX ... CONCURRENTLY`/`CASCADE`/`RESTRICT`, and `DROP TABLE` fail with `SqlError::Unsupported`.
-- Recognized SQL outside this grammar (`RIGHT`/`FULL`/`CROSS`/`NATURAL` joins, `JOIN ... USING`, comma joins, `SELECT DISTINCT`, `UNION`/`INTERSECT`/`EXCEPT`, scalar/non-aggregate function calls, subqueries, `DROP TABLE ... CASCADE`/`RESTRICT` or several tables, `ALTER TABLE` actions other than `ADD COLUMN`, `BEGIN`/`COMMIT`/`ROLLBACK`, `RETURNING`, `ON CONFLICT`, `DEFAULT`, `CHECK`, composite `FOREIGN KEY`/`REFERENCES`, `ON DELETE`/`ON UPDATE` `CASCADE`/`SET NULL`/`SET DEFAULT`, `MATCH`, `DEFERRABLE`, `CONSTRAINT` names, `IN`, `BETWEEN`, `LIKE`, `CASE`, `CAST`, arithmetic operators, and qualified `table.column` or table aliases outside a join) fails with `SqlError::Unsupported` naming the feature.
+- Recognized SQL outside this grammar (`RIGHT`/`FULL`/`CROSS`/`NATURAL` joins, `JOIN ... USING`, comma joins, `SELECT DISTINCT`, `UNION`/`INTERSECT`/`EXCEPT`, scalar/non-aggregate function calls, derived tables `FROM (SELECT ...)`, correlated subqueries, multi-column tuple `IN`, value-list `IN (...)`, `WITH` CTEs, `DROP TABLE ... CASCADE`/`RESTRICT` or several tables, `ALTER TABLE` actions other than `ADD COLUMN`, `BEGIN`/`COMMIT`/`ROLLBACK`, `RETURNING`, `ON CONFLICT`, `DEFAULT`, `CHECK`, composite `FOREIGN KEY`/`REFERENCES`, `ON DELETE`/`ON UPDATE` `CASCADE`/`SET NULL`/`SET DEFAULT`, `MATCH`, `DEFERRABLE`, `CONSTRAINT` names, `BETWEEN`, `LIKE`, `CASE`, `CAST`, arithmetic operators, and qualified `table.column` or table aliases outside a join or subquery) fails with `SqlError::Unsupported` naming the feature.
 
 ## Types, coercion, and NULL semantics
 
@@ -283,7 +290,20 @@ WHERE o.total > ? ORDER BY o.total DESC LIMIT 10
 - **Order and early stop.** Without `ORDER BY`, rows come out in the first table's primary-key order, each followed by its matches in the joined table's key order (index order for index lookups). That order is deterministic but not part of the SQL standard. Without `ORDER BY`, or with `ORDER BY` on the first table's primary key ascending alone, reading stops once `OFFSET + LIMIT` rows exist. Otherwise rows are sorted with the single-table `ORDER BY` rules, keeping join order for ties.
 - **Bounds.** Rows read from every table and combined rows formed during the join each count against `max_visited_rows`. Results count against `max_select_rows`, and sorted joins hold at most `max_sort_rows` rows. Exceeding a bound fails with `Bounds`; nothing is truncated.
 - **Transactions.** A join runs in one read-set document transaction, so it reads one consistent state and records point and range dependencies like other statements.
-- **Not yet supported.** `RIGHT`, `FULL`, `CROSS` and `NATURAL` joins, `USING`, comma-separated `FROM` lists, subqueries, aggregates or `GROUP BY` over a join, and aliases in the select list of a join return `Unsupported`.
+- **Not yet supported.** `RIGHT`, `FULL`, `CROSS` and `NATURAL` joins, `USING`, comma-separated `FROM` lists, subqueries directly inside an outer join statement (`ON`/`WHERE` on top-level join — though an `INNER`/`LEFT` join may appear inside an uncorrelated subquery), aggregates or `GROUP BY` over a join, and aliases in the select list of a join return `Unsupported`.
+
+## Subqueries
+
+Bounded, **uncorrelated** subqueries are supported in `WHERE` (`SELECT`, `UPDATE`, `DELETE`), `HAVING`, `SELECT` output lists (including aggregate queries and `ORDER BY` aliases referencing them), `UPDATE ... SET`, and `INSERT ... VALUES`:
+
+- **`expr [NOT] IN (SELECT one_column FROM ...)`**: The inner query must return exactly one column (`SqlError::Syntax` otherwise). It is evaluated once per statement and materialized into a bounded hash set (`SqlLimits::max_subquery_values`).
+- **`[NOT] EXISTS (SELECT ...)`**: Stops reading at the first surviving inner row (respecting any inner `LIMIT`/`OFFSET`) and evaluates directly to `BOOLEAN`. Multi-column `SELECT` lists (such as `SELECT *`) are permitted in `EXISTS`.
+- **Scalar subqueries `(SELECT one_column FROM ...)`**: Must return exactly one column (`SqlError::Syntax` otherwise). Zero rows evaluates to `NULL`; more than one row fails with `SqlError::Constraint` (unlike SQLite, which silently takes the first row). May be compared (`=`, `<>`, `<`, `<=`, `>`, `>=`), tested with `IS [NOT] NULL`, assigned in `UPDATE`/`INSERT`, projected in `SELECT`, or used directly as a boolean operand (`WHERE (SELECT flag FROM ...)`).
+- **Inner body**: Any supported single-table `SELECT` (`WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`, `OFFSET`, aggregates) or `INNER`/`LEFT` `JOIN` `SELECT` (up to `MAX_SQL_SUBQUERY_DEPTH = 4` levels deep; deeper nesting fails with `SqlError::Bounds`).
+- **Uncorrelated only**: Inner references to outer columns (qualified or unqualified, at any nesting depth) fail with `SqlError::Unsupported`.
+- **Semantics & typing**: `IN`/`NOT IN` matches SQL three-valued logic and SQLite semantics: `x IN (empty)` is `FALSE` even for `NULL` `x`; `x NOT IN (empty)` is `TRUE` even for `NULL` `x`; `x NOT IN (set containing NULL)` is never `TRUE` (`FALSE` if `x` matches a non-`NULL` member, `UNKNOWN` otherwise). `INTEGER` and `REAL` compare numerically with exact precision (for example `2` matches `2.0`, `-0.0` matches `0`, and `(1 << 53) + 1` stays distinct from `(1 << 53)` as `REAL`). Incompatible types are rejected with `SqlError::Type` even when the inner table is empty.
+- **Planner, isolation & bounds**: Outer PK/index access paths remain active for remaining `AND` conjuncts alongside subqueries, and non-negated `pk IN (subquery)` uses `AccessPlan::Empty` (empty set) or batched `PRIMARY KEY` lookups when at most 64 distinct candidate keys exist. Each subquery runs once inside the same `DocumentTransaction` (`ReadSet`), seeing staged writes in `SqlDatabase::transaction` and triggering `SqlError::Conflict` on commit if another writer modifies read inner data concurrently during a write statement or multi-statement transaction. Inner and outer scans share `SqlLimits::max_visited_rows`, and `IN` sets enforce `SqlLimits::max_subquery_values`, returning `SqlError::Bounds` rather than truncating.
+- **Not supported**: Correlated subqueries, derived tables in `FROM`, `IN (val1, val2, ...)` value lists, multi-column `(a, b) IN (...)`, and `WITH` CTEs or `UNION` inside subqueries return `SqlError::Unsupported`.
 
 ## Dropping tables
 
@@ -330,7 +350,7 @@ WHERE o.total > ? ORDER BY o.total DESC LIMIT 10
 
 `EXPLAIN SELECT ...` returns a plan instead of rows, for single-table, aggregate and join `SELECT`s, with columns `step`, `table`, `access` and `detail`. It reads the catalog but no rows, uses the same planning functions as execution, takes the same parameters, and also runs inside `SqlDatabase::transaction`. `EXPLAIN` of any other statement returns `Unsupported`.
 
-- **Single table:** one `scan` row naming the access path (`primary-key lookup`, `primary-key range`, `index NAME: equality on N column(s)` with an optional range, `unique index NAME lookup`, `full scan in primary-key order`, or `none` when the `WHERE` clause cannot match), whether `WHERE` is checked per row or answered by the index, and how ordering and `LIMIT` are handled.
+- **Single table:** zero or more `subquery` rows (innermost-first when nested, naming the inner table/join, inner access path, and subquery role/strategy) followed by one `scan` row naming the access path (`primary-key lookup`, `primary-key lookup (N keys)`, `primary-key range`, `index NAME: equality on N column(s)` with an optional range, `unique index NAME lookup`, `full scan in primary-key order`, or `none` when the `WHERE` clause cannot match), whether `WHERE` is checked per row or answered by the index, and how ordering and `LIMIT` are handled. Without executing subqueries or reading data rows, `EXPLAIN` still validates schema/correlation/types.
 - **Aggregates:** a `scan` row, then an `aggregate` row with the grouping and whether `HAVING` applies.
 - **Joins:** one row per table (`scan` for the first, `join` for each joined table, with its alias), naming the primary-key, index, hash-table or nested-loop access, then an `order` row saying whether rows stream in the first table's key order or are sorted.
 
@@ -374,7 +394,9 @@ All bounds live in `SqlLimits` (implementing `Default`), configurable via `SqlDa
 | `max_sort_rows` | 32,768 | 131,072 | Rows buffered in `ORDER BY` sort / top-K heap |
 | `max_groups` | 32,768 | 131,072 | Distinct groups tracked in one `GROUP BY` statement |
 | `max_distinct_values` | 32,768 | 131,072 | Total distinct non-`NULL` values tracked across `COUNT(DISTINCT ...)` in one statement |
-| `max_visited_rows` | 32,768 | 131,072 | Rows visited while scanning in one statement |
+| `max_subquery_values` | 32,768 | 131,072 | Distinct values materialized across `IN (SELECT ...)` subqueries in one statement |
+| `max_visited_rows` | 32,768 | 131,072 | Rows visited while scanning (outer + subqueries combined) in one statement |
+| `MAX_SQL_SUBQUERY_DEPTH` | 4 | 4 | Maximum syntactic subquery nesting depth (`prepare`) |
 | `max_params` | 1,024 | 1,024 | Positional `?` parameters |
 | `max_text_bytes` | 262,144 (256 KiB) | 262,144 | UTF-8 bytes of a `TEXT` literal/param/value |
 | Identifier length | 128 | 128 | Table, column, and index names (UTF-8 bytes) |
@@ -396,7 +418,7 @@ Statements never silently truncate: exceeding any bound fails with `SqlError::Bo
 - `Syntax { offset, message }`: lexical or grammar error with byte offset.
 - `Unsupported { feature, offset }`: recognized SQL outside slice 1.
 - `Type(String)`: type mismatch, non-finite float, or non-exact `INTEGER` -> `REAL` coercion.
-- `Constraint(String)`: duplicate primary key, `UNIQUE` violation, `FOREIGN KEY` violation, `NOT NULL`, `VARCHAR(n)` overflow, missing/invalid `PRIMARY KEY` definition, or attempting `DROP TABLE` / `DROP INDEX` on a table or constraint-backed / foreign-key-referenced index.
+- `Constraint(String)`: duplicate primary key, `UNIQUE` violation, `FOREIGN KEY` violation, `NOT NULL`, `VARCHAR(n)` overflow, scalar subquery returning more than one row, missing/invalid `PRIMARY KEY` definition, or attempting `DROP TABLE` / `DROP INDEX` on a table or constraint-backed / foreign-key-referenced index.
 - `NoSuchTable(String)` / `NoSuchColumn { table, column }` / `NoSuchIndex { table, index }`: unknown table, column, or index.
 - `TableExists(String)` / `IndexExists(String)`: `CREATE TABLE` or `CREATE [UNIQUE] INDEX` on an existing table or index without `IF NOT EXISTS`.
 - `Bounds(String)`: exceeded `SqlLimits`, positively identified storage/document size or batch/quota limits, or `Store` snapshot budget.
@@ -419,5 +441,5 @@ Every DML statement (`INSERT`, `UPDATE`, `DELETE`, `SELECT`) and small DDL state
 
 ## Implemented vs planned
 
-- **Implemented**: `CREATE TABLE [IF NOT EXISTS]` (including column-level `UNIQUE`, table-level `UNIQUE (col, ...)`, and single-column `FOREIGN KEY` / `REFERENCES` constraints with `NO ACTION`/`RESTRICT` and self-references), `CREATE [UNIQUE] INDEX [IF NOT EXISTS]` (single-tx for small tables and bounded resumable online build for large populated tables), `DROP INDEX [IF EXISTS] name ON table`, `INSERT`, `SELECT` (`*`, column list, `COUNT(*)` / `COUNT(col)` / `COUNT(DISTINCT col)` / `SUM(col)` / `AVG(col)` / `MIN(col)` / `MAX(col)`, `AS` aliases, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY` with `ASC`/`DESC`/`NULLS FIRST`/`NULLS LAST` over columns/aliases/aggregates, `LIMIT`/`OFFSET`), `UPDATE`, `DELETE`, `SqlValue`/`SqlLimits`/`SqlError`/`SqlStatement` prepared reuse, `SqlDatabase::transaction` / `SqlDatabase::transaction_with_retry` / `SqlTransaction` multi-statement serializable transactions (with read-your-own-writes, transaction poisoning on caught statement errors, and conflict-only retries), per-`SqlDatabase` catalog/statement/plan caching, compiled index templates, 3VL expressions, exact numeric comparisons, ascending PK order guarantee and streaming `ORDER BY pk ASC`, index-order `ORDER BY ... LIMIT` streaming, first-entry `MIN(pk)`/`MIN(index_leading_col)` optimization, bounded `ORDER BY pk DESC` and top-K / full sort, bounded `GROUP BY` and `COUNT(DISTINCT)`, primary-key point (`=`) and range (`>`, `>=`, `<`, `<=`) access paths, single and compound secondary index equality/range access via `DocumentTransaction::query_index`, bounded full-collection scan fallback via `DocumentTransaction::scan_documents`, `ReadSet` optimistic concurrency, and row PK/document-ID integrity verification, and `INNER`/`LEFT [OUTER] JOIN` of up to eight tables (see [Joins](#joins)); `DROP TABLE [IF EXISTS] name` (see [Dropping tables](#dropping-tables)); `ALTER TABLE name ADD [COLUMN]` (see [Adding columns](#adding-columns)); `EXPLAIN SELECT` (see [`EXPLAIN`](#explain)).
-- **Planned (later slices)**: `RIGHT`/`FULL` joins, aggregates over joins, subqueries, composite foreign keys and `CASCADE`/`SET NULL`/`DEFERRABLE` actions, other schema changes (`DROP COLUMN`, `RENAME`, `ALTER COLUMN`, `DEFAULT`), and cost-based `EXPLAIN` with estimates. Textual session-state `BEGIN`/`COMMIT`/`ROLLBACK` remain intentionally unsupported in favor of the closure API.
+- **Implemented**: `CREATE TABLE [IF NOT EXISTS]` (including column-level `UNIQUE`, table-level `UNIQUE (col, ...)`, and single-column `FOREIGN KEY` / `REFERENCES` constraints with `NO ACTION`/`RESTRICT` and self-references), `CREATE [UNIQUE] INDEX [IF NOT EXISTS]` (single-tx for small tables and bounded resumable online build for large populated tables), `DROP INDEX [IF EXISTS] name ON table`, `INSERT`, `SELECT` (`*`, column list, `COUNT(*)` / `COUNT(col)` / `COUNT(DISTINCT col)` / `SUM(col)` / `AVG(col)` / `MIN(col)` / `MAX(col)`, `AS` aliases, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY` with `ASC`/`DESC`/`NULLS FIRST`/`NULLS LAST` over columns/aliases/aggregates, `LIMIT`/`OFFSET`), `UPDATE`, `DELETE`, `SqlValue`/`SqlLimits`/`SqlError`/`SqlStatement` prepared reuse, `SqlDatabase::transaction` / `SqlDatabase::transaction_with_retry` / `SqlTransaction` multi-statement serializable transactions (with read-your-own-writes, transaction poisoning on caught statement errors, and conflict-only retries), per-`SqlDatabase` catalog/statement/plan caching, compiled index templates, 3VL expressions, exact numeric comparisons, ascending PK order guarantee and streaming `ORDER BY pk ASC`, index-order `ORDER BY ... LIMIT` streaming, first-entry `MIN(pk)`/`MIN(index_leading_col)` optimization, bounded `ORDER BY pk DESC` and top-K / full sort, bounded `GROUP BY` and `COUNT(DISTINCT)`, primary-key point (`=`) and range (`>`, `>=`, `<`, `<=`) access paths, single and compound secondary index equality/range access via `DocumentTransaction::query_index`, bounded full-collection scan fallback via `DocumentTransaction::scan_documents`, `ReadSet` optimistic concurrency, and row PK/document-ID integrity verification, and `INNER`/`LEFT [OUTER] JOIN` of up to eight tables (see [Joins](#joins)); bounded uncorrelated subqueries (`[NOT] IN (SELECT ...)`, `[NOT] EXISTS (SELECT ...)`, scalar `(SELECT ...)`, including single-table and `JOIN` subquery bodies, nesting up to depth 4, bounded `IN` set materialization, 3VL `NULL` semantics, PK point-lookup optimization on `pk IN (...)`, and single-tx `ReadSet` evaluation — see [Subqueries](#subqueries)); `DROP TABLE [IF EXISTS] name` (see [Dropping tables](#dropping-tables)); `ALTER TABLE name ADD [COLUMN]` (see [Adding columns](#adding-columns)); `EXPLAIN SELECT` (see [`EXPLAIN`](#explain)).
+- **Planned (later slices)**: `RIGHT`/`FULL` joins, aggregates over joins, correlated subqueries, derived tables (`FROM (SELECT ...)`), `IN (val1, ...)` value lists, `UNION`/CTEs, composite foreign keys and `CASCADE`/`SET NULL`/`DEFERRABLE` actions, other schema changes (`DROP COLUMN`, `RENAME`, `ALTER COLUMN`, `DEFAULT`), and cost-based `EXPLAIN` with estimates. Textual session-state `BEGIN`/`COMMIT`/`ROLLBACK` remain intentionally unsupported in favor of the closure API.

@@ -4,6 +4,27 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add bounded, uncorrelated subqueries (`expr [NOT] IN (SELECT one_column ...)`,
+  `[NOT] EXISTS (SELECT ...)`, and scalar `(SELECT one_column ...)`) to the
+  embedded SQL subset:
+  - Supported in `WHERE` (`SELECT`, `UPDATE`, `DELETE`), `HAVING`, `SELECT`
+    lists (including `ORDER BY` aliases), `UPDATE ... SET`, and
+    `INSERT ... VALUES`, with either single-table `SELECT` or `INNER`/`LEFT`
+    `JOIN` subquery bodies.
+  - Preserves SQL three-valued logic (including `x IN (empty)` = `FALSE`,
+    `x NOT IN (empty)` = `TRUE`, and `NOT IN` over sets containing `NULL` never
+    yielding `TRUE`), exact `INTEGER`/`REAL` comparisons, `NULL` on empty scalar
+    subqueries, and `SqlError::Constraint` when a scalar subquery returns more
+    than one row.
+  - Rejects correlated references to outer tables/columns with
+    `SqlError::Unsupported`, enforces parser nesting limit
+    `MAX_SQL_SUBQUERY_DEPTH` (`4`), shares `SqlLimits::max_visited_rows` across
+    inner and outer scans, adds `SqlLimits::max_subquery_values` (default
+    `32,768`, hard max `131,072`) for `IN` materialization without truncation,
+    runs inside the statement's `ReadSet` `DocumentTransaction` (raising
+    `SqlError::Conflict` on concurrent inner-table mutations), preserves outer
+    PK/index access paths alongside subqueries, optimizes `pk IN (subquery)`
+    point lookups when small, and emits `subquery` steps in `EXPLAIN`.
 - Add single-column `FOREIGN KEY` constraints (`REFERENCES parent [(col)]` and
   `FOREIGN KEY (col) REFERENCES parent [(col)]`) to the embedded SQL subset:
   - Targets must be the parent's `PRIMARY KEY` or a column backed by a `Ready`

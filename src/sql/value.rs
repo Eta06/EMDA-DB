@@ -11,6 +11,12 @@ pub const MAX_SQL_BYTES: usize = 64 * 1024;
 pub const MAX_SQL_TOKENS: usize = 4_096;
 /// Maximum expression nesting depth.
 pub const MAX_SQL_EXPR_DEPTH: usize = 64;
+/// Maximum subquery nesting depth.
+pub const MAX_SQL_SUBQUERY_DEPTH: usize = 4;
+/// Default maximum distinct values materialized across subqueries in one statement.
+pub const DEFAULT_SQL_SUBQUERY_VALUES: usize = 32_768;
+/// Hard ceiling for `max_subquery_values`.
+pub const MAX_SQL_SUBQUERY_VALUES: usize = 131_072;
 /// Maximum columns per table (matches `CollectionSchema` 64-field limit).
 pub const MAX_SQL_COLUMNS: usize = 64;
 /// Maximum rows in one `INSERT` statement (matches `MAX_ATOMIC_BATCH_OPERATIONS`).
@@ -79,6 +85,8 @@ pub struct SqlLimits {
     pub max_params: usize,
     /// Maximum UTF-8 byte length of a `TEXT` value (`1..=262_144`).
     pub max_text_bytes: usize,
+    /// Maximum distinct values materialized across subqueries in one statement (`1..=131_072`).
+    pub max_subquery_values: usize,
 }
 
 impl Default for SqlLimits {
@@ -97,6 +105,7 @@ impl Default for SqlLimits {
             max_visited_rows: DEFAULT_SQL_VISITED_ROWS,
             max_params: MAX_SQL_PARAMS,
             max_text_bytes: MAX_SQL_TEXT_BYTES,
+            max_subquery_values: DEFAULT_SQL_SUBQUERY_VALUES,
         }
     }
 }
@@ -143,6 +152,12 @@ impl SqlLimits {
             ),
             ("max_params", self.max_params, 0, MAX_SQL_PARAMS),
             ("max_text_bytes", self.max_text_bytes, 1, MAX_SQL_TEXT_BYTES),
+            (
+                "max_subquery_values",
+                self.max_subquery_values,
+                1,
+                MAX_SQL_SUBQUERY_VALUES,
+            ),
         ];
         for (name, val, min, max) in checks {
             if val < min || val > max {

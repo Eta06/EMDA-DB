@@ -2,7 +2,8 @@
 use super::catalog::ForeignKeyAction;
 use super::lexer::{Token, TokenKind, tokenize};
 use super::value::{
-    MAX_SQL_INDEX_COLUMNS, MAX_SQL_INDEXES_PER_TABLE, SqlError, SqlLimits, SqlType,
+    MAX_SQL_INDEX_COLUMNS, MAX_SQL_INDEXES_PER_TABLE, MAX_SQL_SUBQUERY_DEPTH, SqlError, SqlLimits,
+    SqlType,
 };
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -124,13 +125,56 @@ pub(crate) struct AggregateCall {
     pub(crate) offset: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum SelectExpr {
-    Column { name: String, offset: usize },
-    Aggregate(AggregateCall),
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum SubqueryBody {
+    Select(Box<SelectStmt>),
+    Join {
+        join: Box<super::join::JoinSelect>,
+        param_start: usize,
+        param_count: usize,
+    },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
+pub(crate) struct Subquery {
+    pub(crate) id: u64,
+    pub(crate) offset: usize,
+    pub(crate) body: SubqueryBody,
+}
+
+impl PartialEq for Subquery {
+    fn eq(&self, other: &Self) -> bool {
+        self.body == other.body
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum SelectExpr {
+    Column {
+        name: String,
+        offset: usize,
+    },
+    Aggregate(AggregateCall),
+    Literal {
+        value: LiteralValue,
+        display: String,
+    },
+    Param {
+        idx: usize,
+    },
+    ScalarSubquery(Box<Subquery>),
+    Exists {
+        subquery: Box<Subquery>,
+        negated: bool,
+    },
+    InSubquery {
+        expr: Box<Expr>,
+        subquery: Box<Subquery>,
+        negated: bool,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SelectItem {
     pub(crate) expr: SelectExpr,
     pub(crate) alias: Option<String>,
@@ -243,6 +287,33 @@ pub(crate) enum Expr {
     },
     And(Vec<Expr>),
     Or(Vec<Expr>),
+    ScalarSubquery(Box<Subquery>),
+    Exists(Box<Subquery>),
+    InSubquery {
+        expr: Box<Expr>,
+        subquery: Box<Subquery>,
+        negated: bool,
+    },
+}
+
+fn is_top_level_join_select(tokens: &[Token]) -> bool {
+    let is_kw = |token: &Token, word: &str| matches!(&token.kind, TokenKind::Ident { text, quoted: false } if text == word);
+    if !tokens.first().is_some_and(|t| is_kw(t, "select")) {
+        return false;
+    }
+    let mut depth = 0usize;
+    for token in tokens {
+        match &token.kind {
+            TokenKind::LParen => depth += 1,
+            TokenKind::RParen => depth = depth.saturating_sub(1),
+            TokenKind::Ident {
+                text,
+                quoted: false,
+            } if depth == 0 && text == "join" => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 pub(crate) fn parse_statement(sql: &str, limits: &SqlLimits) -> Result<SqlStatement, SqlError> {
@@ -286,7 +357,7 @@ pub(crate) fn parse_statement(sql: &str, limits: &SqlLimits) -> Result<SqlStatem
             stmt_id: NEXT_STMT_ID.fetch_add(1, Ordering::Relaxed),
         });
     }
-    if super::join::is_join_select(&tokens) {
+    if is_top_level_join_select(&tokens) && super::join::is_join_select(&tokens) {
         let (join, param_count) = super::join::parse(tokens, limits)?;
         return Ok(SqlStatement {
             inner: Statement::Join(Box::new(join)),
@@ -299,6 +370,7 @@ pub(crate) fn parse_statement(sql: &str, limits: &SqlLimits) -> Result<SqlStatem
         pos: 0,
         limits,
         param_count: 0,
+        subquery_depth: 0,
     };
     let inner = parser.parse_single_statement()?;
     Ok(SqlStatement {
@@ -320,6 +392,7 @@ struct Parser<'a> {
     pos: usize,
     limits: &'a SqlLimits,
     param_count: usize,
+    subquery_depth: usize,
 }
 
 impl Parser<'_> {
@@ -1345,67 +1418,26 @@ impl Parser<'_> {
                         self.limits.max_columns
                     )));
                 }
-                if matches!(self.peek().kind, TokenKind::LParen) {
-                    return Err(SqlError::Unsupported {
-                        feature: "subqueries / parenthesized expressions in SELECT list".into(),
-                        offset: Some(self.peek().offset),
-                    });
-                }
                 let tok = self.peek().clone();
-                let expr = if let TokenKind::Ident { text, quoted } = &tok.kind {
-                    if matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::LParen)) {
-                        if !quoted && is_supported_aggregate_name(text) {
-                            let fn_name = text.clone();
-                            SelectExpr::Aggregate(self.parse_aggregate_call(&fn_name, tok.offset)?)
-                        } else {
-                            return Err(SqlError::Unsupported {
-                                feature: format!("aggregate or function call '{text}'"),
-                                offset: Some(tok.offset),
-                            });
-                        }
-                    } else if matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::Dot)) {
-                        return Err(SqlError::Unsupported {
-                            feature: "qualified column names (table.column)".into(),
-                            offset: Some(tok.offset),
-                        });
-                    } else if !quoted && is_reserved_keyword(text) {
-                        return Err(SqlError::Syntax {
-                            offset: tok.offset,
-                            message: format!(
-                                "expected column or aggregate in SELECT list, found keyword '{}'",
-                                text.to_ascii_uppercase()
-                            ),
-                        });
-                    } else {
-                        let col = text.clone();
-                        self.advance();
-                        SelectExpr::Column {
-                            name: col,
-                            offset: tok.offset,
-                        }
-                    }
-                } else {
-                    if matches!(
-                        tok.kind,
-                        TokenKind::Integer(_)
-                            | TokenKind::Real(_)
-                            | TokenKind::String(_)
-                            | TokenKind::Minus
-                            | TokenKind::Question
-                    ) && self
-                        .peek_n(1)
-                        .is_some_and(|t| is_arithmetic_or_concat(&t.kind))
-                    {
-                        return Err(SqlError::Unsupported {
-                            feature: "arithmetic / concatenation operators".into(),
-                            offset: Some(tok.offset),
-                        });
-                    }
-                    return Err(SqlError::Syntax {
-                        offset: tok.offset,
-                        message: "expected '*', column name, or aggregate in SELECT list".into(),
-                    });
-                };
+                let mut expr = self.parse_select_item_base(&tok)?;
+                if !matches!(expr, SelectExpr::Aggregate(_) | SelectExpr::Exists { .. })
+                    && (self.at_kw("in")
+                        || (self.at_kw("not")
+                            && matches!(
+                                self.peek_n(1).map(|t| &t.kind),
+                                Some(TokenKind::Ident { text, quoted: false }) if text == "in"
+                            )))
+                {
+                    let negated = self.eat_kw("not");
+                    let in_offset = self.expect_kw("in")?;
+                    let subquery = self.parse_in_subquery_rhs(1, in_offset, negated)?;
+                    let lhs = select_expr_into_expr(expr);
+                    expr = SelectExpr::InSubquery {
+                        expr: Box::new(lhs),
+                        subquery: Box::new(subquery),
+                        negated,
+                    };
+                }
                 if self.at_kw("over") {
                     return Err(SqlError::Unsupported {
                         feature: "window functions (OVER)".into(),
@@ -2154,12 +2186,6 @@ impl Parser<'_> {
     fn parse_not(&mut self, depth: usize, allow_aggs: bool) -> Result<Expr, SqlError> {
         if self.eat_kw("not") {
             self.check_depth(depth + 1)?;
-            if self.at_kw("exists") {
-                return Err(SqlError::Unsupported {
-                    feature: "EXISTS subquery".into(),
-                    offset: Some(self.peek().offset),
-                });
-            }
             let inner = self.parse_not(depth + 1, allow_aggs)?;
             Ok(Expr::Not(Box::new(inner)))
         } else {
@@ -2182,12 +2208,42 @@ impl Parser<'_> {
                 negated,
             });
         }
+        if self.at_kw("in")
+            || (self.at_kw("not")
+                && matches!(
+                    self.peek_n(1).map(|t| &t.kind),
+                    Some(TokenKind::Ident { text, quoted: false }) if text == "in"
+                ))
+        {
+            let negated = self.eat_kw("not");
+            let in_offset = self.expect_kw("in")?;
+            let subquery = self.parse_in_subquery_rhs(depth, in_offset, negated)?;
+            if matches!(
+                self.peek().kind,
+                TokenKind::Eq
+                    | TokenKind::Ne
+                    | TokenKind::Lt
+                    | TokenKind::Le
+                    | TokenKind::Gt
+                    | TokenKind::Ge
+            ) {
+                return Err(SqlError::Syntax {
+                    offset: self.peek().offset,
+                    message: "chained comparison operators require parentheses".into(),
+                });
+            }
+            return Ok(Expr::InSubquery {
+                expr: Box::new(left),
+                subquery: Box::new(subquery),
+                negated,
+            });
+        }
         if let TokenKind::Ident {
             text,
             quoted: false,
         } = &self.peek().kind
         {
-            if matches!(text.as_str(), "in" | "between" | "like" | "ilike") {
+            if matches!(text.as_str(), "between" | "like" | "ilike") {
                 return Err(SqlError::Unsupported {
                     feature: text.to_ascii_uppercase(),
                     offset: Some(self.peek().offset),
@@ -2197,7 +2253,7 @@ impl Parser<'_> {
                 && matches!(
                     self.peek_n(1).map(|t| &t.kind),
                     Some(TokenKind::Ident { text: next, quoted: false })
-                        if matches!(next.as_str(), "in" | "between" | "like" | "ilike")
+                        if matches!(next.as_str(), "between" | "like" | "ilike")
                 )
             {
                 let next_kw = match &self.peek_n(1).expect("peeked").kind {
@@ -2260,11 +2316,17 @@ impl Parser<'_> {
         match &self.peek().kind {
             TokenKind::LParen => {
                 self.advance();
-                if self.at_kw("select") || self.at_kw("with") {
+                if self.at_kw("with") {
                     return Err(SqlError::Unsupported {
-                        feature: "subqueries".into(),
+                        feature: "WITH (CTE) in subquery".into(),
                         offset: Some(self.peek().offset),
                     });
+                }
+                if self.at_kw("select") {
+                    self.check_depth(depth + 1)?;
+                    let subquery = self.parse_subquery_body(offset)?;
+                    self.expect_kind(&TokenKind::RParen, "')'")?;
+                    return Ok(Expr::ScalarSubquery(Box::new(subquery)));
                 }
                 self.check_depth(depth + 1)?;
                 let inner = self.parse_expr_with_aggs(depth + 1, allow_aggs)?;
@@ -2349,10 +2411,10 @@ impl Parser<'_> {
                             return Ok(Expr::Literal(LiteralValue::Boolean(false)));
                         }
                         "exists" => {
-                            return Err(SqlError::Unsupported {
-                                feature: "EXISTS subquery".into(),
-                                offset: Some(offset),
-                            });
+                            let exists_offset = offset;
+                            self.advance();
+                            let subquery = self.parse_exists_rhs(depth, exists_offset)?;
+                            return Ok(Expr::Exists(Box::new(subquery)));
                         }
                         "case" | "cast" => {
                             return Err(SqlError::Unsupported {
@@ -2399,6 +2461,385 @@ impl Parser<'_> {
                 offset,
                 message: "expected expression".into(),
             }),
+        }
+    }
+
+    fn parse_select_item_base(&mut self, tok: &Token) -> Result<SelectExpr, SqlError> {
+        match &tok.kind {
+            TokenKind::LParen => {
+                self.advance();
+                if self.at_kw("with") {
+                    return Err(SqlError::Unsupported {
+                        feature: "WITH (CTE) in subquery".into(),
+                        offset: Some(self.peek().offset),
+                    });
+                }
+                if self.at_kw("select") {
+                    let subquery = self.parse_subquery_body(tok.offset)?;
+                    self.expect_kind(&TokenKind::RParen, "')'")?;
+                    return Ok(SelectExpr::ScalarSubquery(Box::new(subquery)));
+                }
+                Err(SqlError::Unsupported {
+                    feature: "parenthesized expressions in SELECT list".into(),
+                    offset: Some(tok.offset),
+                })
+            }
+            TokenKind::Minus => {
+                self.advance();
+                let num_offset = self.peek().offset;
+                match &self.peek().kind {
+                    TokenKind::Integer(_) => {
+                        let (TokenKind::Integer(raw), _) = self.take_token() else {
+                            unreachable!()
+                        };
+                        let val = parse_signed_integer(&raw, true, num_offset)?;
+                        Ok(SelectExpr::Literal {
+                            value: LiteralValue::Integer(val),
+                            display: format!("-{raw}"),
+                        })
+                    }
+                    TokenKind::Real(_) => {
+                        let (TokenKind::Real(raw), _) = self.take_token() else {
+                            unreachable!()
+                        };
+                        let val = parse_real(&raw, true, num_offset)?;
+                        Ok(SelectExpr::Literal {
+                            value: LiteralValue::Real(val),
+                            display: format!("-{raw}"),
+                        })
+                    }
+                    _ => Err(SqlError::Unsupported {
+                        feature: "unary minus on non-literal expression".into(),
+                        offset: Some(tok.offset),
+                    }),
+                }
+            }
+            TokenKind::Integer(_) => {
+                if self
+                    .peek_n(1)
+                    .is_some_and(|t| is_arithmetic_or_concat(&t.kind))
+                {
+                    return Err(SqlError::Unsupported {
+                        feature: "arithmetic / concatenation operators".into(),
+                        offset: Some(tok.offset),
+                    });
+                }
+                let (TokenKind::Integer(raw), _) = self.take_token() else {
+                    unreachable!()
+                };
+                let val = parse_signed_integer(&raw, false, tok.offset)?;
+                Ok(SelectExpr::Literal {
+                    value: LiteralValue::Integer(val),
+                    display: raw,
+                })
+            }
+            TokenKind::Real(_) => {
+                if self
+                    .peek_n(1)
+                    .is_some_and(|t| is_arithmetic_or_concat(&t.kind))
+                {
+                    return Err(SqlError::Unsupported {
+                        feature: "arithmetic / concatenation operators".into(),
+                        offset: Some(tok.offset),
+                    });
+                }
+                let (TokenKind::Real(raw), _) = self.take_token() else {
+                    unreachable!()
+                };
+                let val = parse_real(&raw, false, tok.offset)?;
+                Ok(SelectExpr::Literal {
+                    value: LiteralValue::Real(val),
+                    display: raw,
+                })
+            }
+            TokenKind::String(_) => {
+                if self
+                    .peek_n(1)
+                    .is_some_and(|t| is_arithmetic_or_concat(&t.kind))
+                {
+                    return Err(SqlError::Unsupported {
+                        feature: "arithmetic / concatenation operators".into(),
+                        offset: Some(tok.offset),
+                    });
+                }
+                let (TokenKind::String(text), _) = self.take_token() else {
+                    unreachable!()
+                };
+                let display = format!("'{text}'");
+                Ok(SelectExpr::Literal {
+                    value: LiteralValue::Text(text),
+                    display,
+                })
+            }
+            TokenKind::Question => {
+                if self
+                    .peek_n(1)
+                    .is_some_and(|t| is_arithmetic_or_concat(&t.kind))
+                {
+                    return Err(SqlError::Unsupported {
+                        feature: "arithmetic / concatenation operators".into(),
+                        offset: Some(tok.offset),
+                    });
+                }
+                self.advance();
+                if self.param_count >= self.limits.max_params {
+                    return Err(SqlError::Bounds(format!(
+                        "parameter count exceeds max_params ({})",
+                        self.limits.max_params
+                    )));
+                }
+                let idx = self.param_count;
+                self.param_count += 1;
+                Ok(SelectExpr::Param { idx })
+            }
+            TokenKind::Ident { text, quoted } => {
+                if !quoted && text == "exists" {
+                    self.advance();
+                    let subquery = self.parse_exists_rhs(1, tok.offset)?;
+                    return Ok(SelectExpr::Exists {
+                        subquery: Box::new(subquery),
+                        negated: false,
+                    });
+                }
+                if !quoted
+                    && text == "not"
+                    && matches!(
+                        self.peek_n(1).map(|t| &t.kind),
+                        Some(TokenKind::Ident { text: next, quoted: false }) if next == "exists"
+                    )
+                {
+                    self.advance();
+                    let exists_offset = self.peek().offset;
+                    self.advance();
+                    let subquery = self.parse_exists_rhs(1, exists_offset)?;
+                    return Ok(SelectExpr::Exists {
+                        subquery: Box::new(subquery),
+                        negated: true,
+                    });
+                }
+                if !quoted && matches!(text.as_str(), "null" | "true" | "false") {
+                    let (value, display) = match text.as_str() {
+                        "null" => (LiteralValue::Null, "NULL".to_owned()),
+                        "true" => (LiteralValue::Boolean(true), "TRUE".to_owned()),
+                        _ => (LiteralValue::Boolean(false), "FALSE".to_owned()),
+                    };
+                    self.advance();
+                    return Ok(SelectExpr::Literal { value, display });
+                }
+                if matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::LParen)) {
+                    if !quoted && is_supported_aggregate_name(text) {
+                        let fn_name = text.clone();
+                        return Ok(SelectExpr::Aggregate(
+                            self.parse_aggregate_call(&fn_name, tok.offset)?,
+                        ));
+                    }
+                    return Err(SqlError::Unsupported {
+                        feature: format!("aggregate or function call '{text}'"),
+                        offset: Some(tok.offset),
+                    });
+                }
+                if matches!(self.peek_n(1).map(|t| &t.kind), Some(TokenKind::Dot)) {
+                    return Err(SqlError::Unsupported {
+                        feature: "qualified column names (table.column)".into(),
+                        offset: Some(tok.offset),
+                    });
+                }
+                if !quoted && is_reserved_keyword(text) {
+                    return Err(SqlError::Syntax {
+                        offset: tok.offset,
+                        message: format!(
+                            "expected column or aggregate in SELECT list, found keyword '{}'",
+                            text.to_ascii_uppercase()
+                        ),
+                    });
+                }
+                let col = text.clone();
+                self.advance();
+                Ok(SelectExpr::Column {
+                    name: col,
+                    offset: tok.offset,
+                })
+            }
+            _ => Err(SqlError::Syntax {
+                offset: tok.offset,
+                message: "expected '*', column name, or aggregate in SELECT list".into(),
+            }),
+        }
+    }
+
+    fn parse_exists_rhs(&mut self, depth: usize, offset: usize) -> Result<Subquery, SqlError> {
+        if !matches!(self.peek().kind, TokenKind::LParen) {
+            return Err(SqlError::Syntax {
+                offset: self.peek().offset,
+                message: "expected '(' after EXISTS".into(),
+            });
+        }
+        let lparen_offset = self.peek().offset;
+        self.advance();
+        if self.at_kw("with") {
+            return Err(SqlError::Unsupported {
+                feature: "WITH (CTE) in subquery".into(),
+                offset: Some(self.peek().offset),
+            });
+        }
+        if !self.at_kw("select") {
+            return Err(SqlError::Syntax {
+                offset: self.peek().offset,
+                message: "expected SELECT in EXISTS subquery".into(),
+            });
+        }
+        self.check_depth(depth + 1)?;
+        let subquery = self.parse_subquery_body(lparen_offset.max(offset))?;
+        self.expect_kind(&TokenKind::RParen, "')'")?;
+        Ok(subquery)
+    }
+
+    fn parse_in_subquery_rhs(
+        &mut self,
+        depth: usize,
+        in_offset: usize,
+        negated: bool,
+    ) -> Result<Subquery, SqlError> {
+        if !matches!(self.peek().kind, TokenKind::LParen) {
+            return Err(SqlError::Syntax {
+                offset: self.peek().offset,
+                message: "expected '(' after IN".into(),
+            });
+        }
+        let lparen_offset = self.peek().offset;
+        self.advance();
+        if self.at_kw("with") {
+            return Err(SqlError::Unsupported {
+                feature: "WITH (CTE) in subquery".into(),
+                offset: Some(self.peek().offset),
+            });
+        }
+        if !self.at_kw("select") {
+            return Err(SqlError::Unsupported {
+                feature: if negated {
+                    "NOT IN (value list)"
+                } else {
+                    "IN (value list)"
+                }
+                .into(),
+                offset: Some(in_offset),
+            });
+        }
+        self.check_depth(depth + 1)?;
+        let subquery = self.parse_subquery_body(lparen_offset)?;
+        self.expect_kind(&TokenKind::RParen, "')'")?;
+        Ok(subquery)
+    }
+
+    fn subquery_has_top_level_join(&self) -> bool {
+        let mut depth = 0usize;
+        let mut i = self.pos;
+        while i < self.tokens.len() {
+            match &self.tokens[i].kind {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                }
+                TokenKind::Eof => break,
+                TokenKind::Ident {
+                    text,
+                    quoted: false,
+                } if depth == 0 && text == "join" => return true,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
+    fn parse_subquery_body(&mut self, offset: usize) -> Result<Subquery, SqlError> {
+        if self.subquery_depth >= MAX_SQL_SUBQUERY_DEPTH {
+            return Err(SqlError::Bounds(format!(
+                "subquery nesting depth exceeds maximum ({MAX_SQL_SUBQUERY_DEPTH})"
+            )));
+        }
+        self.subquery_depth += 1;
+        let res = if self.subquery_has_top_level_join() {
+            self.parse_join_subquery()
+        } else {
+            self.parse_select()
+                .map(|select| SubqueryBody::Select(Box::new(select)))
+        };
+        self.subquery_depth -= 1;
+        let body = res?;
+        Ok(Subquery {
+            id: NEXT_STMT_ID.fetch_add(1, Ordering::Relaxed),
+            offset,
+            body,
+        })
+    }
+
+    fn parse_join_subquery(&mut self) -> Result<SubqueryBody, SqlError> {
+        let start = self.pos;
+        let mut depth = 0usize;
+        let mut end = start;
+        let mut closed = false;
+        while end < self.tokens.len() {
+            match &self.tokens[end].kind {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => {
+                    if depth == 0 {
+                        closed = true;
+                        break;
+                    }
+                    depth -= 1;
+                }
+                TokenKind::Eof => break,
+                _ => {}
+            }
+            end += 1;
+        }
+        if !closed {
+            return Err(SqlError::Syntax {
+                offset: self.tokens[end.min(self.tokens.len() - 1)].offset,
+                message: "expected ')' closing subquery".into(),
+            });
+        }
+        if end > start && matches!(self.tokens[end - 1].kind, TokenKind::Semicolon) {
+            return Err(SqlError::Syntax {
+                offset: self.tokens[end - 1].offset,
+                message: "unexpected ';' inside subquery".into(),
+            });
+        }
+        let mut sub_tokens = self.tokens[start..end].to_vec();
+        sub_tokens.push(Token {
+            kind: TokenKind::Eof,
+            offset: self.tokens[end].offset,
+        });
+        let (join, inner_params) = super::join::parse(sub_tokens, self.limits)?;
+        if self.param_count + inner_params > self.limits.max_params {
+            return Err(SqlError::Bounds(format!(
+                "parameter count exceeds max_params ({})",
+                self.limits.max_params
+            )));
+        }
+        let param_start = self.param_count;
+        self.param_count += inner_params;
+        self.pos = end;
+        Ok(SubqueryBody::Join {
+            join: Box::new(join),
+            param_start,
+            param_count: inner_params,
+        })
+    }
+}
+
+fn select_expr_into_expr(expr: SelectExpr) -> Expr {
+    match expr {
+        SelectExpr::Column { name, .. } => Expr::Column(name),
+        SelectExpr::Literal { value, .. } => Expr::Literal(value),
+        SelectExpr::Param { idx } => Expr::Param(idx),
+        SelectExpr::ScalarSubquery(sub) => Expr::ScalarSubquery(sub),
+        SelectExpr::Aggregate(_) | SelectExpr::Exists { .. } | SelectExpr::InSubquery { .. } => {
+            unreachable!("validated non-aggregate LHS in SELECT IN")
         }
     }
 }
