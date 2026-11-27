@@ -33,6 +33,7 @@ impl SqlStatement {
 pub(crate) enum Statement {
     CreateTable(CreateTableStmt),
     CreateIndex(CreateIndexStmt),
+    DropIndex(DropIndexStmt),
     Insert(InsertStmt),
     Select(SelectStmt),
     Update(UpdateStmt),
@@ -55,6 +56,13 @@ pub(crate) struct CreateIndexStmt {
     pub(crate) name: String,
     pub(crate) table: String,
     pub(crate) columns: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DropIndexStmt {
+    pub(crate) if_exists: bool,
+    pub(crate) name: String,
+    pub(crate) table: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -317,12 +325,7 @@ impl Parser<'_> {
                         offset: Some(self.peek().offset),
                     });
                 }
-                "drop" => {
-                    return Err(SqlError::Unsupported {
-                        feature: "DROP".into(),
-                        offset: Some(self.peek().offset),
-                    });
-                }
+                "drop" => self.parse_drop()?,
                 "alter" => {
                     return Err(SqlError::Unsupported {
                         feature: "ALTER".into(),
@@ -502,6 +505,65 @@ impl Parser<'_> {
             name,
             table,
             columns,
+        })
+    }
+
+    fn parse_drop(&mut self) -> Result<Statement, SqlError> {
+        let drop_offset = self.expect_kw("drop")?;
+        if self.eat_kw("index") {
+            return Ok(Statement::DropIndex(self.parse_drop_index()?));
+        }
+        if let TokenKind::Ident {
+            text,
+            quoted: false,
+        } = &self.peek().kind
+        {
+            return Err(SqlError::Unsupported {
+                feature: format!("DROP {}", text.to_ascii_uppercase()),
+                offset: Some(drop_offset),
+            });
+        }
+        Err(SqlError::Unsupported {
+            feature: "DROP".into(),
+            offset: Some(drop_offset),
+        })
+    }
+
+    fn parse_drop_index(&mut self) -> Result<DropIndexStmt, SqlError> {
+        if self.at_kw("concurrently") {
+            return Err(SqlError::Unsupported {
+                feature: "DROP INDEX CONCURRENTLY".into(),
+                offset: Some(self.peek().offset),
+            });
+        }
+        let if_exists = if self.eat_kw("if") {
+            self.expect_kw("exists")?;
+            true
+        } else {
+            false
+        };
+        let (name, _) = self.expect_ident("index name")?;
+        if !self.eat_kw("on") {
+            return Err(SqlError::Unsupported {
+                feature: "DROP INDEX without ON <table>".into(),
+                offset: Some(self.peek().offset),
+            });
+        }
+        let (table, _) = self.expect_ident("table name")?;
+        if self.at_kw("cascade") || self.at_kw("restrict") {
+            let clause = match &self.peek().kind {
+                TokenKind::Ident { text, .. } => text.to_ascii_uppercase(),
+                _ => unreachable!(),
+            };
+            return Err(SqlError::Unsupported {
+                feature: format!("DROP INDEX ... {clause}"),
+                offset: Some(self.peek().offset),
+            });
+        }
+        Ok(DropIndexStmt {
+            if_exists,
+            name,
+            table,
         })
     }
 

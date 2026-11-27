@@ -348,7 +348,7 @@ fn classify_io_error_distinguishes_bounds_from_other_invalid_input() {
 
 #[test]
 fn planner_selects_expected_access_paths_for_indexes() {
-    use super::catalog::{ColumnDef, IndexDef, TableDef};
+    use super::catalog::{ColumnDef, IndexDef, IndexState, TableDef};
     use super::exec::{BoundExpr, BoundOrderBy};
     use super::parser::CompareOp;
     use super::plan::{AccessPlan, plan_access};
@@ -390,16 +390,22 @@ fn planner_selects_expected_access_paths_for_indexes() {
                 name: "u_idx".into(),
                 columns: vec![1],
                 unique: true,
+                state: IndexState::Ready,
+                is_constraint: false,
             },
             IndexDef {
                 name: "ab_idx".into(),
                 columns: vec![2, 3],
                 unique: false,
+                state: IndexState::Ready,
+                is_constraint: false,
             },
             IndexDef {
                 name: "ac_idx".into(),
                 columns: vec![2, 4],
                 unique: false,
+                state: IndexState::Ready,
+                is_constraint: false,
             },
         ],
     )

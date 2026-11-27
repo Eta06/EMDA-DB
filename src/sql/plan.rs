@@ -1,5 +1,5 @@
 //! Primary-key and secondary-index access path planning for SQL `SELECT`, `UPDATE`, and `DELETE`.
-use super::catalog::{IndexDef, TableDef};
+use super::catalog::{IndexDef, IndexState, TableDef};
 use super::exec::{BoundExpr, BoundOrderBy};
 use super::parser::CompareOp;
 use super::value::{
@@ -10,7 +10,7 @@ use crate::document::{IndexBound, IndexValue};
 const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
 const SMALL_PK_RANGE_THRESHOLD: usize = 8;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum UpperBound {
     Unbounded,
     Included(String),
@@ -31,7 +31,7 @@ impl UpperBound {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AccessPlan {
     Empty,
     PkPoint {
@@ -52,6 +52,487 @@ pub(crate) enum AccessPlan {
         satisfies_order_by: bool,
     },
     FullScan,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ValueSource {
+    Literal(SqlValue),
+    Param(usize),
+}
+
+impl ValueSource {
+    fn resolve<'a>(&'a self, params: &'a [SqlValue]) -> &'a SqlValue {
+        match self {
+            Self::Literal(v) => v,
+            Self::Param(idx) => &params[*idx],
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CompiledRangeSide {
+    pub(crate) op: CompareOp,
+    pub(crate) source: ValueSource,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CompiledIndexTemplate {
+    pub(crate) index_idx: usize,
+    pub(crate) equal: Vec<(SqlType, ValueSource)>,
+    pub(crate) range_col_type: Option<SqlType>,
+    pub(crate) lower: Option<CompiledRangeSide>,
+    pub(crate) upper: Option<CompiledRangeSide>,
+    pub(crate) unique_equality: bool,
+    pub(crate) preserves_pk_asc: bool,
+    pub(crate) satisfies_order_by: bool,
+    pub(crate) filter_covered: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum CompiledSelectAccess {
+    Static(AccessPlan),
+    Index(CompiledIndexTemplate),
+    Dynamic,
+}
+
+fn expr_has_param(expr: &BoundExpr) -> bool {
+    match expr {
+        BoundExpr::Param(_) => true,
+        BoundExpr::Literal(_) | BoundExpr::Column(_) => false,
+        BoundExpr::IsNull { expr, .. } | BoundExpr::Not(expr) => expr_has_param(expr),
+        BoundExpr::Compare { left, right, .. } => expr_has_param(left) || expr_has_param(right),
+        BoundExpr::And(items) | BoundExpr::Or(items) => items.iter().any(expr_has_param),
+    }
+}
+
+fn extract_static_predicate(
+    op: CompareOp,
+    left: &BoundExpr,
+    right: &BoundExpr,
+) -> Option<(usize, CompareOp, ValueSource)> {
+    match (left, right) {
+        (BoundExpr::Column(idx), BoundExpr::Literal(val)) => {
+            Some((*idx, op, ValueSource::Literal(val.clone())))
+        }
+        (BoundExpr::Column(idx), BoundExpr::Param(p)) => Some((*idx, op, ValueSource::Param(*p))),
+        (BoundExpr::Literal(val), BoundExpr::Column(idx)) => {
+            Some((*idx, flip_op(op), ValueSource::Literal(val.clone())))
+        }
+        (BoundExpr::Param(p), BoundExpr::Column(idx)) => {
+            Some((*idx, flip_op(op), ValueSource::Param(*p)))
+        }
+        _ => None,
+    }
+}
+
+fn lit_matches_col_type(lit: &SqlValue, col_type: SqlType) -> bool {
+    match (col_type, lit) {
+        (SqlType::Integer, SqlValue::Integer(_)) => true,
+        (SqlType::Text { .. }, SqlValue::Text(s)) => s.len() <= MAX_SQL_INDEX_TEXT_BYTES,
+        (SqlType::Boolean, SqlValue::Boolean(_)) => true,
+        _ => false,
+    }
+}
+
+pub(crate) fn compile_select_access(
+    filter: Option<&BoundExpr>,
+    table: &TableDef,
+    order_by: &[BoundOrderBy],
+    has_limit: bool,
+) -> CompiledSelectAccess {
+    let Some(expr) = filter else {
+        return CompiledSelectAccess::Static(plan_access(None, table, order_by, has_limit, &[]));
+    };
+    if !expr_has_param(expr) {
+        return CompiledSelectAccess::Static(plan_access(
+            Some(expr),
+            table,
+            order_by,
+            has_limit,
+            &[],
+        ));
+    }
+
+    let single;
+    let mut multi;
+    let conjuncts: &[&BoundExpr] = if matches!(expr, BoundExpr::And(_)) {
+        multi = Vec::new();
+        collect_conjuncts(expr, &mut multi);
+        &multi
+    } else {
+        single = [expr];
+        &single
+    };
+
+    let mut eq_by_col: Vec<(usize, ValueSource)> = Vec::new();
+    let mut lo_by_col: Vec<(usize, CompareOp, ValueSource)> = Vec::new();
+    let mut hi_by_col: Vec<(usize, CompareOp, ValueSource)> = Vec::new();
+
+    for &conj in conjuncts {
+        let BoundExpr::Compare { op, left, right } = conj else {
+            return CompiledSelectAccess::Dynamic;
+        };
+        let Some((col_idx, norm_op, source)) = extract_static_predicate(*op, left, right) else {
+            return CompiledSelectAccess::Dynamic;
+        };
+        if col_idx == table.primary_key_index || norm_op == CompareOp::Ne {
+            return CompiledSelectAccess::Dynamic;
+        }
+        let col_type = table.columns[col_idx].col_type;
+        if !matches!(
+            col_type,
+            SqlType::Integer | SqlType::Text { .. } | SqlType::Boolean
+        ) {
+            return CompiledSelectAccess::Dynamic;
+        }
+        if let ValueSource::Literal(ref lit) = source {
+            if !lit_matches_col_type(lit, col_type) {
+                return CompiledSelectAccess::Dynamic;
+            }
+        }
+        match norm_op {
+            CompareOp::Eq => {
+                if eq_by_col.iter().any(|(c, _)| *c == col_idx) {
+                    return CompiledSelectAccess::Dynamic;
+                }
+                eq_by_col.push((col_idx, source));
+            }
+            CompareOp::Ge | CompareOp::Gt => {
+                if matches!(col_type, SqlType::Boolean)
+                    || lo_by_col.iter().any(|(c, _, _)| *c == col_idx)
+                {
+                    return CompiledSelectAccess::Dynamic;
+                }
+                lo_by_col.push((col_idx, norm_op, source));
+            }
+            CompareOp::Le | CompareOp::Lt => {
+                if matches!(col_type, SqlType::Boolean)
+                    || hi_by_col.iter().any(|(c, _, _)| *c == col_idx)
+                {
+                    return CompiledSelectAccess::Dynamic;
+                }
+                hi_by_col.push((col_idx, norm_op, source));
+            }
+            CompareOp::Ne => return CompiledSelectAccess::Dynamic,
+        }
+    }
+
+    // Only specialize when all predicates belong to a single winning Ready index
+    // (no competing indexes on other unconstrained combinations).
+    let mut best_idx: Option<(
+        usize,
+        CompiledIndexTemplate,
+        (bool, bool, bool, usize, bool, bool, bool, bool),
+    )> = None;
+    let mut eligible_count = 0usize;
+    for (index_idx, idx_def) in table.indexes.iter().enumerate() {
+        if idx_def.state != IndexState::Ready {
+            continue;
+        }
+        let mut equal = Vec::new();
+        let mut has_non_bool_eq = false;
+        let mut covered_predicates = 0usize;
+        for &col_idx in &idx_def.columns {
+            if let Some((_, src)) = eq_by_col.iter().find(|(c, _)| *c == col_idx) {
+                if !matches!(table.columns[col_idx].col_type, SqlType::Boolean) {
+                    has_non_bool_eq = true;
+                }
+                equal.push((table.columns[col_idx].col_type, src.clone()));
+                covered_predicates += 1;
+            } else {
+                break;
+            }
+        }
+        let equal_len = equal.len();
+        let (range_col_type, lower, upper) = if equal_len < idx_def.columns.len() {
+            let next_col = idx_def.columns[equal_len];
+            let lo = lo_by_col
+                .iter()
+                .find(|(c, _, _)| *c == next_col)
+                .map(|(_, op, s)| {
+                    covered_predicates += 1;
+                    CompiledRangeSide {
+                        op: *op,
+                        source: s.clone(),
+                    }
+                });
+            let hi = hi_by_col
+                .iter()
+                .find(|(c, _, _)| *c == next_col)
+                .map(|(_, op, s)| {
+                    covered_predicates += 1;
+                    CompiledRangeSide {
+                        op: *op,
+                        source: s.clone(),
+                    }
+                });
+            let rty = (lo.is_some() || hi.is_some()).then(|| table.columns[next_col].col_type);
+            (rty, lo, hi)
+        } else {
+            (None, None, None)
+        };
+        let has_range = lower.is_some() || upper.is_some();
+        if equal_len == 0 && !has_range {
+            continue;
+        }
+        let two_sided_range = lower.is_some() && upper.is_some();
+        let covered_prefix = if has_range { equal_len + 1 } else { equal_len };
+        let mut trailing_ok = true;
+        for &trailing_col in &idx_def.columns[covered_prefix..] {
+            let proven = table.columns[trailing_col].not_null
+                || eq_by_col.iter().any(|(c, _)| *c == trailing_col)
+                || lo_by_col.iter().any(|(c, _, _)| *c == trailing_col)
+                || hi_by_col.iter().any(|(c, _, _)| *c == trailing_col);
+            if !proven {
+                trailing_ok = false;
+                break;
+            }
+        }
+        if !trailing_ok {
+            continue;
+        }
+        eligible_count += 1;
+        let is_full_eq = equal_len == idx_def.columns.len();
+        let unique_equality = idx_def.unique && is_full_eq;
+        let preserves_pk_asc = is_full_eq;
+        let satisfies_order_by =
+            check_index_satisfies_order_by(idx_def, table, equal_len, order_by);
+        let rank = (
+            is_full_eq && has_non_bool_eq,
+            equal_len > 0 && has_non_bool_eq,
+            is_full_eq,
+            equal_len,
+            has_range,
+            two_sided_range,
+            idx_def.unique,
+            satisfies_order_by,
+        );
+        let filter_covered = covered_predicates == conjuncts.len();
+        let tmpl = CompiledIndexTemplate {
+            index_idx,
+            equal,
+            range_col_type,
+            lower,
+            upper,
+            unique_equality,
+            preserves_pk_asc,
+            satisfies_order_by,
+            filter_covered,
+        };
+        if best_idx
+            .as_ref()
+            .is_none_or(|(_, _, best_rank)| rank > *best_rank)
+        {
+            best_idx = Some((index_idx, tmpl, rank));
+        }
+    }
+
+    if eligible_count > 0 {
+        if let Some((_, tmpl, _)) = best_idx {
+            // Check whether every constrained column in the query is covered by the winning index
+            // or whether non-covered predicates could select a different index at runtime when
+            // e.g. a range predicate doesn't match. When filter_covered is true, no other index
+            // can win unless there's another index on the exact same columns (handled by rank).
+            if tmpl.filter_covered || eligible_count == 1 {
+                return CompiledSelectAccess::Index(tmpl);
+            }
+        }
+    }
+    CompiledSelectAccess::Dynamic
+}
+
+pub(crate) enum ResolvedTemplatePlan {
+    Plan {
+        access: AccessPlan,
+        skip_filter: bool,
+    },
+    Fallback,
+}
+
+pub(crate) fn resolve_compiled_index_template(
+    tmpl: &CompiledIndexTemplate,
+    params: &[SqlValue],
+) -> ResolvedTemplatePlan {
+    let mut equal = Vec::with_capacity(tmpl.equal.len());
+    for (col_type, src) in &tmpl.equal {
+        let val = src.resolve(params);
+        match (col_type, val) {
+            (_, SqlValue::Null) => {
+                return ResolvedTemplatePlan::Plan {
+                    access: AccessPlan::Empty,
+                    skip_filter: true,
+                };
+            }
+            (SqlType::Integer, SqlValue::Integer(n)) => equal.push(IndexValue::Integer(*n)),
+            (SqlType::Text { .. }, SqlValue::Text(s)) => {
+                if s.len() > MAX_SQL_INDEX_TEXT_BYTES {
+                    return ResolvedTemplatePlan::Plan {
+                        access: AccessPlan::Empty,
+                        skip_filter: true,
+                    };
+                }
+                equal.push(IndexValue::String(s.clone()));
+            }
+            (SqlType::Boolean, SqlValue::Boolean(b)) => equal.push(IndexValue::Boolean(*b)),
+            _ => return ResolvedTemplatePlan::Fallback,
+        }
+    }
+
+    let (lower, upper) = match tmpl.range_col_type {
+        None => (None, None),
+        Some(SqlType::Integer) => {
+            let mut lo = i64::MIN;
+            let mut hi = i64::MAX;
+            if let Some(side) = &tmpl.lower {
+                match side.source.resolve(params) {
+                    SqlValue::Null => {
+                        return ResolvedTemplatePlan::Plan {
+                            access: AccessPlan::Empty,
+                            skip_filter: true,
+                        };
+                    }
+                    SqlValue::Integer(n) => {
+                        let bound = match side.op {
+                            CompareOp::Ge => *n,
+                            CompareOp::Gt => match n.checked_add(1) {
+                                Some(b) => b,
+                                None => {
+                                    return ResolvedTemplatePlan::Plan {
+                                        access: AccessPlan::Empty,
+                                        skip_filter: true,
+                                    };
+                                }
+                            },
+                            _ => return ResolvedTemplatePlan::Fallback,
+                        };
+                        lo = lo.max(bound);
+                    }
+                    _ => return ResolvedTemplatePlan::Fallback,
+                }
+            }
+            if let Some(side) = &tmpl.upper {
+                match side.source.resolve(params) {
+                    SqlValue::Null => {
+                        return ResolvedTemplatePlan::Plan {
+                            access: AccessPlan::Empty,
+                            skip_filter: true,
+                        };
+                    }
+                    SqlValue::Integer(n) => {
+                        let bound = match side.op {
+                            CompareOp::Le => *n,
+                            CompareOp::Lt => match n.checked_sub(1) {
+                                Some(b) => b,
+                                None => {
+                                    return ResolvedTemplatePlan::Plan {
+                                        access: AccessPlan::Empty,
+                                        skip_filter: true,
+                                    };
+                                }
+                            },
+                            _ => return ResolvedTemplatePlan::Fallback,
+                        };
+                        hi = hi.min(bound);
+                    }
+                    _ => return ResolvedTemplatePlan::Fallback,
+                }
+            }
+            if lo > hi {
+                return ResolvedTemplatePlan::Plan {
+                    access: AccessPlan::Empty,
+                    skip_filter: true,
+                };
+            }
+            let lb = (lo > i64::MIN).then_some(IndexBound {
+                value: IndexValue::Integer(lo),
+                inclusive: true,
+            });
+            let ub = (hi < i64::MAX).then_some(IndexBound {
+                value: IndexValue::Integer(hi),
+                inclusive: true,
+            });
+            (lb, ub)
+        }
+        Some(SqlType::Text { .. }) => {
+            let mut lb = None;
+            let mut ub = None;
+            let mut text_lo = TextLower::Unbounded;
+            let mut text_hi = TextUpper::Unbounded;
+            if let Some(side) = &tmpl.lower {
+                match side.source.resolve(params) {
+                    SqlValue::Null => {
+                        return ResolvedTemplatePlan::Plan {
+                            access: AccessPlan::Empty,
+                            skip_filter: true,
+                        };
+                    }
+                    SqlValue::Text(s) => {
+                        if s.len() > MAX_SQL_INDEX_TEXT_BYTES {
+                            return ResolvedTemplatePlan::Fallback;
+                        }
+                        let inclusive = side.op == CompareOp::Ge;
+                        text_lo = if inclusive {
+                            TextLower::Included(s.clone())
+                        } else {
+                            TextLower::Excluded(s.clone())
+                        };
+                        lb = Some(IndexBound {
+                            value: IndexValue::String(s.clone()),
+                            inclusive,
+                        });
+                    }
+                    _ => return ResolvedTemplatePlan::Fallback,
+                }
+            }
+            if let Some(side) = &tmpl.upper {
+                match side.source.resolve(params) {
+                    SqlValue::Null => {
+                        return ResolvedTemplatePlan::Plan {
+                            access: AccessPlan::Empty,
+                            skip_filter: true,
+                        };
+                    }
+                    SqlValue::Text(s) => {
+                        if s.len() > MAX_SQL_INDEX_TEXT_BYTES {
+                            return ResolvedTemplatePlan::Fallback;
+                        }
+                        let inclusive = side.op == CompareOp::Le;
+                        text_hi = if inclusive {
+                            TextUpper::Included(s.clone())
+                        } else {
+                            TextUpper::Excluded(s.clone())
+                        };
+                        ub = Some(IndexBound {
+                            value: IndexValue::String(s.clone()),
+                            inclusive,
+                        });
+                    }
+                    _ => return ResolvedTemplatePlan::Fallback,
+                }
+            }
+            if text_bounds_empty(&text_lo, &text_hi, false) {
+                return ResolvedTemplatePlan::Plan {
+                    access: AccessPlan::Empty,
+                    skip_filter: true,
+                };
+            }
+            (lb, ub)
+        }
+        Some(_) => return ResolvedTemplatePlan::Fallback,
+    };
+
+    ResolvedTemplatePlan::Plan {
+        access: AccessPlan::Index {
+            index_idx: tmpl.index_idx,
+            equal,
+            lower,
+            upper,
+            unique_equality: tmpl.unique_equality,
+            preserves_pk_asc: tmpl.preserves_pk_asc,
+            satisfies_order_by: tmpl.satisfies_order_by,
+        },
+        skip_filter: tmpl.filter_covered,
+    }
 }
 
 #[derive(Clone)]
@@ -215,6 +696,9 @@ pub(crate) fn plan_access(
 
     let mut candidates: Vec<IndexCandidate> = Vec::new();
     for (index_idx, idx_def) in table.indexes.iter().enumerate() {
+        if idx_def.state != IndexState::Ready {
+            continue;
+        }
         if let Some(cand) = evaluate_index_candidate(
             index_idx,
             idx_def,

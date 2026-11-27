@@ -1,18 +1,18 @@
 //! Statement binding, expression evaluation, and transactional execution over `DocumentDatabase`.
-use super::catalog::{self, CachedTable, ColumnDef, IndexDef, TableCache, TableDef};
+use super::catalog::{self, CachedTable, ColumnDef, IndexDef, IndexState, TableCache, TableDef};
 use super::parser::{
-    self, Assignment, CompareOp, CreateIndexStmt, CreateTableStmt, DeleteStmt, Expr, InsertStmt,
-    LimitValue, LiteralValue, NullsOrder, SelectColumns, SelectStmt, SqlStatement, Statement,
-    UpdateStmt,
+    self, Assignment, CompareOp, CreateIndexStmt, CreateTableStmt, DeleteStmt, DropIndexStmt, Expr,
+    InsertStmt, LimitValue, LiteralValue, NullsOrder, SelectColumns, SelectStmt, SqlStatement,
+    Statement, UpdateStmt,
 };
-use super::plan::{self, AccessPlan, UpperBound};
+use super::plan::{self, AccessPlan, CompiledSelectAccess, ResolvedTemplatePlan, UpperBound};
 use super::value::{
-    MAX_SQL_TEXT_PK_BYTES, SqlError, SqlLimits, SqlOutcome, SqlType, SqlValue, coerce_for_column,
-    compare_i64_f64, encode_i64_pk_bytes, exact_i64_to_f64,
+    MAX_SQL_INDEXES_PER_TABLE, MAX_SQL_TEXT_PK_BYTES, SqlError, SqlLimits, SqlOutcome, SqlType,
+    SqlValue, coerce_for_column, compare_i64_f64, encode_i64_pk_bytes, exact_i64_to_f64,
 };
 use crate::document::{
-    DocumentDatabase, DocumentTransaction, DocumentTransactionMode, IndexBound, IndexCursor,
-    IndexQuery, IndexValue,
+    DocumentDatabase, DocumentTransaction, DocumentTransactionMode, IndexBound, IndexQuery,
+    IndexValue,
 };
 use crate::{MAX_SCAN_ENTRIES, TransactionFailure};
 use parking_lot::RwLock;
@@ -119,9 +119,15 @@ pub(crate) fn execute_statement(
         }
     }
 
+    match &stmt.inner {
+        Statement::CreateIndex(create_idx) => return exec_create_index(db, create_idx, cache),
+        Statement::DropIndex(drop_idx) => return exec_drop_index(db, drop_idx, cache),
+        _ => {}
+    }
+
     run_tx(db, |tx| match &stmt.inner {
         Statement::CreateTable(create) => exec_create_table(tx, create, limits),
-        Statement::CreateIndex(create_idx) => exec_create_index(tx, create_idx, cache),
+        Statement::CreateIndex(_) | Statement::DropIndex(_) => unreachable!(),
         Statement::Insert(insert) => exec_insert(tx, stmt.stmt_id, insert, params, limits, cache),
         Statement::Select(select) => exec_select(
             tx,
@@ -157,20 +163,22 @@ fn run_tx<T>(
     db: &DocumentDatabase<'_>,
     action: impl FnOnce(&mut DocumentTransaction<'_, '_>) -> Result<T, SqlError>,
 ) -> Result<T, SqlError> {
+    run_tx_with_mode(db, DocumentTransactionMode::ReadSet, action)
+}
+
+fn run_tx_with_mode<T>(
+    db: &DocumentDatabase<'_>,
+    mode: DocumentTransactionMode,
+    action: impl FnOnce(&mut DocumentTransaction<'_, '_>) -> Result<T, SqlError>,
+) -> Result<T, SqlError> {
     let mut sql_error: Option<SqlError> = None;
-    let outcome =
-        db.transaction_detailed(
-            DocumentTransactionMode::ReadSet,
-            None,
-            None,
-            |tx| match action(tx) {
-                Ok(value) => Ok(value),
-                Err(err) => {
-                    sql_error = Some(err);
-                    Err(io::Error::other("sql statement aborted"))
-                }
-            },
-        );
+    let outcome = db.transaction_detailed(mode, None, None, |tx| match action(tx) {
+        Ok(value) => Ok(value),
+        Err(err) => {
+            sql_error = Some(err);
+            Err(io::Error::other("sql statement aborted"))
+        }
+    });
     match outcome {
         Ok(value) => Ok(value),
         Err(TransactionFailure::Callback(io_err)) => {
@@ -282,6 +290,8 @@ fn exec_create_table(
             name: format!("__sql_u_{i}"),
             columns: cols.clone(),
             unique: true,
+            state: IndexState::Ready,
+            is_constraint: true,
         })
         .collect();
     let def = TableDef::new(stmt.name.clone(), columns, stmt.primary_key_index, indexes)?;
@@ -289,91 +299,512 @@ fn exec_create_table(
     Ok(SqlOutcome::TableCreated)
 }
 
+const ONLINE_STEP_LIMIT: usize = 128;
+const MAX_STEP_CONFLICTS: usize = 256;
+
+fn run_maintenance_step<T>(
+    db: &DocumentDatabase<'_>,
+    mut action: impl FnMut(&mut DocumentTransaction<'_, '_>) -> Result<T, SqlError>,
+) -> Result<T, SqlError> {
+    let mut conflicts = 0usize;
+    loop {
+        match run_tx_with_mode(db, DocumentTransactionMode::Conservative, |tx| action(tx)) {
+            Ok(value) => return Ok(value),
+            Err(SqlError::Conflict(err)) => {
+                conflicts += 1;
+                if conflicts >= MAX_STEP_CONFLICTS {
+                    return Err(SqlError::Conflict(err));
+                }
+                std::thread::yield_now();
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+enum CreateIndexAction {
+    AlreadyReady,
+    FinishDropFirst {
+        col_indices: Vec<usize>,
+        col_names: Vec<String>,
+    },
+    ResumeBuild,
+    StartFresh {
+        col_indices: Vec<usize>,
+        col_names: Vec<String>,
+    },
+}
+
+enum BuildStartState {
+    AlreadyReady,
+    StartedOrResume,
+    NeedsDropFirst,
+}
+
+enum BuildProgress {
+    AlreadyReady,
+    InProgress,
+    Complete,
+}
+
 fn exec_create_index(
-    tx: &mut DocumentTransaction<'_, '_>,
+    db: &DocumentDatabase<'_>,
     stmt: &CreateIndexStmt,
     cache: &SqlCache,
 ) -> Result<SqlOutcome, SqlError> {
-    let cached_table = catalog::load_table_cached(tx, &stmt.table, &cache.tables)?;
-    let table = &cached_table.def;
-    let mut col_indices = Vec::with_capacity(stmt.columns.len());
-    for col_name in &stmt.columns {
-        let idx = table
-            .column_index(col_name)
-            .ok_or_else(|| SqlError::NoSuchColumn {
-                table: table.name.clone(),
-                column: col_name.clone(),
-            })?;
-        let col = &table.columns[idx];
-        if !matches!(
-            col.col_type,
-            SqlType::Integer | SqlType::Text { .. } | SqlType::Boolean
-        ) {
-            return Err(SqlError::Unsupported {
-                feature: format!(
-                    "secondary index on {} column '{}'",
-                    col.col_type.display_name(),
-                    col.name
-                ),
-                offset: None,
-            });
+    let action = run_tx(db, |tx| {
+        let cached_table = catalog::load_table_cached(tx, &stmt.table, &cache.tables)?;
+        let table = &cached_table.def;
+        let mut col_indices = Vec::with_capacity(stmt.columns.len());
+        let mut col_names = Vec::with_capacity(stmt.columns.len());
+        for col_name in &stmt.columns {
+            let idx = table
+                .column_index(col_name)
+                .ok_or_else(|| SqlError::NoSuchColumn {
+                    table: table.name.clone(),
+                    column: col_name.clone(),
+                })?;
+            let col = &table.columns[idx];
+            if !matches!(
+                col.col_type,
+                SqlType::Integer | SqlType::Text { .. } | SqlType::Boolean
+            ) {
+                return Err(SqlError::Unsupported {
+                    feature: format!(
+                        "secondary index on {} column '{}'",
+                        col.col_type.display_name(),
+                        col.name
+                    ),
+                    offset: None,
+                });
+            }
+            col_indices.push(idx);
+            col_names.push(col.name.clone());
         }
-        col_indices.push(idx);
-    }
-    if !table.indexes.iter().any(|index| index.name == stmt.name) {
-        omit_explicit_nulls(tx, table, &col_indices)?;
-    }
-    let index_def = IndexDef {
-        name: stmt.name.clone(),
-        columns: col_indices,
-        unique: stmt.unique,
+
+        if let Some(existing) = table.indexes.iter().find(|i| i.name == stmt.name) {
+            return match existing.state {
+                IndexState::Ready => {
+                    if stmt.if_not_exists {
+                        Ok(CreateIndexAction::AlreadyReady)
+                    } else {
+                        Err(SqlError::IndexExists(stmt.name.clone()))
+                    }
+                }
+                IndexState::Building => {
+                    if existing.columns == col_indices && existing.unique == stmt.unique {
+                        Ok(CreateIndexAction::ResumeBuild)
+                    } else {
+                        Err(SqlError::IndexExists(stmt.name.clone()))
+                    }
+                }
+                IndexState::Dropping => Ok(CreateIndexAction::FinishDropFirst {
+                    col_indices,
+                    col_names,
+                }),
+            };
+        }
+
+        if table.indexes.len() >= MAX_SQL_INDEXES_PER_TABLE {
+            return Err(SqlError::Bounds(format!(
+                "table '{}' cannot have more than {MAX_SQL_INDEXES_PER_TABLE} indexes",
+                table.name
+            )));
+        }
+
+        Ok(CreateIndexAction::StartFresh {
+            col_indices,
+            col_names,
+        })
+    })?;
+
+    let (col_indices, col_names) = match action {
+        CreateIndexAction::AlreadyReady => return Ok(SqlOutcome::IndexCreated),
+        CreateIndexAction::ResumeBuild => {
+            return drive_index_build(db, &stmt.table, &stmt.name, stmt.if_not_exists, cache);
+        }
+        CreateIndexAction::FinishDropFirst {
+            col_indices,
+            col_names,
+        } => {
+            drive_index_drop(db, &stmt.table, &stmt.name, cache)?;
+            (col_indices, col_names)
+        }
+        CreateIndexAction::StartFresh {
+            col_indices,
+            col_names,
+        } => (col_indices, col_names),
     };
-    catalog::create_index(tx, &cached_table, index_def, stmt.if_not_exists)?;
-    Ok(SqlOutcome::IndexCreated)
+
+    loop {
+        omit_explicit_nulls_bounded(db, &stmt.table, &col_names)?;
+        let start_state = run_maintenance_step(db, |tx| {
+            let cached_table = catalog::load_table_cached(tx, &stmt.table, &cache.tables)?;
+            if let Some(existing) = cached_table
+                .def
+                .indexes
+                .iter()
+                .find(|i| i.name == stmt.name)
+            {
+                return match existing.state {
+                    IndexState::Ready => {
+                        if stmt.if_not_exists {
+                            Ok(BuildStartState::AlreadyReady)
+                        } else {
+                            Err(SqlError::IndexExists(stmt.name.clone()))
+                        }
+                    }
+                    IndexState::Building => {
+                        if existing.columns == col_indices && existing.unique == stmt.unique {
+                            Ok(BuildStartState::StartedOrResume)
+                        } else {
+                            Err(SqlError::IndexExists(stmt.name.clone()))
+                        }
+                    }
+                    IndexState::Dropping => Ok(BuildStartState::NeedsDropFirst),
+                };
+            }
+            let index_def = IndexDef {
+                name: stmt.name.clone(),
+                columns: col_indices.clone(),
+                unique: stmt.unique,
+                state: IndexState::Building,
+                is_constraint: false,
+            };
+            catalog::start_index_build(tx, &cached_table, index_def)?;
+            Ok(BuildStartState::StartedOrResume)
+        })?;
+        match start_state {
+            BuildStartState::AlreadyReady => return Ok(SqlOutcome::IndexCreated),
+            BuildStartState::StartedOrResume => break,
+            BuildStartState::NeedsDropFirst => {
+                drive_index_drop(db, &stmt.table, &stmt.name, cache)?;
+            }
+        }
+    }
+
+    drive_index_build(db, &stmt.table, &stmt.name, stmt.if_not_exists, cache)
+}
+
+fn drive_index_build(
+    db: &DocumentDatabase<'_>,
+    table_name: &str,
+    index_name: &str,
+    if_not_exists: bool,
+    cache: &SqlCache,
+) -> Result<SqlOutcome, SqlError> {
+    loop {
+        let step_res = run_maintenance_step(db, |tx| {
+            let cached_table = catalog::load_table_cached(tx, table_name, &cache.tables)?;
+            match cached_table
+                .def
+                .indexes
+                .iter()
+                .find(|i| i.name == index_name)
+            {
+                Some(i) if i.state == IndexState::Ready => {
+                    return Ok(BuildProgress::AlreadyReady);
+                }
+                Some(i) if i.state == IndexState::Building => {}
+                _ => {
+                    return Err(SqlError::Conflict(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "index build was cancelled or dropped concurrently",
+                    )));
+                }
+            }
+            let step = tx
+                .advance_index_build(table_name, index_name, ONLINE_STEP_LIMIT)
+                .map_err(|err| catalog::map_index_build_error(err, table_name, index_name))?;
+            if step.complete {
+                catalog::set_index_state(
+                    tx,
+                    table_name,
+                    index_name,
+                    IndexState::Ready,
+                    &cache.tables,
+                )?;
+                Ok(BuildProgress::Complete)
+            } else {
+                Ok(BuildProgress::InProgress)
+            }
+        });
+        match step_res {
+            Ok(BuildProgress::Complete) => return Ok(SqlOutcome::IndexCreated),
+            Ok(BuildProgress::AlreadyReady) => {
+                if if_not_exists {
+                    return Ok(SqlOutcome::IndexCreated);
+                }
+                return Err(SqlError::IndexExists(index_name.to_owned()));
+            }
+            Ok(BuildProgress::InProgress) => {}
+            Err(err) => {
+                if !matches!(err, SqlError::OutcomeUnknown(_) | SqlError::Conflict(_)) {
+                    if let Err(cleanup_err) =
+                        cleanup_failed_index_build(db, table_name, index_name, cache)
+                    {
+                        if matches!(cleanup_err, SqlError::OutcomeUnknown(_)) {
+                            return Err(cleanup_err);
+                        }
+                    }
+                }
+                return Err(err);
+            }
+        }
+    }
+}
+
+fn cleanup_failed_index_build(
+    db: &DocumentDatabase<'_>,
+    table_name: &str,
+    index_name: &str,
+    cache: &SqlCache,
+) -> Result<(), SqlError> {
+    let needs_drop = run_maintenance_step(db, |tx| {
+        let cached_table = catalog::load_table_cached(tx, table_name, &cache.tables)?;
+        let Some(existing) = cached_table
+            .def
+            .indexes
+            .iter()
+            .find(|i| i.name == index_name)
+        else {
+            return Ok(false);
+        };
+        match existing.state {
+            IndexState::Building => {
+                tx.cancel_index_build(table_name, index_name)
+                    .map_err(classify_io_error)?;
+                catalog::set_index_state(
+                    tx,
+                    table_name,
+                    index_name,
+                    IndexState::Dropping,
+                    &cache.tables,
+                )?;
+                Ok(true)
+            }
+            IndexState::Dropping => Ok(true),
+            IndexState::Ready => Ok(false),
+        }
+    })?;
+    if needs_drop {
+        drive_index_drop(db, table_name, index_name, cache)?;
+    }
+    Ok(())
+}
+
+fn drive_index_drop(
+    db: &DocumentDatabase<'_>,
+    table_name: &str,
+    index_name: &str,
+    cache: &SqlCache,
+) -> Result<(), SqlError> {
+    loop {
+        let done = run_maintenance_step(db, |tx| {
+            let cached_table = catalog::load_table_cached(tx, table_name, &cache.tables)?;
+            match cached_table
+                .def
+                .indexes
+                .iter()
+                .find(|i| i.name == index_name)
+            {
+                Some(i) if i.state == IndexState::Dropping => {}
+                None => return Ok(true),
+                Some(_) => {
+                    return Err(SqlError::Conflict(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "index state changed during drop",
+                    )));
+                }
+            }
+            let step = tx
+                .advance_index_drop(table_name, index_name, ONLINE_STEP_LIMIT)
+                .map_err(classify_io_error)?;
+            if step.complete {
+                catalog::remove_index(tx, table_name, index_name, &cache.tables)?;
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        })?;
+        if done {
+            return Ok(());
+        }
+    }
+}
+
+enum DropAction {
+    Done,
+    CancelBuilding,
+    FinishDropping,
+    StartAndDriveDrop,
+}
+
+fn exec_drop_index(
+    db: &DocumentDatabase<'_>,
+    stmt: &DropIndexStmt,
+    cache: &SqlCache,
+) -> Result<SqlOutcome, SqlError> {
+    let action_res = run_tx(db, |tx| {
+        let cached_table = catalog::load_table_cached(tx, &stmt.table, &cache.tables)?;
+        let Some(existing) = cached_table
+            .def
+            .indexes
+            .iter()
+            .find(|i| i.name == stmt.name)
+        else {
+            if stmt.if_exists {
+                return Ok(DropAction::Done);
+            }
+            return Err(SqlError::NoSuchIndex {
+                table: stmt.table.clone(),
+                index: stmt.name.clone(),
+            });
+        };
+        if existing.is_constraint {
+            return Err(SqlError::Constraint(format!(
+                "cannot drop index '{}' backing a UNIQUE constraint on table '{}'",
+                existing.name, stmt.table
+            )));
+        }
+        match existing.state {
+            IndexState::Building => Ok(DropAction::CancelBuilding),
+            IndexState::Dropping => Ok(DropAction::FinishDropping),
+            IndexState::Ready => {
+                tx.drop_index(&stmt.table, &stmt.name)
+                    .map_err(classify_io_error)?;
+                catalog::remove_index(tx, &stmt.table, &stmt.name, &cache.tables)?;
+                Ok(DropAction::Done)
+            }
+        }
+    });
+
+    let action = match action_res {
+        Ok(action) => action,
+        Err(SqlError::Io(err))
+            if err
+                .to_string()
+                .contains("index drop exceeds key or byte limits") =>
+        {
+            DropAction::StartAndDriveDrop
+        }
+        Err(SqlError::Bounds(msg)) if msg.contains("index drop exceeds key or byte limits") => {
+            DropAction::StartAndDriveDrop
+        }
+        Err(err) => return Err(err),
+    };
+
+    match action {
+        DropAction::Done => Ok(SqlOutcome::IndexDropped),
+        DropAction::CancelBuilding => {
+            cleanup_failed_index_build(db, &stmt.table, &stmt.name, cache)?;
+            Ok(SqlOutcome::IndexDropped)
+        }
+        DropAction::FinishDropping => {
+            drive_index_drop(db, &stmt.table, &stmt.name, cache)?;
+            Ok(SqlOutcome::IndexDropped)
+        }
+        DropAction::StartAndDriveDrop => {
+            let needs_drive = run_maintenance_step(db, |tx| {
+                let cached_table = catalog::load_table_cached(tx, &stmt.table, &cache.tables)?;
+                let Some(existing) = cached_table
+                    .def
+                    .indexes
+                    .iter()
+                    .find(|i| i.name == stmt.name)
+                else {
+                    if stmt.if_exists {
+                        return Ok(None);
+                    }
+                    return Err(SqlError::NoSuchIndex {
+                        table: stmt.table.clone(),
+                        index: stmt.name.clone(),
+                    });
+                };
+                if existing.is_constraint {
+                    return Err(SqlError::Constraint(format!(
+                        "cannot drop index '{}' backing a UNIQUE constraint on table '{}'",
+                        existing.name, stmt.table
+                    )));
+                }
+                match existing.state {
+                    IndexState::Ready => {
+                        tx.start_index_drop(&stmt.table, &stmt.name)
+                            .map_err(classify_io_error)?;
+                        catalog::set_index_state(
+                            tx,
+                            &stmt.table,
+                            &stmt.name,
+                            IndexState::Dropping,
+                            &cache.tables,
+                        )?;
+                        Ok(Some(false))
+                    }
+                    IndexState::Dropping => Ok(Some(false)),
+                    IndexState::Building => Ok(Some(true)),
+                }
+            })?;
+            match needs_drive {
+                None => Ok(SqlOutcome::IndexDropped),
+                Some(true) => {
+                    cleanup_failed_index_build(db, &stmt.table, &stmt.name, cache)?;
+                    Ok(SqlOutcome::IndexDropped)
+                }
+                Some(false) => {
+                    drive_index_drop(db, &stmt.table, &stmt.name, cache)?;
+                    Ok(SqlOutcome::IndexDropped)
+                }
+            }
+        }
+    }
 }
 
 /// Rows written before NULL was stored by omission may hold explicit JSON
 /// `null` in an indexed column. Document indexes treat `null` as a value but
-/// skip missing fields, so rewrite those rows to omit the field before the
-/// index is built, in the same transaction. SQL reads both forms as NULL.
-fn omit_explicit_nulls(
-    tx: &mut DocumentTransaction<'_, '_>,
-    table: &TableDef,
-    columns: &[usize],
+/// skip missing fields, so rewrite those rows to omit the field in bounded
+/// steps before the index is built. SQL reads both forms as NULL.
+fn omit_explicit_nulls_bounded(
+    db: &DocumentDatabase<'_>,
+    table_name: &str,
+    col_names: &[String],
 ) -> Result<(), SqlError> {
-    let names = columns
-        .iter()
-        .map(|&idx| table.columns[idx].name.as_str())
-        .collect::<Vec<_>>();
-    let mut rewrites = Vec::new();
     let mut after: Option<String> = None;
     loop {
-        let page = tx
-            .scan_documents(&table.name, after.as_deref(), MAX_SCAN_ENTRIES)
-            .map_err(classify_io_error)?;
-        let Some(last) = page.last() else { break };
-        after = Some(last.id.clone());
-        for entry in page {
-            let Value::Object(mut fields) = entry.document else {
-                continue;
+        let next_after = run_maintenance_step(db, |tx| {
+            let page = tx
+                .scan_documents(table_name, after.as_deref(), ONLINE_STEP_LIMIT)
+                .map_err(classify_io_error)?;
+            let Some(last) = page.last() else {
+                return Ok(None);
             };
-            let mut changed = false;
-            for name in &names {
-                if matches!(fields.get(*name), Some(Value::Null)) {
-                    fields.remove(*name);
-                    changed = true;
+            let next_cursor = last.id.clone();
+            let mut rewrites = Vec::new();
+            for entry in page {
+                let Value::Object(mut fields) = entry.document else {
+                    continue;
+                };
+                let mut changed = false;
+                for name in col_names {
+                    if matches!(fields.get(name.as_str()), Some(Value::Null)) {
+                        fields.remove(name.as_str());
+                        changed = true;
+                    }
+                }
+                if changed {
+                    rewrites.push((entry.id, Value::Object(fields)));
                 }
             }
-            if changed {
-                rewrites.push((entry.id, Value::Object(fields)));
+            for (id, document) in rewrites {
+                tx.replace(table_name, &id, &document, false)
+                    .map_err(classify_io_error)?;
             }
+            Ok(Some(next_cursor))
+        })?;
+        match next_after {
+            Some(cursor) => after = Some(cursor),
+            None => return Ok(()),
         }
     }
-    for (id, document) in rewrites {
-        tx.replace(&table.name, &id, &document, false)
-            .map_err(classify_io_error)?;
-    }
-    Ok(())
 }
 
 struct BoundInsertPlan {
@@ -867,6 +1298,7 @@ struct BoundSelectPlan {
     order_by: Vec<BoundOrderBy>,
     order_strategy: OrderStrategy,
     simple_pk_eq: Option<PkEqSource>,
+    compiled_access: CompiledSelectAccess,
 }
 
 struct BoundUpdatePlan {
@@ -1312,6 +1744,12 @@ fn get_or_build_select_plan(
     let simple_pk_eq = filter
         .as_ref()
         .and_then(|f| detect_simple_pk_eq(&f.expr, table.primary_key_index));
+    let compiled_access = plan::compile_select_access(
+        filter.as_ref().map(|f| &f.expr),
+        table,
+        &order_by,
+        stmt.limit.is_some(),
+    );
 
     let plan = Arc::new(BoundSelectPlan {
         proj_indices,
@@ -1321,6 +1759,7 @@ fn get_or_build_select_plan(
         order_by,
         order_strategy,
         simple_pk_eq,
+        compiled_access,
     });
     let mut guard = cache.select_plans.write();
     if guard.len() >= MAX_CACHED_PLANS {
@@ -1443,11 +1882,36 @@ fn exec_select(
         }
     }
 
-    let bound_filter = plan.filter.as_ref().map(|f| &f.expr);
+    let mut bound_filter = plan.filter.as_ref().map(|f| &f.expr);
     let access = if force_full_scan {
         AccessPlan::FullScan
     } else {
-        plan::plan_access(bound_filter, table, &plan.order_by, limit.is_some(), params)
+        match &plan.compiled_access {
+            CompiledSelectAccess::Static(cached) => cached.clone(),
+            CompiledSelectAccess::Index(tmpl) => {
+                match plan::resolve_compiled_index_template(tmpl, params) {
+                    ResolvedTemplatePlan::Plan {
+                        access,
+                        skip_filter,
+                    } => {
+                        if skip_filter {
+                            bound_filter = None;
+                        }
+                        access
+                    }
+                    ResolvedTemplatePlan::Fallback => plan::plan_access(
+                        bound_filter,
+                        table,
+                        &plan.order_by,
+                        limit.is_some(),
+                        params,
+                    ),
+                }
+            }
+            CompiledSelectAccess::Dynamic => {
+                plan::plan_access(bound_filter, table, &plan.order_by, limit.is_some(), params)
+            }
+        }
     };
     if matches!(access, AccessPlan::Empty) {
         return Ok(SqlOutcome::Rows {
@@ -1471,7 +1935,7 @@ fn exec_select(
                     tx,
                     table,
                     &plan,
-                    &access,
+                    access,
                     bound_filter,
                     params,
                     limits,
@@ -1483,7 +1947,7 @@ fn exec_select(
                     tx,
                     table,
                     &plan,
-                    &access,
+                    access,
                     bound_filter,
                     params,
                     limits,
@@ -1505,7 +1969,7 @@ fn exec_select(
                     tx,
                     table,
                     &plan,
-                    &access,
+                    access,
                     bound_filter,
                     params,
                     limits,
@@ -1519,7 +1983,7 @@ fn exec_select(
                 visit_access_rows(
                     tx,
                     table,
-                    &access,
+                    access,
                     bound_filter,
                     params,
                     limits,
@@ -1576,7 +2040,7 @@ fn exec_select(
                 visit_access_rows(
                     tx,
                     table,
-                    &access,
+                    access,
                     bound_filter,
                     params,
                     limits,
@@ -1620,7 +2084,7 @@ fn exec_select(
                     tx,
                     table,
                     &plan,
-                    &access,
+                    access,
                     bound_filter,
                     params,
                     limits,
@@ -1634,7 +2098,7 @@ fn exec_select(
                 visit_access_rows(
                     tx,
                     table,
-                    &access,
+                    access,
                     bound_filter,
                     params,
                     limits,
@@ -1706,7 +2170,7 @@ fn exec_select(
                 visit_access_rows(
                     tx,
                     table,
-                    &access,
+                    access,
                     bound_filter,
                     params,
                     limits,
@@ -1761,7 +2225,7 @@ fn exec_streaming_select(
     tx: &DocumentTransaction<'_, '_>,
     table: &TableDef,
     plan: &BoundSelectPlan,
-    access: &AccessPlan,
+    access: AccessPlan,
     bound_filter: Option<&BoundExpr>,
     params: &[SqlValue],
     limits: &SqlLimits,
@@ -1816,7 +2280,7 @@ fn exec_pk_sorted_select(
     tx: &DocumentTransaction<'_, '_>,
     table: &TableDef,
     plan: &BoundSelectPlan,
-    access: &AccessPlan,
+    access: AccessPlan,
     bound_filter: Option<&BoundExpr>,
     params: &[SqlValue],
     limits: &SqlLimits,
@@ -1897,7 +2361,8 @@ fn exec_pk_sorted_select(
         }
         Ok(rows)
     } else {
-        let mut collected = Vec::new();
+        let mut first: Option<(String, Vec<SqlValue>)> = None;
+        let mut rest: Vec<(String, Vec<SqlValue>)> = Vec::new();
         visit_access_rows(
             tx,
             table,
@@ -1907,37 +2372,45 @@ fn exec_pk_sorted_select(
             limits,
             None,
             |doc_id, verified_pk, obj| {
-                if collected.len() >= limits.max_select_rows {
+                let count = usize::from(first.is_some()) + rest.len();
+                if count >= limits.max_select_rows {
                     return Err(SqlError::Bounds(format!(
                         "SELECT result exceeds max_select_rows ({})",
                         limits.max_select_rows
                     )));
                 }
-                if collected.len() >= limits.max_sort_rows {
+                if count >= limits.max_sort_rows {
                     return Err(SqlError::Bounds(format!(
                         "sort row count exceeds max_sort_rows ({})",
                         limits.max_sort_rows
                     )));
                 }
-                collected.push((doc_id, verified_pk, obj));
+                let row = project_row_with_pk(
+                    obj,
+                    table,
+                    &plan.proj_indices,
+                    &plan.proj_is_last,
+                    verified_pk,
+                )?;
+                if first.is_none() && rest.is_empty() {
+                    first = Some((doc_id, row));
+                } else {
+                    if let Some(first_pair) = first.take() {
+                        rest.push(first_pair);
+                    }
+                    rest.push((doc_id, row));
+                }
                 Ok(ControlFlow::Continue(()))
             },
         )?;
-        collected.sort_unstable_by(|a, b| {
+        if rest.is_empty() {
+            return Ok(first.map_or_else(Vec::new, |(_, row)| vec![row]));
+        }
+        rest.sort_unstable_by(|a, b| {
             let ord = a.0.as_bytes().cmp(b.0.as_bytes());
             if desc { ord.reverse() } else { ord }
         });
-        let mut rows = Vec::with_capacity(collected.len());
-        for (_doc_id, verified_pk, obj) in collected {
-            rows.push(project_row_with_pk(
-                obj,
-                table,
-                &plan.proj_indices,
-                &plan.proj_is_last,
-                verified_pk,
-            )?);
-        }
-        Ok(rows)
+        Ok(rest.into_iter().map(|(_, row)| row).collect())
     }
 }
 
@@ -2174,7 +2647,7 @@ fn visit_matching_rows(
         plan::plan_access(filter, table, &[], false, params)
     };
     visit_access_rows(
-        tx, table, &plan, filter, params, limits, stream_cap, on_match,
+        tx, table, plan, filter, params, limits, stream_cap, on_match,
     )
 }
 
@@ -2182,7 +2655,7 @@ fn visit_matching_rows(
 fn visit_access_rows(
     tx: &DocumentTransaction<'_, '_>,
     table: &TableDef,
-    plan: &AccessPlan,
+    plan: AccessPlan,
     filter: Option<&BoundExpr>,
     params: &[SqlValue],
     limits: &SqlLimits,
@@ -2196,7 +2669,7 @@ fn visit_access_rows(
     match plan {
         AccessPlan::Empty => Ok(()),
         AccessPlan::PkPoint { doc_id } => {
-            let Some(doc) = tx.get(&table.name, doc_id).map_err(classify_io_error)? else {
+            let Some(doc) = tx.get(&table.name, &doc_id).map_err(classify_io_error)? else {
                 return Ok(());
             };
             if 1 > limits.max_visited_rows {
@@ -2206,9 +2679,9 @@ fn visit_access_rows(
                 )));
             }
             let obj = doc_into_object(doc)?;
-            let verified_pk = verify_doc_pk_id(table, doc_id, &obj)?;
+            let verified_pk = verify_doc_pk_id(table, &doc_id, &obj)?;
             if eval_where_doc(filter, table, &obj, params)? {
-                let _ = on_match(doc_id.clone(), verified_pk, obj)?;
+                let _ = on_match(doc_id, verified_pk, obj)?;
             }
             Ok(())
         }
@@ -2222,9 +2695,9 @@ fn visit_access_rows(
             filter,
             params,
             limits,
-            after_id.clone(),
-            upper,
-            *max_exact_rows,
+            after_id,
+            &upper,
+            max_exact_rows,
             stream_cap,
             on_match,
         ),
@@ -2238,11 +2711,11 @@ fn visit_access_rows(
         } => visit_index_rows(
             tx,
             table,
-            &table.indexes[*index_idx].name,
+            &table.indexes[index_idx].name,
             equal,
-            lower.as_ref(),
-            upper.as_ref(),
-            *unique_equality,
+            lower,
+            upper,
+            unique_equality,
             filter,
             params,
             limits,
@@ -2269,9 +2742,9 @@ fn visit_index_rows(
     tx: &DocumentTransaction<'_, '_>,
     table: &TableDef,
     index_name: &str,
-    equal: &[IndexValue],
-    lower: Option<&IndexBound>,
-    upper: Option<&IndexBound>,
+    equal: Vec<IndexValue>,
+    lower: Option<IndexBound>,
+    upper: Option<IndexBound>,
     unique_equality: bool,
     filter: Option<&BoundExpr>,
     params: &[SqlValue],
@@ -2285,7 +2758,13 @@ fn visit_index_rows(
 ) -> Result<(), SqlError> {
     const MAX_INDEX_QUERY_DOCUMENTS: usize = 256;
     let mut visited = 0usize;
-    let mut after: Option<IndexCursor> = None;
+    let mut query = IndexQuery {
+        equal,
+        lower,
+        upper,
+        after: None,
+        limit: 1,
+    };
 
     loop {
         let remaining_visit = limits.max_visited_rows.saturating_sub(visited);
@@ -2301,13 +2780,7 @@ fn visit_index_rows(
             }
             page_limit = page_limit.min(cap);
         }
-        let query = IndexQuery {
-            equal: equal.to_vec(),
-            lower: lower.cloned(),
-            upper: upper.cloned(),
-            after: after.take(),
-            limit: page_limit,
-        };
+        query.limit = page_limit;
         let page = tx
             .query_index(&table.name, index_name, &query)
             .map_err(classify_io_error)?;
@@ -2317,7 +2790,7 @@ fn visit_index_rows(
         let done = unique_equality
             || (page.plan.entries_read < page_limit
                 && page.plan.returned == page.plan.entries_read);
-        after = page.next;
+        query.after = page.next;
 
         for entry in page.documents {
             visited += 1;

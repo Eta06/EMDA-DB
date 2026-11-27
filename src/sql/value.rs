@@ -211,6 +211,7 @@ impl SqlType {
 pub enum SqlOutcome {
     TableCreated,
     IndexCreated,
+    IndexDropped,
     Inserted {
         rows: usize,
     },
@@ -244,6 +245,8 @@ pub enum SqlError {
     NoSuchTable(String),
     /// Referenced column does not exist on the table.
     NoSuchColumn { table: String, column: String },
+    /// Referenced index does not exist on the table.
+    NoSuchIndex { table: String, index: String },
     /// Table or collection already exists.
     TableExists(String),
     /// Index already exists on the table.
@@ -289,6 +292,9 @@ impl fmt::Display for SqlError {
             Self::NoSuchTable(name) => write!(f, "no such table: {name}"),
             Self::NoSuchColumn { table, column } => {
                 write!(f, "no such column: {table}.{column}")
+            }
+            Self::NoSuchIndex { table, index } => {
+                write!(f, "no such index: {table}.{index}")
             }
             Self::TableExists(name) => write!(f, "table already exists: {name}"),
             Self::IndexExists(name) => write!(f, "index already exists: {name}"),

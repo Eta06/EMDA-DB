@@ -49,12 +49,31 @@ pub(crate) struct ColumnDef {
     pub(crate) not_null: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum IndexState {
+    #[default]
+    Ready,
+    Building,
+    Dropping,
+}
+
+impl IndexState {
+    fn is_ready(&self) -> bool {
+        *self == Self::Ready
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct IndexDef {
     pub(crate) name: String,
     pub(crate) columns: Vec<usize>,
     pub(crate) unique: bool,
+    #[serde(default, skip_serializing_if = "IndexState::is_ready")]
+    pub(crate) state: IndexState,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) is_constraint: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -310,33 +329,78 @@ pub(crate) fn create_table(
     Ok(())
 }
 
-pub(crate) fn create_index(
+pub(crate) fn start_index_build(
     tx: &mut DocumentTransaction<'_, '_>,
     cached: &CachedTable,
     idx: IndexDef,
-    if_not_exists: bool,
 ) -> Result<(), SqlError> {
     let existing = &cached.def;
-    if existing.indexes.iter().any(|i| i.name == idx.name) {
-        if if_not_exists {
-            return Ok(());
-        }
-        return Err(SqlError::IndexExists(idx.name));
-    }
     let mut updated = TableDef::clone(existing);
     let doc_def = updated.to_index_definition(&idx);
     let idx_name = idx.name.clone();
     updated.indexes.push(idx);
     updated.validate()?;
-    tx.create_index(&updated.name, doc_def)
+    tx.start_index_build(&updated.name, doc_def)
         .map_err(|err| map_index_build_error(err, &updated.name, &idx_name))?;
-    let bytes = serde_json::to_vec(&updated).map_err(|err| SqlError::Io(io::Error::other(err)))?;
-    tx.put_raw(&cached.catalog_key, &bytes)
-        .map_err(classify_io_error)?;
-    Ok(())
+    save_table_def(tx, &cached.catalog_key, &updated)
 }
 
-fn map_index_build_error(err: io::Error, table_name: &str, index_name: &str) -> SqlError {
+pub(crate) fn set_index_state(
+    tx: &mut DocumentTransaction<'_, '_>,
+    table_name: &str,
+    index_name: &str,
+    state: IndexState,
+    cache: &TableCache,
+) -> Result<(), SqlError> {
+    let cached = load_table_cached(tx, table_name, cache)?;
+    let mut updated = TableDef::clone(&cached.def);
+    let idx = updated
+        .indexes
+        .iter_mut()
+        .find(|i| i.name == index_name)
+        .ok_or_else(|| SqlError::NoSuchIndex {
+            table: table_name.to_owned(),
+            index: index_name.to_owned(),
+        })?;
+    idx.state = state;
+    updated.validate()?;
+    save_table_def(tx, &cached.catalog_key, &updated)
+}
+
+pub(crate) fn remove_index(
+    tx: &mut DocumentTransaction<'_, '_>,
+    table_name: &str,
+    index_name: &str,
+    cache: &TableCache,
+) -> Result<(), SqlError> {
+    let cached = load_table_cached(tx, table_name, cache)?;
+    let mut updated = TableDef::clone(&cached.def);
+    let prev_len = updated.indexes.len();
+    updated.indexes.retain(|i| i.name != index_name);
+    if updated.indexes.len() == prev_len {
+        return Err(SqlError::NoSuchIndex {
+            table: table_name.to_owned(),
+            index: index_name.to_owned(),
+        });
+    }
+    updated.validate()?;
+    save_table_def(tx, &cached.catalog_key, &updated)
+}
+
+fn save_table_def(
+    tx: &mut DocumentTransaction<'_, '_>,
+    catalog_key: &[u8],
+    def: &TableDef,
+) -> Result<(), SqlError> {
+    let bytes = serde_json::to_vec(def).map_err(|err| SqlError::Io(io::Error::other(err)))?;
+    tx.put_raw(catalog_key, &bytes).map_err(classify_io_error)
+}
+
+pub(crate) fn map_index_build_error(
+    err: io::Error,
+    table_name: &str,
+    index_name: &str,
+) -> SqlError {
     if err.kind() == io::ErrorKind::AlreadyExists {
         if err.to_string().contains("unique") {
             return SqlError::Constraint(format!(
