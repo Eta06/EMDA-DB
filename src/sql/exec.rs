@@ -1343,7 +1343,7 @@ fn exec_insert(
     Ok(SqlOutcome::Inserted { rows: inserted })
 }
 
-fn map_write_constraint_error(err: io::Error, table_name: &str) -> SqlError {
+pub(crate) fn map_write_constraint_error(err: io::Error, table_name: &str) -> SqlError {
     if err.kind() == io::ErrorKind::AlreadyExists {
         if err.to_string().contains("unique") {
             return SqlError::Constraint(format!(
@@ -5602,7 +5602,7 @@ impl<'r> RowRef<'r> {
 
 /// The table's `CHECK` constraints, parsed from their stored text and bound
 /// to its columns. Subqueries are not allowed in a check.
-fn bind_table_checks(
+pub(crate) fn bind_table_checks(
     table: &TableDef,
     limits: &SqlLimits,
 ) -> Result<Arc<Vec<(String, BoundExpr)>>, SqlError> {
@@ -5633,7 +5633,7 @@ fn bind_table_checks(
 
 /// Fails when any check evaluates to FALSE for the row; TRUE and NULL pass,
 /// as in SQL.
-fn enforce_checks(
+pub(crate) fn enforce_checks(
     checks: &[(String, BoundExpr)],
     table: &TableDef,
     obj: &Map<String, Value>,

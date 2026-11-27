@@ -11,6 +11,7 @@ use super::value::{
 use crate::MAX_SCAN_ENTRIES;
 use crate::document::flat::FlatScalar;
 use crate::document::{DocumentTransaction, IndexQuery, IndexValue, StoredDocument};
+use crate::sql::catalog::ForeignKeyAction;
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -111,6 +112,12 @@ pub(crate) fn prepare_create_table_foreign_keys(
 
     for spec in specs {
         let child_col = &child_columns[spec.column];
+        if spec.on_delete == ForeignKeyAction::SetNull && child_col.not_null {
+            return Err(SqlError::Constraint(format!(
+                "ON DELETE SET NULL is not allowed on NOT NULL column '{child_name}.{}'",
+                child_col.name
+            )));
+        }
         if spec.ref_table == child_name {
             let ref_col_idx = match &spec.ref_column {
                 Some(name) => child_columns
@@ -440,9 +447,12 @@ impl PendingDeleteFkChecks {
         Ok(())
     }
 
+    /// Applies each child's `ON DELETE` action for the deleted parent keys,
+    /// then checks `NO ACTION`/`RESTRICT` references. Runs inside the
+    /// statement's transaction after the parent rows are deleted.
     pub(crate) fn verify(
         self,
-        tx: &DocumentTransaction<'_, '_>,
+        tx: &mut DocumentTransaction<'_, '_>,
         table: &TableDef,
         limits: &SqlLimits,
         cache: &TableCache,
@@ -450,31 +460,247 @@ impl PendingDeleteFkChecks {
         if self.deleted_by_col.is_empty() {
             return Ok(());
         }
-        let mut child_cache: HashMap<String, Arc<CachedTable>> = HashMap::new();
-        let mut visited = 0usize;
-        for (ref_col_idx, keys) in &self.deleted_by_col {
-            if keys.is_empty() {
+        let mut budget = CascadeBudget::default();
+        apply_delete_actions(
+            tx,
+            table,
+            self.deleted_by_col,
+            limits,
+            cache,
+            &mut budget,
+            0,
+        )
+    }
+}
+
+/// Nested cascades beyond this depth fail instead of continuing.
+pub(crate) const MAX_FK_CASCADE_DEPTH: usize = 16;
+
+#[derive(Default)]
+struct CascadeBudget {
+    /// Rows read while looking for child rows, against `max_visited_rows`.
+    visited: usize,
+    /// Child rows deleted or changed by actions, against `max_mutation_rows`.
+    changed: usize,
+}
+
+fn load_child(
+    tx: &DocumentTransaction<'_, '_>,
+    fk_ref: &ForeignKeyRef,
+    cache: &TableCache,
+) -> Result<(Arc<CachedTable>, usize), SqlError> {
+    let child = catalog::load_table_cached(tx, &fk_ref.child_table, cache)?;
+    let idx = child
+        .def
+        .column_index(&fk_ref.child_column)
+        .ok_or_else(|| {
+            SqlError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "foreign key child column '{}.{}' missing from catalog",
+                    fk_ref.child_table, fk_ref.child_column
+                ),
+            ))
+        })?;
+    Ok((child, idx))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_delete_actions(
+    tx: &mut DocumentTransaction<'_, '_>,
+    parent: &TableDef,
+    removed_by_col: Vec<(usize, FkKeySet)>,
+    limits: &SqlLimits,
+    cache: &TableCache,
+    budget: &mut CascadeBudget,
+    depth: usize,
+) -> Result<(), SqlError> {
+    for (ref_col_idx, keys) in &removed_by_col {
+        if keys.is_empty() {
+            continue;
+        }
+        let ref_col_name = parent.columns[*ref_col_idx].name.clone();
+        for fk_ref in &parent.referenced_by {
+            if fk_ref.ref_column != ref_col_name {
                 continue;
             }
-            let ref_col_name = &table.columns[*ref_col_idx].name;
-            for fk_ref in &table.referenced_by {
-                if fk_ref.ref_column != *ref_col_name {
-                    continue;
+            let (child, child_col_idx) = load_child(tx, fk_ref, cache)?;
+            let child_def = &child.def;
+            let action = child_def
+                .foreign_keys
+                .iter()
+                .find(|fk| {
+                    fk.column == child_col_idx
+                        && fk.ref_table == parent.name
+                        && fk.ref_column == ref_col_name
+                })
+                .map_or(ForeignKeyAction::NoAction, |fk| fk.on_delete);
+            match action {
+                ForeignKeyAction::NoAction | ForeignKeyAction::Restrict => {
+                    if child_has_any_key(
+                        tx,
+                        child_def,
+                        child_col_idx,
+                        keys,
+                        limits,
+                        &mut budget.visited,
+                    )? {
+                        return Err(SqlError::Constraint(format!(
+                            "FOREIGN KEY constraint failed: '{}.{}' is referenced by '{}.{}'",
+                            parent.name, ref_col_name, child_def.name, fk_ref.child_column
+                        )));
+                    }
                 }
-                ensure_no_child_references(
-                    tx,
-                    table,
-                    ref_col_name,
-                    fk_ref,
-                    keys,
-                    limits,
-                    cache,
-                    &mut child_cache,
-                    &mut visited,
-                )?;
+                ForeignKeyAction::Cascade | ForeignKeyAction::SetNull => {
+                    if depth >= MAX_FK_CASCADE_DEPTH {
+                        return Err(SqlError::Bounds(format!(
+                            "foreign key actions nest deeper than {MAX_FK_CASCADE_DEPTH} levels"
+                        )));
+                    }
+                    let rows =
+                        collect_child_rows(tx, child_def, child_col_idx, keys, limits, budget)?;
+                    if rows.is_empty() {
+                        continue;
+                    }
+                    budget.changed += rows.len();
+                    if budget.changed > limits.max_mutation_rows {
+                        return Err(SqlError::Bounds(format!(
+                            "foreign key actions change more than max_mutation_rows ({}) rows",
+                            limits.max_mutation_rows
+                        )));
+                    }
+                    let mut removed = PendingDeleteFkChecks::new(child_def)?;
+                    if action == ForeignKeyAction::Cascade {
+                        for (doc_id, obj) in &rows {
+                            tx.delete(&child_def.name, doc_id)
+                                .map_err(classify_io_error)?;
+                            removed.record_row(child_def, obj)?;
+                        }
+                    } else {
+                        let checks = super::exec::bind_table_checks(child_def, limits)?;
+                        let column = &child_def.columns[child_col_idx];
+                        // Only the cleared column's keys disappear from the child.
+                        removed
+                            .deleted_by_col
+                            .retain(|(idx, _)| *idx == child_col_idx);
+                        for (doc_id, mut obj) in rows {
+                            removed.record_row(child_def, &obj)?;
+                            obj.remove(&column.name);
+                            super::exec::enforce_checks(&checks, child_def, &obj)?;
+                            tx.replace(&child_def.name, &doc_id, &Value::Object(obj), false)
+                                .map_err(|error| {
+                                    super::exec::map_write_constraint_error(error, &child_def.name)
+                                })?;
+                        }
+                    }
+                    let child_def = child_def.clone();
+                    apply_delete_actions(
+                        tx,
+                        &child_def,
+                        removed.deleted_by_col,
+                        limits,
+                        cache,
+                        budget,
+                        depth + 1,
+                    )?;
+                }
             }
         }
-        Ok(())
+    }
+    Ok(())
+}
+
+/// A child row's document ID and stored object.
+type ChildRow = (String, Map<String, Value>);
+
+/// Child rows whose column holds one of `keys`, with their document IDs,
+/// found through the child's primary key, a usable index, or a bounded scan.
+fn collect_child_rows(
+    tx: &DocumentTransaction<'_, '_>,
+    child: &TableDef,
+    child_col_idx: usize,
+    keys: &FkKeySet,
+    limits: &SqlLimits,
+    budget: &mut CascadeBudget,
+) -> Result<Vec<ChildRow>, SqlError> {
+    let mut rows = Vec::new();
+    let mut take =
+        |doc_id: String, doc: Value, budget: &mut CascadeBudget| -> Result<(), SqlError> {
+            budget.visited += 1;
+            if budget.visited > limits.max_visited_rows {
+                return Err(SqlError::Bounds(format!(
+                    "visited row count exceeds max_visited_rows ({})",
+                    limits.max_visited_rows
+                )));
+            }
+            let Value::Object(obj) = doc else {
+                return Err(SqlError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "stored row is not a JSON object",
+                )));
+            };
+            if rows.len() >= limits.max_mutation_rows {
+                return Err(SqlError::Bounds(format!(
+                    "foreign key actions change more than max_mutation_rows ({}) rows",
+                    limits.max_mutation_rows
+                )));
+            }
+            rows.push((doc_id, obj));
+            Ok(())
+        };
+    let column = &child.columns[child_col_idx];
+    if child_col_idx == child.primary_key_index {
+        for key in keys.to_vec() {
+            let doc_id = match (column.col_type, &key) {
+                (SqlType::Integer, FkKey::Integer(n)) => {
+                    let mut buf = [0u8; 18];
+                    encode_i64_pk_bytes(*n, &mut buf);
+                    std::str::from_utf8(&buf).expect("ASCII hex PK").to_owned()
+                }
+                (SqlType::Text { .. }, FkKey::Text(s)) if s.len() <= MAX_SQL_TEXT_PK_BYTES => {
+                    format!("t:{s}")
+                }
+                _ => continue,
+            };
+            if let Some(doc) = tx.get(&child.name, &doc_id).map_err(classify_io_error)? {
+                take(doc_id, doc, budget)?;
+            }
+        }
+        return Ok(rows);
+    }
+    // Every matching row is needed, so read the whole table in bounded pages;
+    // each row's column is compared with the keys.
+    let mut after: Option<String> = None;
+    loop {
+        let page = tx
+            .scan_documents(&child.name, after.as_deref(), MAX_SCAN_ENTRIES)
+            .map_err(classify_io_error)?;
+        let Some(last) = page.last() else {
+            return Ok(rows);
+        };
+        after = Some(last.id.clone());
+        for entry in page {
+            let matches = match entry.document.get(&column.name) {
+                None | Some(Value::Null) => false,
+                Some(value) => match (keys, value) {
+                    (FkKeySet::Integer(set), v) => v.as_i64().is_some_and(|n| set.contains(&n)),
+                    (FkKeySet::Text(set), Value::String(s)) => set.contains(s.as_str()),
+                    (FkKeySet::Boolean(set), Value::Bool(b)) => set.contains(b),
+                    _ => false,
+                },
+            };
+            if matches {
+                take(entry.id, entry.document, budget)?;
+            } else {
+                budget.visited += 1;
+                if budget.visited > limits.max_visited_rows {
+                    return Err(SqlError::Bounds(format!(
+                        "visited row count exceeds max_visited_rows ({})",
+                        limits.max_visited_rows
+                    )));
+                }
+            }
+        }
     }
 }
 

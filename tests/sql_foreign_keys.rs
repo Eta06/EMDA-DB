@@ -215,8 +215,6 @@ fn ddl_syntax_target_validation_and_errors() {
 
         // Unsupported FK clauses -> Unsupported.
         for sql in [
-            "CREATE TABLE u1 (id INT PRIMARY KEY, p INT REFERENCES parents(id) ON DELETE CASCADE)",
-            "CREATE TABLE u2 (id INT PRIMARY KEY, p INT REFERENCES parents(id) ON DELETE SET NULL)",
             "CREATE TABLE u3 (id INT PRIMARY KEY, p INT REFERENCES parents(id) ON DELETE SET DEFAULT)",
             "CREATE TABLE u4 (id INT PRIMARY KEY, p INT REFERENCES parents(id) ON UPDATE CASCADE)",
             "CREATE TABLE u5 (id INT PRIMARY KEY, p INT REFERENCES parents(id) ON UPDATE SET NULL)",

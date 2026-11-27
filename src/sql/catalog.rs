@@ -88,6 +88,10 @@ pub(crate) enum ForeignKeyAction {
     #[default]
     NoAction,
     Restrict,
+    /// `ON DELETE CASCADE`: deleting a parent row deletes its child rows.
+    Cascade,
+    /// `ON DELETE SET NULL`: deleting a parent row sets the child column to NULL.
+    SetNull,
 }
 
 impl ForeignKeyAction {

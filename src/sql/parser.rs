@@ -1248,16 +1248,22 @@ impl Parser<'_> {
                 } else if self.eat_kw("restrict") {
                     ForeignKeyAction::Restrict
                 } else if self.eat_kw("cascade") {
-                    return Err(SqlError::Unsupported {
-                        feature: format!("FOREIGN KEY ON {clause} CASCADE"),
-                        offset: Some(action_offset),
-                    });
-                } else if self.eat_kw("set") {
-                    if self.eat_kw("null") {
+                    if !is_delete {
                         return Err(SqlError::Unsupported {
-                            feature: format!("FOREIGN KEY ON {clause} SET NULL"),
+                            feature: format!("FOREIGN KEY ON {clause} CASCADE"),
                             offset: Some(action_offset),
                         });
+                    }
+                    ForeignKeyAction::Cascade
+                } else if self.eat_kw("set") {
+                    if self.eat_kw("null") {
+                        if !is_delete {
+                            return Err(SqlError::Unsupported {
+                                feature: format!("FOREIGN KEY ON {clause} SET NULL"),
+                                offset: Some(action_offset),
+                            });
+                        }
+                        ForeignKeyAction::SetNull
                     } else if self.eat_kw("default") {
                         return Err(SqlError::Unsupported {
                             feature: format!("FOREIGN KEY ON {clause} SET DEFAULT"),

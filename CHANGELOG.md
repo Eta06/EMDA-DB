@@ -4,6 +4,14 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add `ON DELETE CASCADE` and `ON DELETE SET NULL` to SQL foreign keys.
+  A parent `DELETE` deletes or clears child rows in the same transaction,
+  recursively and at most 16 levels deep, within `max_mutation_rows` and
+  `max_visited_rows`; any `NO ACTION` or `RESTRICT` reference left behind
+  still fails and undoes the statement. `SET NULL` checks the child's
+  `CHECK` constraints and is refused on `NOT NULL` columns. Tests cover both
+  backends, multi-level and self-referencing cascades, bounds, and 600
+  random statements compared with SQLite.
 - Add SQL `CHECK` constraints, column- and table-level, over the table's
   own columns without parameters or subqueries. `INSERT` and `UPDATE` fail
   with a constraint error when a check is `FALSE`; `NULL` passes. Checks are

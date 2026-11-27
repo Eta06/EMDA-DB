@@ -68,8 +68,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   - `INNER` and `LEFT JOIN` of up to eight tables, using key, index or hash
     access.
   - Aggregates, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT` and `OFFSET`.
-  - Single-column foreign keys with `NO ACTION`/`RESTRICT`, up to 64 per
-    table, always enforced.
+  - Single-column foreign keys with `NO ACTION`/`RESTRICT` and
+    `ON DELETE CASCADE`/`SET NULL`, up to 64 per table, always enforced.
   - Uncorrelated `[NOT] IN`, `[NOT] EXISTS` and scalar subqueries, nested
     up to four deep, materializing at most 32,768 values by default.
   - Serializable multi-statement transactions of up to 1,024 staged keys
@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Being built now
 
 - **SQL.** `RIGHT`/`FULL` joins, aggregates over joins, correlated
-  subqueries, composite and cascading foreign keys, more
+  subqueries, composite foreign keys, `ON UPDATE` actions, more
   `ALTER TABLE` actions, and faster scans, aggregates and indexed reads.
 - **Service and operations.** A network API with authentication, project
   isolation and quotas, safe scale-to-zero, replication and failover.
