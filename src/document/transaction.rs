@@ -810,6 +810,27 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         self.write(&key::collection(b'M', collection)?, &bytes)
     }
 
+    // SQL owns these collections. Its bounded migration changes the schema,
+    // affected rows and SQL catalog in the same storage transaction.
+    pub(crate) fn replace_schema_for_sql_migration(
+        &mut self,
+        collection: &str,
+        schema: CollectionSchema,
+    ) -> io::Result<()> {
+        self.mutate(|this| {
+            schema.validate_definition()?;
+            let metadata = this.metadata(collection)?;
+            if metadata.schema_job.is_some() || !metadata.jobs.is_empty() {
+                return Err(io::Error::other("collection already has a maintenance job"));
+            }
+            let metadata = Metadata {
+                schema,
+                ..metadata.as_ref().clone()
+            };
+            this.save_metadata(collection, &metadata)
+        })
+    }
+
     /// Creates a collection and schema. Collection names are case-sensitive.
     pub fn create_collection(
         &mut self,

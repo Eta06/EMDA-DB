@@ -230,7 +230,7 @@ impl CollectionSchema {
         Ok(())
     }
 
-    pub(super) fn validate_document(&self, document: &Value) -> io::Result<()> {
+    pub(crate) fn validate_document(&self, document: &Value) -> io::Result<()> {
         let Some(root) = document.as_object() else {
             return Err(key::invalid("document must be a JSON object"));
         };

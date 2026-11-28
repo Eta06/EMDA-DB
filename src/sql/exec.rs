@@ -149,9 +149,6 @@ pub(crate) fn execute_statement(
         Statement::Explain(inner) => {
             return run_tx(db, |tx| explain(tx, inner, params, limits, cache));
         }
-        Statement::AddColumn(add) => {
-            return super::ddl::execute_add_column(db, add, limits, cache);
-        }
         _ => {}
     }
 
@@ -214,7 +211,7 @@ fn execute_statement_in_validated_tx(
             feature: "DROP TABLE inside an explicit transaction (a large table is dropped in several transactions)".into(),
             offset: None,
         }),
-        Statement::AddColumn(add) => super::ddl::add_column_in_tx(tx, add, limits, cache),
+        Statement::AlterTable(alter) => super::ddl::alter_in_tx(tx, alter, limits, cache),
         Statement::Explain(inner) => explain(tx, inner, params, limits, cache),
         Statement::Join(join) => super::join::execute_in_tx(tx, join, params, limits, cache),
         Statement::Insert(insert) => exec_insert(tx, stmt.stmt_id, insert, params, limits, cache),
@@ -5734,7 +5731,7 @@ fn doc_into_object(doc: Value) -> Result<Map<String, Value>, SqlError> {
     }
 }
 
-fn verify_doc_pk_id(
+pub(super) fn verify_doc_pk_id(
     table: &TableDef,
     doc_id: &str,
     obj: &Map<String, Value>,

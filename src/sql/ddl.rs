@@ -1,4 +1,4 @@
-//! `DROP TABLE [IF EXISTS] name` and `ALTER TABLE name ADD [COLUMN] ...`.
+//! `DROP TABLE [IF EXISTS] name` and bounded column migrations.
 //!
 //! A table small enough for one maintenance transaction is dropped
 //! atomically: its catalog entry, rows and indexes disappear together. A
@@ -12,7 +12,8 @@ use super::exec::{self, SqlCache};
 use super::foreign_key;
 use super::lexer::{Token, TokenKind};
 use super::value::{SqlError, SqlLimits, SqlOutcome, SqlType};
-use crate::document::DocumentDatabase;
+use crate::document::{DocumentDatabase, DocumentTransaction};
+use serde_json::Value;
 use std::io;
 
 /// Keys removed per incremental step; the document layer's maximum.
@@ -184,11 +185,20 @@ pub(crate) fn execute(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AddColumn {
+pub(crate) struct AlterTable {
     table: String,
     column: String,
-    column_type: SqlType,
-    not_null: bool,
+    action: ColumnAction,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ColumnAction {
+    Add {
+        column_type: SqlType,
+        not_null: bool,
+    },
+    Drop,
+    Rename(String),
 }
 
 /// Whether a tokenized statement starts with `ALTER TABLE`.
@@ -201,11 +211,11 @@ pub(crate) fn is_alter_table(tokens: &[Token]) -> bool {
     keyword(0, "alter") && keyword(1, "table")
 }
 
-/// Parses `ALTER TABLE name ADD [COLUMN] column type [NOT NULL]`.
+/// Parses one column migration.
 pub(crate) fn parse_alter_table(
     tokens: &[Token],
     limits: &SqlLimits,
-) -> Result<AddColumn, SqlError> {
+) -> Result<AlterTable, SqlError> {
     let kw = |pos: usize, word: &str| matches!(&at(tokens, pos).kind, TokenKind::Ident { text, quoted: false } if text == word);
     let syntax = |pos: usize, message: &str| SqlError::Syntax {
         offset: at(tokens, pos).offset,
@@ -222,6 +232,31 @@ pub(crate) fn parse_alter_table(
     let mut pos = 2;
     let table = ident(pos, "table name")?;
     pos += 1;
+    if kw(pos, "drop") && kw(pos + 1, "constraint") {
+        return Err(unsupported(pos, "ALTER TABLE ... DROP CONSTRAINT"));
+    }
+    if kw(pos, "drop") || (kw(pos, "rename") && kw(pos + 1, "column")) {
+        let rename = kw(pos, "rename");
+        pos += 1 + usize::from(kw(pos + 1, "column"));
+        let column = ident(pos, "column name")?;
+        pos += 1;
+        let action = if rename {
+            if !kw(pos, "to") {
+                return Err(syntax(pos, "expected TO"));
+            }
+            let name = ident(pos + 1, "new column name")?;
+            pos += 2;
+            ColumnAction::Rename(name)
+        } else {
+            ColumnAction::Drop
+        };
+        finish_alter(tokens, pos)?;
+        return Ok(AlterTable {
+            table,
+            column,
+            action,
+        });
+    }
     if !kw(pos, "add") {
         return Err(match &at(tokens, pos).kind {
             TokenKind::Ident {
@@ -231,7 +266,7 @@ pub(crate) fn parse_alter_table(
                 pos,
                 &format!("ALTER TABLE ... {}", text.to_ascii_uppercase()),
             ),
-            _ => syntax(pos, "expected ADD"),
+            _ => syntax(pos, "expected ADD, DROP, or RENAME COLUMN"),
         });
     }
     pos += 1;
@@ -312,50 +347,50 @@ pub(crate) fn parse_alter_table(
             break;
         }
     }
+    finish_alter(tokens, pos)?;
+    Ok(AlterTable {
+        table,
+        column,
+        action: ColumnAction::Add {
+            column_type,
+            not_null,
+        },
+    })
+}
+
+fn finish_alter(tokens: &[Token], mut pos: usize) -> Result<(), SqlError> {
     if matches!(at(tokens, pos).kind, TokenKind::Comma) {
-        return Err(unsupported(
-            pos,
-            "several ALTER TABLE actions in one statement",
-        ));
+        return Err(SqlError::Unsupported {
+            feature: "several ALTER TABLE actions in one statement".into(),
+            offset: Some(at(tokens, pos).offset),
+        });
     }
     if matches!(at(tokens, pos).kind, TokenKind::Semicolon) {
         pos += 1;
     }
     if !matches!(at(tokens, pos).kind, TokenKind::Eof) {
-        return Err(syntax(
-            pos,
-            "multiple statements or trailing tokens are not supported",
-        ));
+        return Err(SqlError::Syntax {
+            offset: at(tokens, pos).offset,
+            message: "multiple statements or trailing tokens are not supported".into(),
+        });
     }
-    Ok(AddColumn {
-        table,
-        column,
+    Ok(())
+}
+
+/// Applies one column migration inside the caller's transaction.
+pub(crate) fn alter_in_tx(
+    tx: &mut DocumentTransaction<'_, '_>,
+    statement: &AlterTable,
+    limits: &SqlLimits,
+    cache: &SqlCache,
+) -> Result<SqlOutcome, SqlError> {
+    let table = catalog::load_table_cached(tx, &statement.table, cache.tables())?;
+    let mut updated = catalog::TableDef::clone(&table.def);
+    if let ColumnAction::Add {
         column_type,
         not_null,
-    })
-}
-
-/// Adds a column to the catalog in one transaction. Existing rows have no
-/// value for it, which reads as NULL, so rows are not rewritten. A NOT NULL
-/// column can therefore only be added to an empty table.
-pub(crate) fn execute_add_column(
-    db: &DocumentDatabase<'_>,
-    statement: &AddColumn,
-    limits: &SqlLimits,
-    cache: &SqlCache,
-) -> Result<SqlOutcome, SqlError> {
-    exec::run_tx(db, |tx| add_column_in_tx(tx, statement, limits, cache))
-}
-
-/// Adds the column inside the caller's transaction.
-pub(crate) fn add_column_in_tx(
-    tx: &mut crate::document::DocumentTransaction<'_, '_>,
-    statement: &AddColumn,
-    limits: &SqlLimits,
-    cache: &SqlCache,
-) -> Result<SqlOutcome, SqlError> {
+    } = statement.action
     {
-        let table = catalog::load_table_cached(tx, &statement.table, cache.tables())?;
         if table.def.column_index(&statement.column).is_some() {
             return Err(SqlError::Syntax {
                 offset: 0,
@@ -371,7 +406,7 @@ pub(crate) fn add_column_in_tx(
                 statement.table, limits.max_columns
             )));
         }
-        if statement.not_null
+        if not_null
             && !tx
                 .scan_documents(&statement.table, None, 1)
                 .map_err(exec::classify_io_error)?
@@ -382,15 +417,153 @@ pub(crate) fn add_column_in_tx(
                 statement.column, statement.table
             )));
         }
-        let mut updated = catalog::TableDef::clone(&table.def);
         updated.columns.push(ColumnDef {
             name: statement.column.clone(),
-            col_type: statement.column_type,
-            not_null: statement.not_null,
+            col_type: column_type,
+            not_null,
             default: None,
         });
+    } else {
+        let rename = match &statement.action {
+            ColumnAction::Rename(name) => Some(name.as_str()),
+            _ => None,
+        };
+        let column = &statement.column;
+        let index = updated
+            .column_index(column)
+            .ok_or_else(|| SqlError::NoSuchColumn {
+                table: updated.name.clone(),
+                column: column.clone(),
+            })?;
+        if index == updated.primary_key_index
+            || updated
+                .indexes
+                .iter()
+                .any(|def| def.columns.contains(&index))
+            || updated.foreign_keys.iter().any(|def| def.column == index)
+            || updated
+                .referenced_by
+                .iter()
+                .any(|reference| reference.ref_column == *column)
+        {
+            return Err(SqlError::Constraint(format!(
+                "cannot alter column '{}.{column}' because a key or index depends on it",
+                updated.name
+            )));
+        }
+        if let Some(name) = rename {
+            if updated.column_index(name).is_some() {
+                return Err(SqlError::Constraint(format!(
+                    "column '{name}' already exists in table '{}'",
+                    updated.name
+                )));
+            }
+            updated.columns[index].name = name.to_owned();
+        } else {
+            updated.columns.remove(index);
+            let shift = |stored: &mut usize| *stored -= usize::from(*stored > index);
+            shift(&mut updated.primary_key_index);
+            for def in &mut updated.indexes {
+                def.columns.iter_mut().for_each(shift);
+            }
+            for def in &mut updated.foreign_keys {
+                shift(&mut def.column);
+            }
+        }
+        if let Err(error) = exec::bind_table_checks(&updated, limits) {
+            return Err(match error {
+                SqlError::NoSuchColumn { .. } => SqlError::Constraint(format!(
+                    "cannot alter column '{}.{column}' because a CHECK depends on it",
+                    updated.name
+                )),
+                other => other,
+            });
+        }
         updated.validate()?;
-        catalog::save_table_def(tx, &table.catalog_key, &updated)?;
-        Ok(SqlOutcome::TableAltered)
+        rewrite_column(tx, &table.def, &updated, index, rename, limits)?;
     }
+    updated.validate()?;
+    catalog::save_table_def(tx, &table.catalog_key, &updated)?;
+    Ok(SqlOutcome::TableAltered)
+}
+
+fn rewrite_column(
+    tx: &mut DocumentTransaction<'_, '_>,
+    old: &catalog::TableDef,
+    updated: &catalog::TableDef,
+    index: usize,
+    rename: Option<&str>,
+    limits: &SqlLimits,
+) -> Result<(), SqlError> {
+    let column = &old.columns[index];
+    let final_schema = updated.to_collection_schema();
+    let mut schema = final_schema.clone();
+    if let Some(name) = rename {
+        schema.fields.retain(|rule| rule.path[0] != name);
+    }
+    // Both row shapes can be read while the change is being staged. The
+    // document schema and SQL catalog commit atomically with the row changes.
+    tx.replace_schema_for_sql_migration(&old.name, schema)
+        .map_err(exec::classify_io_error)?;
+    let (mut changed, mut visited, mut after) = (0, 0, None);
+    loop {
+        let page_size = (limits.max_visited_rows - visited + 1).min(128);
+        let page = tx
+            .scan_documents(&old.name, after.as_deref(), page_size)
+            .map_err(exec::classify_io_error)?;
+        let Some(last) = page.last() else { break };
+        after = Some(last.id.clone());
+        visited += page.len();
+        if visited > limits.max_visited_rows {
+            return Err(SqlError::Bounds(
+                "column migration exceeds max_visited_rows".into(),
+            ));
+        }
+        for entry in page {
+            let Value::Object(mut obj) = entry.document else {
+                return Err(SqlError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "stored row is not an object",
+                )));
+            };
+            exec::verify_doc_pk_id(old, &entry.id, &obj)?;
+            if rename.is_some_and(|name| obj.contains_key(name)) {
+                return Err(SqlError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "stored row already contains the new column",
+                )));
+            }
+            let Some(value) = obj.remove(&column.name) else {
+                if column.not_null {
+                    return Err(SqlError::Io(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "stored row is missing a required column",
+                    )));
+                }
+                continue;
+            };
+            if let Some(name) = rename {
+                obj.insert(name.to_owned(), value);
+            }
+            changed += 1;
+            if changed > limits.max_mutation_rows {
+                return Err(SqlError::Bounds(
+                    "column migration exceeds max_mutation_rows".into(),
+                ));
+            }
+            let document = Value::Object(obj);
+            if rename.is_some() {
+                final_schema
+                    .validate_document(&document)
+                    .map_err(exec::classify_io_error)?;
+            }
+            tx.replace(&old.name, &entry.id, &document, false)
+                .map_err(|error| exec::map_write_constraint_error(error, &old.name))?;
+        }
+    }
+    if rename.is_some() {
+        tx.replace_schema_for_sql_migration(&old.name, final_schema)
+            .map_err(exec::classify_io_error)?;
+    }
+    Ok(())
 }

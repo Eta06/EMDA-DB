@@ -310,7 +310,6 @@ fn add_column_rules_and_errors() {
             Err(SqlError::NoSuchTable(_))
         ));
         for statement in [
-            "ALTER TABLE filled DROP COLUMN id",
             "ALTER TABLE filled RENAME TO other",
             "ALTER TABLE filled ADD CONSTRAINT u UNIQUE (id)",
             "ALTER TABLE filled ADD COLUMN c INTEGER UNIQUE",
@@ -359,6 +358,78 @@ fn add_column_rules_and_errors() {
         assert!(matches!(
             db.execute("ALTER TABLE wide ADD COLUMN c64 INTEGER", &[]),
             Err(SqlError::Bounds(_))
+        ));
+    });
+}
+
+#[test]
+fn drop_and_rename_columns_are_atomic_and_preserve_other_indexes() {
+    for_both(|db, backend| {
+        let sqlite = rusqlite::Connection::open_in_memory().unwrap();
+        for sql in [
+            "CREATE TABLE parent (id INTEGER PRIMARY KEY)",
+            "INSERT INTO parent VALUES (10)",
+            "CREATE TABLE t (a TEXT NOT NULL DEFAULT 'a', id INTEGER PRIMARY KEY, keep INTEGER REFERENCES parent(id), b INTEGER, chk INTEGER CHECK (chk > 0))",
+            "CREATE INDEX t_keep ON t (keep)",
+            "INSERT INTO t VALUES ('one', 1, 10, NULL, 1), ('two', 2, 10, 20, 2)",
+        ] {
+            db.execute(sql, &[]).unwrap();
+            sqlite.execute(sql, []).unwrap();
+        }
+        for sql in [
+            "ALTER TABLE t DROP COLUMN id",
+            "ALTER TABLE t RENAME COLUMN keep TO replacement",
+            "ALTER TABLE t DROP COLUMN chk",
+            "ALTER TABLE t RENAME COLUMN a TO id",
+        ] {
+            assert!(
+                matches!(db.execute(sql, &[]), Err(SqlError::Constraint(_))),
+                "{backend}: {sql}"
+            );
+        }
+        let cached = db.prepare("SELECT a FROM t WHERE id = 1").unwrap();
+        db.execute_prepared(&cached, &[]).unwrap();
+        let aborted: Result<(), SqlError> = db.transaction(|tx| {
+            tx.execute("ALTER TABLE t RENAME COLUMN a TO transient", &[])?;
+            tx.execute("SELECT transient FROM t WHERE id = 1", &[])?;
+            Err(SqlError::Constraint("rollback migration".into()))
+        });
+        assert!(matches!(aborted, Err(SqlError::Constraint(ref s)) if s == "rollback migration"));
+        db.execute_prepared(&cached, &[]).unwrap();
+        for sql in [
+            "ALTER TABLE t RENAME COLUMN a TO label",
+            "ALTER TABLE t DROP COLUMN b",
+            "ALTER TABLE t ADD COLUMN b INTEGER",
+            "INSERT INTO t (id, keep, chk) VALUES (3, 10, 3)",
+        ] {
+            db.execute(sql, &[]).unwrap();
+            sqlite.execute(sql, []).unwrap();
+        }
+        assert!(matches!(
+            db.execute_prepared(&cached, &[]),
+            Err(SqlError::NoSuchColumn { .. })
+        ));
+        let sql = "SELECT id, label, b FROM t WHERE keep = 10 ORDER BY id";
+        let SqlOutcome::Rows { rows, .. } = db.execute(sql, &[]).unwrap() else {
+            panic!()
+        };
+        let mut statement = sqlite.prepare(sql).unwrap();
+        let expected = statement
+            .query_map([], |row| {
+                Ok(vec![
+                    SqlValue::Integer(row.get(0)?),
+                    SqlValue::Text(row.get(1)?),
+                    row.get::<_, Option<i64>>(2)?
+                        .map_or(SqlValue::Null, SqlValue::Integer),
+                ])
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(rows, expected, "{backend}");
+        assert!(matches!(
+            db.execute("INSERT INTO t (id, keep) VALUES (4, 404)", &[]),
+            Err(SqlError::Constraint(_))
         ));
     });
 }

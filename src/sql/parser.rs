@@ -42,7 +42,7 @@ pub(crate) enum Statement {
     Delete(DeleteStmt),
     Join(Box<super::join::JoinSelect>),
     DropTable(super::ddl::DropTable),
-    AddColumn(super::ddl::AddColumn),
+    AlterTable(super::ddl::AlterTable),
     Explain(Box<SqlStatement>),
 }
 
@@ -437,7 +437,7 @@ pub(crate) fn parse_statement(sql: &str, limits: &SqlLimits) -> Result<SqlStatem
     }
     if super::ddl::is_alter_table(&tokens) {
         return Ok(SqlStatement {
-            inner: Statement::AddColumn(super::ddl::parse_alter_table(&tokens, limits)?),
+            inner: Statement::AlterTable(super::ddl::parse_alter_table(&tokens, limits)?),
             param_count: 0,
             stmt_id: NEXT_STMT_ID.fetch_add(1, Ordering::Relaxed),
         });
