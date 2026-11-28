@@ -34,9 +34,9 @@ fn text(s: &str) -> SqlValue {
 
 const CREATE: &str = "CREATE TABLE t (
     id INTEGER PRIMARY KEY,
-    n INTEGER NOT NULL DEFAULT -7,
-    r REAL DEFAULT 2,
-    s VARCHAR(5) DEFAULT 'abc',
+    n INTEGER NOT NULL DEFAULT (2 + (3 * -3)),
+    r REAL DEFAULT (8.0 / 4),
+    s VARCHAR(5) DEFAULT ('a' || 'b' || 'c'),
     b BOOLEAN NOT NULL DEFAULT TRUE,
     z TEXT DEFAULT NULL,
     plain INTEGER
@@ -164,8 +164,20 @@ fn invalid_defaults_are_rejected_at_create_table() {
                 "unsupported",
             ),
             (
-                "CREATE TABLE a (id INTEGER PRIMARY KEY, v INTEGER DEFAULT (1 + 1))",
+                "CREATE TABLE a (id INTEGER PRIMARY KEY, v INTEGER DEFAULT (other + 1))",
                 "unsupported",
+            ),
+            (
+                "CREATE TABLE a (id INTEGER PRIMARY KEY, v INTEGER DEFAULT (1 / 0))",
+                "constraint",
+            ),
+            (
+                "CREATE TABLE a (id INTEGER PRIMARY KEY, v INTEGER DEFAULT (9223372036854775807 + 1))",
+                "bounds",
+            ),
+            (
+                "CREATE TABLE a (id INTEGER PRIMARY KEY, v INTEGER DEFAULT (1.5 % 2))",
+                "type",
             ),
             (
                 "CREATE TABLE a (id INTEGER PRIMARY KEY, v TEXT DEFAULT CURRENT_TIMESTAMP)",
@@ -180,6 +192,7 @@ fn invalid_defaults_are_rejected_at_create_table() {
             let ok = match expect {
                 "type" => matches!(error, SqlError::Type(_)),
                 "constraint" => matches!(error, SqlError::Constraint(_)),
+                "bounds" => matches!(error, SqlError::Bounds(_)),
                 "unsupported" => matches!(error, SqlError::Unsupported { .. }),
                 "syntax" => matches!(error, SqlError::Syntax { .. }),
                 _ => true,

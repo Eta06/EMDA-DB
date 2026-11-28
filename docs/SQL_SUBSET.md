@@ -165,7 +165,7 @@ Notes on specific constructs:
 - `LIMIT` and `OFFSET` values must be non-negative `INTEGER` literals or `?` parameters (`SqlError::Bounds` for negative `INTEGER` values; `SqlError::Type` for `NULL`, `REAL`, `TEXT`, or `BOOLEAN`; `SqlError::Syntax` for out-of-`i64`-range integer literals).
 - Aggregate and grouping queries follow standard SQL / PostgreSQL strictness: in any query with `GROUP BY`, `HAVING`, or an aggregate call in `SELECT` or `ORDER BY`, every non-aggregated column in `SELECT`, `HAVING`, or `ORDER BY` must appear in `GROUP BY` (rejected as `SqlError::Syntax`, with no SQLite-style "bare column" leniency). `HAVING` may reference grouping columns and aggregates only (not `SELECT` aliases); `ORDER BY` may reference grouping columns, select-item aliases (`AS alias`), or aggregate expressions (`COUNT(*)`, `SUM(col)`, etc.). Arithmetic expressions, nested aggregates, aggregates in `WHERE` or `GROUP BY`, `SUM`/`AVG`/`MIN`/`MAX` with `DISTINCT`, `GROUP BY` column positions/`ROLLUP`/`CUBE`/`GROUPING SETS`, `OVER`, and `FILTER` fail with `SqlError::Unsupported` (or `Syntax` for invalid forms such as `SUM(*)` or `COUNT(DISTINCT *)`).
 - Secondary indexes (`CREATE [UNIQUE] INDEX` and `UNIQUE` constraints) support `INTEGER`, `TEXT`/`VARCHAR(n)`, and `BOOLEAN` columns (1–4 columns per index, up to 16 indexes per table). `DROP INDEX [IF EXISTS] name ON table` drops an explicit secondary index cleanly, and refuses dropping an index that backs a table or column `UNIQUE` constraint with `SqlError::Constraint`. `REAL` columns in indexes/unique constraints, partial `CREATE INDEX ... WHERE ...`, `ASC`/`DESC` index ordering, `USING ...`, `DROP INDEX name` (without `ON table`), `DROP INDEX ... CONCURRENTLY`/`CASCADE`/`RESTRICT`, and `DROP TABLE` fail with `SqlError::Unsupported`.
-- Recognized SQL outside this grammar (`RIGHT` joins after the first join, `FULL` joins with other joins, `CROSS`/`NATURAL` joins, `JOIN ... USING`, comma joins, `SELECT DISTINCT`, `UNION`/`INTERSECT`/`EXCEPT`, scalar/non-aggregate function calls, derived tables or CTEs joined with tables, correlated subqueries, multi-column tuple `IN`, value-list `IN (...)`, `WITH RECURSIVE`, `DROP TABLE ... CASCADE`/`RESTRICT` or several tables, `ALTER TABLE` actions other than `ADD COLUMN`, `BEGIN`/`COMMIT`/`ROLLBACK`, `RETURNING`, `ON CONFLICT`, `DEFAULT` expressions other than literals, `DEFAULT` on a `PRIMARY KEY` column, `DEFAULT VALUES`, `CHECK` with parameters or subqueries, composite `FOREIGN KEY`/`REFERENCES`, `ON UPDATE CASCADE`/`SET NULL`, `SET DEFAULT`, `MATCH`, `DEFERRABLE`, `CONSTRAINT` names, `BETWEEN`, `LIKE`, `CASE`, `CAST`, arithmetic operators, and qualified `table.column` or table aliases outside a join or subquery) fails with `SqlError::Unsupported` naming the feature.
+- Recognized SQL outside this grammar (`RIGHT` joins after the first join, `FULL` joins with other joins, `CROSS`/`NATURAL` joins, `JOIN ... USING`, comma joins, `SELECT DISTINCT`, `UNION`/`INTERSECT`/`EXCEPT`, scalar/non-aggregate function calls, derived tables or CTEs joined with tables, correlated subqueries, multi-column tuple `IN`, value-list `IN (...)`, `WITH RECURSIVE`, `DROP TABLE ... CASCADE`/`RESTRICT` or several tables, `ALTER TABLE` actions other than `ADD COLUMN`, `BEGIN`/`COMMIT`/`ROLLBACK`, `RETURNING`, `ON CONFLICT`, nonconstant `DEFAULT` expressions, `DEFAULT` on a `PRIMARY KEY` column, `DEFAULT VALUES`, `CHECK` with parameters or subqueries, composite `FOREIGN KEY`/`REFERENCES`, `ON UPDATE CASCADE`/`SET NULL`, `SET DEFAULT`, `MATCH`, `DEFERRABLE`, `CONSTRAINT` names, `BETWEEN`, `LIKE`, `CASE`, `CAST`, arithmetic operators, and qualified `table.column` or table aliases outside a join or subquery) fails with `SqlError::Unsupported` naming the feature.
 
 ## Types, coercion, and NULL semantics
 
@@ -357,17 +357,21 @@ Bounded, **uncorrelated** subqueries are supported in `WHERE` (`SELECT`, `UPDATE
 
 ## Column defaults
 
-- `CREATE TABLE` accepts `DEFAULT` followed by one literal: a possibly
-  negative integer or real, a string, `TRUE`, `FALSE` or `NULL`. The value
-  is checked against the column's type, `VARCHAR(n)` length and `NOT NULL`
-  when the table is created; an `INTEGER` literal may default a `REAL`
-  column. `DEFAULT NULL` is the same as no default.
+- `CREATE TABLE` accepts a literal or a parenthesized constant expression as
+  a `DEFAULT`. Constant expressions support numeric `+`, `-`, `*`, and `/`,
+  integer `%`, and text `||`. Concatenation binds most tightly, followed by
+  multiplication, division and remainder, then addition and subtraction.
+  Operators propagate `NULL`. Integer division truncates towards zero.
+  Overflow, non-finite intermediate results and zero divisors fail during
+  statement preparation. The resulting value is checked against the column's
+  type, text length and `NOT NULL` when the table is created. `DEFAULT NULL`
+  is the same as no default.
 - An `INSERT` with a column list fills each omitted column that has a
   default with it, so a `NOT NULL` column with a default may be omitted. An
   explicit value, including `NULL`, is used as written. A defaulted value is
   stored, validated and indexed like a written one.
 - Defaults are kept in the table's catalog entry; catalogs written before
-  defaults existed load unchanged. Expressions and functions such as
+  defaults existed load unchanged. References, parameters and functions such as
   `CURRENT_TIMESTAMP`, `DEFAULT` on a `PRIMARY KEY` column, `DEFAULT VALUES`,
   the `DEFAULT` keyword inside `VALUES`, and `ALTER TABLE ... ADD COLUMN ...
   DEFAULT` return `Unsupported`.

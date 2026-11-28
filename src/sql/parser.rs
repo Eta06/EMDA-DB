@@ -273,6 +273,94 @@ pub(crate) enum LiteralValue {
     Boolean(bool),
 }
 
+#[derive(Clone, Copy)]
+enum DefaultOp {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
+    Concat,
+}
+
+impl DefaultOp {
+    fn precedence(self) -> u8 {
+        match self {
+            Self::Add | Self::Subtract => 1,
+            Self::Multiply | Self::Divide | Self::Remainder => 2,
+            Self::Concat => 3,
+        }
+    }
+
+    fn evaluate(
+        self,
+        left: LiteralValue,
+        right: LiteralValue,
+        max_text_bytes: usize,
+    ) -> Result<LiteralValue, SqlError> {
+        use LiteralValue::{Integer, Null, Real, Text};
+        if matches!(left, Null) || matches!(right, Null) {
+            return Ok(Null);
+        }
+        if matches!(self, Self::Concat) {
+            let (Text(mut left), Text(right)) = (left, right) else {
+                return Err(SqlError::Type(
+                    "DEFAULT concatenation requires TEXT operands".into(),
+                ));
+            };
+            if left.len() + right.len() > max_text_bytes {
+                return Err(SqlError::Bounds(format!(
+                    "DEFAULT text exceeds max_text_bytes ({max_text_bytes})"
+                )));
+            }
+            left.push_str(&right);
+            return Ok(Text(left));
+        }
+        let overflow = || SqlError::Bounds("numeric overflow in DEFAULT expression".into());
+        let zero_divisor = || SqlError::Constraint("zero divisor in DEFAULT expression".into());
+        if let (Integer(left), Integer(right)) = (&left, &right) {
+            if *right == 0 && matches!(self, Self::Divide | Self::Remainder) {
+                return Err(zero_divisor());
+            }
+            return match self {
+                Self::Add => left.checked_add(*right),
+                Self::Subtract => left.checked_sub(*right),
+                Self::Multiply => left.checked_mul(*right),
+                Self::Divide => left.checked_div(*right),
+                Self::Remainder => Some(if *right == -1 { 0 } else { left % right }),
+                Self::Concat => unreachable!(),
+            }
+            .map(Integer)
+            .ok_or_else(overflow);
+        }
+        let number = |value| match value {
+            Integer(n) => super::value::exact_i64_to_f64(n),
+            Real(f) => Ok(f),
+            _ => Err(SqlError::Type(
+                "DEFAULT arithmetic requires numeric operands".into(),
+            )),
+        };
+        let (left, right) = (number(left)?, number(right)?);
+        let result = match self {
+            Self::Add => left + right,
+            Self::Subtract => left - right,
+            Self::Multiply => left * right,
+            Self::Divide if right != 0.0 => left / right,
+            Self::Divide => return Err(zero_divisor()),
+            Self::Remainder => {
+                return Err(SqlError::Type(
+                    "DEFAULT remainder requires INTEGER operands".into(),
+                ));
+            }
+            Self::Concat => unreachable!(),
+        };
+        result
+            .is_finite()
+            .then_some(Real(result))
+            .ok_or_else(overflow)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Expr {
     Literal(LiteralValue),
@@ -861,12 +949,58 @@ impl Parser<'_> {
             }
             _ => {
                 return Err(SqlError::Unsupported {
-                    feature: "DEFAULT expression other than a literal".into(),
+                    feature:
+                        "DEFAULT value other than a literal or parenthesized constant expression"
+                            .into(),
                     offset: Some(offset),
                 });
             }
         };
         Ok(value)
+    }
+
+    fn parse_default_value(&mut self) -> Result<LiteralValue, SqlError> {
+        if !matches!(self.peek().kind, TokenKind::LParen) {
+            return self.parse_default_literal();
+        }
+        self.advance();
+        let value = self.parse_default_expr(1, 0)?;
+        self.expect_kind(&TokenKind::RParen, "')' after DEFAULT expression")?;
+        Ok(value)
+    }
+
+    fn parse_default_expr(
+        &mut self,
+        depth: usize,
+        precedence: u8,
+    ) -> Result<LiteralValue, SqlError> {
+        self.check_depth(depth)?;
+        let mut left = if matches!(self.peek().kind, TokenKind::LParen) {
+            self.advance();
+            let inner = self.parse_default_expr(depth + 1, 0)?;
+            self.expect_kind(&TokenKind::RParen, "')'")?;
+            inner
+        } else {
+            self.parse_default_literal()?
+        };
+        loop {
+            let op = match self.peek().kind {
+                TokenKind::Plus => DefaultOp::Add,
+                TokenKind::Minus => DefaultOp::Subtract,
+                TokenKind::Star => DefaultOp::Multiply,
+                TokenKind::Slash => DefaultOp::Divide,
+                TokenKind::Percent => DefaultOp::Remainder,
+                TokenKind::Concat => DefaultOp::Concat,
+                _ => break,
+            };
+            if op.precedence() < precedence {
+                break;
+            }
+            self.advance();
+            let right = self.parse_default_expr(depth, op.precedence() + 1)?;
+            left = op.evaluate(left, right, self.limits.max_text_bytes)?;
+        }
+        Ok(left)
     }
 
     fn parse_create_table_body(&mut self) -> Result<CreateTableStmt, SqlError> {
@@ -1043,7 +1177,7 @@ impl Parser<'_> {
                                 message: format!("column '{col_name}' declares DEFAULT twice"),
                             });
                         }
-                        default = Some((self.parse_default_literal()?, offset));
+                        default = Some((self.parse_default_value()?, offset));
                     } else if self.eat_kw("check") {
                         checks.push(self.parse_check_clause()?);
                     } else if self.at_kw("autoincrement")
