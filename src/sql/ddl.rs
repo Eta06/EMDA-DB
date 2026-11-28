@@ -456,24 +456,25 @@ pub(crate) fn alter_in_tx(
                 table: updated.name.clone(),
                 column: column.clone(),
             })?;
-        if updated.primary_key_columns().any(|key| index == key)
-            || updated
-                .indexes
-                .iter()
-                .any(|def| def.columns.contains(&index))
-            || updated.foreign_keys.iter().any(|def| def.column == index)
-            || updated
-                .referenced_by
-                .iter()
-                .any(|reference| reference.ref_column == *column)
-            || updated
-                .tuple_foreign_keys
-                .iter()
-                .any(|constraint| constraint.columns.contains(&index))
-            || updated
-                .tuple_referenced_by
-                .iter()
-                .any(|reference| reference.ref_columns.contains(column))
+        if rename.is_none()
+            && (updated.primary_key_columns().any(|key| index == key)
+                || updated
+                    .indexes
+                    .iter()
+                    .any(|def| def.columns.contains(&index))
+                || updated.foreign_keys.iter().any(|def| def.column == index)
+                || updated
+                    .referenced_by
+                    .iter()
+                    .any(|reference| reference.ref_column == *column)
+                || updated
+                    .tuple_foreign_keys
+                    .iter()
+                    .any(|constraint| constraint.columns.contains(&index))
+                || updated
+                    .tuple_referenced_by
+                    .iter()
+                    .any(|reference| reference.ref_columns.contains(column)))
         {
             return Err(SqlError::Constraint(format!(
                 "cannot alter column '{}.{column}' because a key or index depends on it",
@@ -488,6 +489,10 @@ pub(crate) fn alter_in_tx(
                 )));
             }
             updated.columns[index].name = name.to_owned();
+            for check in &mut updated.checks {
+                *check = super::parser::rename_check_column(check, column, name, limits)?;
+            }
+            rewrite_column_references(&mut updated, &table.def.name, column, name);
         } else {
             updated.columns.remove(index);
             let shift = |stored: &mut usize| *stored -= usize::from(*stored > index);
@@ -516,7 +521,35 @@ pub(crate) fn alter_in_tx(
             });
         }
         updated.validate()?;
+        let indexes: Vec<_> = updated
+            .indexes
+            .iter()
+            .filter(|def| rename.is_some() && def.columns.contains(&index))
+            .collect();
+        for index in &indexes {
+            if index.state != IndexState::Ready {
+                return Err(SqlError::Constraint(
+                    "cannot rename a column while index maintenance is active".into(),
+                ));
+            }
+            tx.drop_index(&updated.name, &index.name)
+                .map_err(exec::classify_io_error)?;
+        }
         rewrite_column(tx, &table.def, &updated, index, rename, limits)?;
+        for index in indexes {
+            tx.create_index(&updated.name, updated.to_index_definition(index))
+                .map_err(|error| exec::map_write_constraint_error(error, &updated.name))?;
+        }
+        if let Some(name) = rename {
+            for related in related_tables(&table.def) {
+                let cached = catalog::load_table_cached(tx, related, cache.tables())?;
+                let mut other = (*cached.def).clone();
+                if rewrite_column_references(&mut other, &updated.name, column, name) {
+                    other.validate()?;
+                    catalog::save_table_def(tx, &cached.catalog_key, &other)?;
+                }
+            }
+        }
     }
     updated.validate()?;
     catalog::save_table_def(tx, &table.catalog_key, &updated)?;
@@ -658,24 +691,7 @@ fn rename_table(
         }
     }
 
-    let related = old
-        .foreign_keys
-        .iter()
-        .map(|fk| fk.ref_table.as_str())
-        .chain(old.referenced_by.iter().map(|fk| fk.child_table.as_str()))
-        .chain(
-            old.tuple_foreign_keys
-                .iter()
-                .map(|fk| fk.ref_table.as_str()),
-        )
-        .chain(
-            old.tuple_referenced_by
-                .iter()
-                .map(|fk| fk.child_table.as_str()),
-        )
-        .filter(|name| *name != old.name)
-        .collect::<std::collections::BTreeSet<_>>();
-    for related in related {
+    for related in related_tables(old) {
         let cached = catalog::load_table_cached(tx, related, cache.tables())?;
         let mut table = (*cached.def).clone();
         rewrite_related_names(&mut table, &old.name, new_name);
@@ -711,4 +727,75 @@ fn rewrite_related_names(table: &mut catalog::TableDef, old: &str, new: &str) {
             new.clone_into(name);
         }
     }
+}
+
+fn related_tables(old: &catalog::TableDef) -> std::collections::BTreeSet<&str> {
+    old.foreign_keys
+        .iter()
+        .map(|fk| fk.ref_table.as_str())
+        .chain(old.referenced_by.iter().map(|fk| fk.child_table.as_str()))
+        .chain(
+            old.tuple_foreign_keys
+                .iter()
+                .map(|fk| fk.ref_table.as_str()),
+        )
+        .chain(
+            old.tuple_referenced_by
+                .iter()
+                .map(|fk| fk.child_table.as_str()),
+        )
+        .filter(|name| *name != old.name)
+        .collect()
+}
+
+fn rewrite_column_references(
+    table: &mut catalog::TableDef,
+    owner: &str,
+    old: &str,
+    new: &str,
+) -> bool {
+    let mut changed = false;
+    let mut rewrite = |name: &mut String| {
+        if name == old {
+            new.clone_into(name);
+            changed = true;
+        }
+    };
+    if table.name == owner {
+        for reference in &mut table.referenced_by {
+            rewrite(&mut reference.ref_column);
+        }
+        for reference in &mut table.tuple_referenced_by {
+            reference.ref_columns.iter_mut().for_each(&mut rewrite);
+        }
+    }
+    for fk in table
+        .foreign_keys
+        .iter_mut()
+        .filter(|fk| fk.ref_table == owner)
+    {
+        rewrite(&mut fk.ref_column);
+    }
+    for fk in table
+        .referenced_by
+        .iter_mut()
+        .filter(|fk| fk.child_table == owner)
+    {
+        rewrite(&mut fk.child_column);
+    }
+    for fk in table
+        .tuple_foreign_keys
+        .iter_mut()
+        .filter(|fk| fk.ref_table == owner)
+    {
+        fk.ref_columns.iter_mut().for_each(&mut rewrite);
+    }
+    for fk in table
+        .tuple_referenced_by
+        .iter_mut()
+        .filter(|fk| fk.child_table == owner)
+    {
+        fk.child_columns.iter_mut().for_each(&mut rewrite);
+    }
+    changed
 }

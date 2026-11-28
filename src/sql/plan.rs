@@ -630,6 +630,17 @@ pub(crate) fn plan_access(
     has_limit: bool,
     params: &[SqlValue],
 ) -> AccessPlan {
+    plan_access_candidates(filter, table, order_by, has_limit, params, None)
+}
+
+pub(super) fn plan_access_candidates(
+    filter: Option<&BoundExpr>,
+    table: &TableDef,
+    order_by: &[BoundOrderBy],
+    has_limit: bool,
+    params: &[SqlValue],
+    alternatives: Option<&mut Vec<AccessPlan>>,
+) -> AccessPlan {
     let col_count = table.columns.len();
     let mut bounds: Vec<ColBounds> = table
         .columns
@@ -876,6 +887,19 @@ pub(crate) fn plan_access(
         if !pk_small_range && !prefer_index {
             return AccessPlan::PkPoints { doc_ids };
         }
+    }
+
+    if let Some(alternatives) = alternatives {
+        if matches!(pk_plan, AccessPlan::PkRange { .. }) {
+            alternatives.push(pk_plan.clone());
+        }
+        alternatives.extend(
+            candidates
+                .iter()
+                .filter(|c| c.where_useful)
+                .cloned()
+                .map(IndexCandidate::into_plan),
+        );
     }
 
     match (&pk_plan, best_where_idx) {

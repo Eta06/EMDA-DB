@@ -1,12 +1,16 @@
 //! Composite, statement-end foreign key enforcement using complete typed tuples.
-use super::catalog::{self, IndexDef, IndexState, TableCache, TableDef};
+use super::catalog::{
+    self, ColumnDef, ForeignKeyAction, IndexDef, IndexState, TableCache, TableDef,
+};
 use super::exec::{SqlValueRef, append_compound_key, classify_io_error};
 use super::parser::TupleForeignKeySpec;
-use super::value::{MAX_SQL_IDENTIFIER_BYTES, MAX_SQL_INDEX_COLUMNS, SqlError, SqlLimits, SqlType};
+use super::value::{
+    MAX_SQL_IDENTIFIER_BYTES, MAX_SQL_INDEX_COLUMNS, SqlError, SqlLimits, SqlType, SqlValue,
+};
 use crate::document::{DocumentTransaction, IndexQuery, IndexValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::io;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,13 +27,17 @@ pub(crate) struct Reference {
     pub(crate) child_table: String,
     pub(crate) child_columns: Vec<String>,
     pub(crate) ref_columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "ForeignKeyAction::is_default")]
+    pub(super) on_delete: ForeignKeyAction,
+    #[serde(default, skip_serializing_if = "ForeignKeyAction::is_default")]
+    pub(super) on_update: ForeignKeyAction,
 }
 
 fn invalid(message: &str) -> SqlError {
     classify_io_error(io::Error::new(io::ErrorKind::InvalidData, message))
 }
 
-fn columns(table: &TableDef, names: &[String]) -> Result<Vec<usize>, SqlError> {
+pub(super) fn columns(table: &TableDef, names: &[String]) -> Result<Vec<usize>, SqlError> {
     names
         .iter()
         .map(|name| {
@@ -130,6 +138,15 @@ pub(super) fn attach(
             )));
         }
         for (&from, &to) in spec.columns.iter().zip(&target) {
+            if child.columns[from].not_null
+                && (spec.on_delete == ForeignKeyAction::SetNull
+                    || spec.on_update == ForeignKeyAction::SetNull)
+            {
+                return Err(SqlError::Constraint(format!(
+                    "SET NULL requires nullable foreign key column '{}'",
+                    child.columns[from].name
+                )));
+            }
             let source = child.columns[from].col_type;
             let target = parent.def.columns[to].col_type;
             if source == SqlType::Real || !source.matches_base(target) {
@@ -159,6 +176,8 @@ pub(super) fn attach(
                 .map(|&index| child.columns[index].name.clone())
                 .collect(),
             ref_columns,
+            on_delete: spec.on_delete,
+            on_update: spec.on_update,
         };
         if child_name == parent.def.name {
             child.tuple_referenced_by.push(reference);
@@ -250,17 +269,9 @@ fn parent_has_tuple(
     values: &[IndexValue],
 ) -> Result<bool, SqlError> {
     if matches_pk(table, indices) {
-        let mut id = String::from("c:");
-        for value in values {
-            let value = match value {
-                IndexValue::Integer(n) => SqlValueRef::Integer(*n),
-                IndexValue::String(text) => SqlValueRef::Text(text),
-                _ => return Err(invalid("invalid composite primary key value")),
-            };
-            if append_compound_key(&mut id, value).is_err() {
-                return Ok(false);
-            }
-        }
+        let Some(id) = tuple_id(values)? else {
+            return Ok(false);
+        };
         let row = tx.get(&table.name, &id).map_err(classify_io_error)?;
         if let Some(row) = row {
             let obj = row
@@ -309,9 +320,18 @@ pub(super) fn check_children(
     Ok(())
 }
 
+pub(super) struct Action {
+    pub(super) reference: Reference,
+    pub(super) old: Vec<IndexValue>,
+    /// None represents deletion. Updated tuples can contain individual NULLs.
+    pub(super) new: Option<Vec<IndexValue>>,
+    pub(super) depth: usize,
+}
+
 #[derive(Default)]
 pub(super) struct Removals {
     entries: HashSet<(String, Reference, Vec<IndexValue>)>,
+    pub(super) actions: VecDeque<Action>,
 }
 
 impl Removals {
@@ -320,18 +340,80 @@ impl Removals {
         parent: &TableDef,
         row: &Map<String, Value>,
     ) -> Result<(), SqlError> {
+        self.record_change(parent, row, None)
+    }
+
+    pub(super) fn record_update(
+        &mut self,
+        parent: &TableDef,
+        row: &Map<String, Value>,
+        updates: &[(&ColumnDef, SqlValue)],
+    ) -> Result<(), SqlError> {
+        self.record_change(parent, row, Some(updates))
+    }
+
+    fn record_change(
+        &mut self,
+        parent: &TableDef,
+        row: &Map<String, Value>,
+        updates: Option<&[(&ColumnDef, SqlValue)]>,
+    ) -> Result<(), SqlError> {
         for reference in &parent.tuple_referenced_by {
             let indices = columns(parent, &reference.ref_columns)?;
-            if let Some(tuple) = extract(parent, &indices, row)? {
-                self.entries
-                    .insert((parent.name.clone(), reference.clone(), tuple));
+            let Some(old) = extract(parent, &indices, row)? else {
+                continue;
+            };
+            let new = updates
+                .map(|updates| {
+                    let mut values = old.clone();
+                    for (name, value) in reference.ref_columns.iter().zip(&mut values) {
+                        if let Some((_, assignment)) =
+                            updates.iter().find(|(column, _)| column.name == *name)
+                        {
+                            *value = match assignment {
+                                SqlValue::Null => IndexValue::Null,
+                                SqlValue::Integer(n) => IndexValue::Integer(*n),
+                                SqlValue::Text(text) => IndexValue::String(text.clone()),
+                                SqlValue::Boolean(value) => IndexValue::Boolean(*value),
+                                SqlValue::Real(_) => {
+                                    return Err(invalid(
+                                        "invalid composite foreign key assignment",
+                                    ));
+                                }
+                            };
+                        }
+                    }
+                    Ok(values)
+                })
+                .transpose()?;
+            if new.as_ref() == Some(&old) {
+                continue;
             }
+            let rule = if updates.is_some() {
+                reference.on_update
+            } else {
+                reference.on_delete
+            };
+            if matches!(rule, ForeignKeyAction::Cascade | ForeignKeyAction::SetNull) {
+                self.actions.push_back(Action {
+                    reference: reference.clone(),
+                    old: old.clone(),
+                    new,
+                    depth: 0,
+                });
+            }
+            self.entries
+                .insert((parent.name.clone(), reference.clone(), old));
         }
         Ok(())
     }
 
-    pub(super) fn append(&mut self, other: Self) {
+    pub(super) fn append(&mut self, mut other: Self, depth: usize) {
         self.entries.extend(other.entries);
+        for action in &mut other.actions {
+            action.depth = depth;
+        }
+        self.actions.append(&mut other.actions);
     }
 
     pub(super) fn verify(
@@ -368,43 +450,115 @@ fn child_has_tuple(
     limits: &SqlLimits,
     visited: &mut usize,
 ) -> Result<bool, SqlError> {
-    if matches_pk(child, cols) {
-        return parent_has_tuple(tx, child, cols, tuple);
-    }
-    if let Some(index) = child.indexes.iter().find(|index| {
+    Ok(!child_rows(tx, child, cols, tuple, limits, visited, 1)?.is_empty())
+}
+
+pub(super) fn child_rows(
+    tx: &DocumentTransaction<'_, '_>,
+    child: &TableDef,
+    cols: &[usize],
+    tuple: &[IndexValue],
+    limits: &SqlLimits,
+    visited: &mut usize,
+    limit: usize,
+) -> Result<Vec<crate::document::DocumentEntry>, SqlError> {
+    let mut rows = Vec::new();
+    let mut admit = |entry: crate::document::DocumentEntry, matched: bool, visited: &mut usize| {
+        *visited += 1;
+        if *visited > limits.max_visited_rows {
+            return Err(SqlError::Bounds(
+                "composite foreign key lookup exceeds max_visited_rows".into(),
+            ));
+        }
+        if matched {
+            rows.push(entry);
+        }
+        Ok(rows.len() >= limit)
+    };
+    let index = child.indexes.iter().find(|index| {
         index.state == IndexState::Ready
             && index.columns.starts_with(cols)
             && index.columns[cols.len()..]
                 .iter()
                 .all(|&trailing| child.columns[trailing].not_null)
-    }) {
-        return index_has_tuple(tx, child, index, tuple);
-    }
-    let mut after = None;
-    loop {
-        let limit =
-            (limits.max_visited_rows.saturating_sub(*visited) + 1).min(crate::MAX_SCAN_ENTRIES);
-        let page = tx
-            .scan_documents(&child.name, after.as_deref(), limit)
-            .map_err(classify_io_error)?;
-        if page.is_empty() {
-            return Ok(false);
-        }
-        for entry in &page {
-            *visited += 1;
-            if *visited > limits.max_visited_rows {
-                return Err(SqlError::Bounds(
-                    "composite foreign key scan exceeds max_visited_rows".into(),
-                ));
-            }
-            let row = entry
-                .document
-                .as_object()
-                .ok_or_else(|| invalid("stored row is not an object"))?;
-            if extract(child, cols, row)?.as_deref() == Some(tuple) {
-                return Ok(true);
+    });
+    if matches_pk(child, cols) {
+        if let Some(id) = tuple_id(tuple)? {
+            if let Some(document) = tx.get(&child.name, &id).map_err(classify_io_error)? {
+                admit(
+                    crate::document::DocumentEntry { id, document },
+                    true,
+                    visited,
+                )?;
             }
         }
-        after = page.last().map(|entry| entry.id.clone());
+    } else if let Some(index) = index {
+        if tuple.iter().any(|value| matches!(value, IndexValue::String(text) if text.len() > super::value::MAX_SQL_INDEX_TEXT_BYTES)) {
+            return Ok(rows);
+        }
+        let mut query = IndexQuery {
+            equal: tuple.to_vec(),
+            limit: limit.min(256).min(remaining_lookups(limits, *visited)),
+            ..IndexQuery::default()
+        };
+        loop {
+            let page = tx
+                .query_index(&child.name, &index.name, &query)
+                .map_err(classify_io_error)?;
+            for entry in page.documents {
+                if admit(entry, true, visited)? {
+                    return Ok(rows);
+                }
+            }
+            let Some(next) = page.next else { break };
+            query.after = Some(next);
+            query.limit = query.limit.min(remaining_lookups(limits, *visited));
+        }
+    } else {
+        let mut after = None;
+        loop {
+            let page = tx
+                .scan_documents(
+                    &child.name,
+                    after.as_deref(),
+                    crate::MAX_SCAN_ENTRIES.min(remaining_lookups(limits, *visited)),
+                )
+                .map_err(classify_io_error)?;
+            let Some(last) = page.last() else { break };
+            after = Some(last.id.clone());
+            for entry in page {
+                let row = entry
+                    .document
+                    .as_object()
+                    .ok_or_else(|| invalid("stored row is not an object"))?;
+                let matched = extract(child, cols, row)?.as_deref() == Some(tuple);
+                if admit(entry, matched, visited)? {
+                    return Ok(rows);
+                }
+            }
+        }
     }
+    Ok(rows)
+}
+
+fn remaining_lookups(limits: &SqlLimits, visited: usize) -> usize {
+    limits
+        .max_visited_rows
+        .saturating_sub(visited)
+        .saturating_add(1)
+}
+
+fn tuple_id(values: &[IndexValue]) -> Result<Option<String>, SqlError> {
+    let mut id = String::from("c:");
+    for value in values {
+        let value = match value {
+            IndexValue::Integer(n) => SqlValueRef::Integer(*n),
+            IndexValue::String(text) => SqlValueRef::Text(text),
+            _ => return Err(invalid("invalid composite primary key value")),
+        };
+        if append_compound_key(&mut id, value).is_err() {
+            return Ok(None);
+        }
+    }
+    Ok(Some(id))
 }

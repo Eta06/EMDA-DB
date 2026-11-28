@@ -60,21 +60,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   lookups. See the [document guide](docs/DOCUMENT_MODEL.md).
 - **Embedded SQL**, through the Rust API. The [SQL subset](docs/SQL_SUBSET.md)
   lists every form and bound:
-  - Tables with `PRIMARY KEY`, `NOT NULL`, `UNIQUE`, `CHECK` and literal
-    `DEFAULT`s;
-    `DROP TABLE`;
-    `ALTER TABLE ... ADD COLUMN`.
-  - Online `CREATE [UNIQUE] INDEX`: 1–4 columns, up to 16 indexes per table.
+  - Tables with scalar and composite primary keys, `NOT NULL`, `UNIQUE`,
+    `CHECK` and constant defaults. Table and column migrations preserve
+    supported dependencies.
+  - Online `CREATE [UNIQUE] INDEX` and bounded cost-based selection among
+    competing single-table access paths.
   - `INNER`, `LEFT` and a first `RIGHT JOIN` of up to eight tables, using
     key, index or hash access, and a two-table `FULL JOIN`.
   - Aggregates, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT` and `OFFSET`, on
     one table or over joins.
-  - Single-column foreign keys with `NO ACTION`/`RESTRICT` and
-    `ON DELETE CASCADE`/`SET NULL`, up to 64 per table, always enforced.
-  - Uncorrelated `[NOT] IN`, `[NOT] EXISTS` and scalar subqueries, nested
-    up to four deep, materializing at most 32,768 values by default.
-  - Derived tables and non-recursive `WITH` CTEs read as one materialized
-    source of at most 10,000 rows.
+  - Scalar and composite foreign keys with bounded `ON DELETE` and
+    `ON UPDATE` referential actions, including `CASCADE` and `SET NULL`.
+  - `[NOT] IN`, `[NOT] EXISTS` and scalar subqueries, including immediate
+    outer-row correlation in supported single-table forms.
+  - Derived tables, non-recursive CTEs, and bounded recursive CTEs for
+    hierarchy and graph traversal.
   - Serializable multi-statement transactions of up to 1,024 staged keys
     and 16 MiB.
   - `EXPLAIN SELECT`.
@@ -89,9 +89,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Being built now
 
-- **SQL.** `FULL` joins combined with other joins, correlated
-  subqueries, recursive CTEs, composite foreign keys, `ON UPDATE` actions, more
-  `ALTER TABLE` actions, and faster scans, aggregates and indexed reads.
+- **SQL expansion.** More join, subquery and migration forms, continued
+  query performance work, and server access.
 - **Service and operations.** A network API with authentication, project
   isolation and quotas, safe scale-to-zero, replication and failover.
 - **Platforms and clients.** Windows and language SDKs are planned.
@@ -105,7 +104,7 @@ Progress on `main` on 2026-11-28, from [roadmap progress](docs/ROADMAP_PROGRESS.
 | 1 | Correctness and foundations | 99% |
 | 2 | Durable storage and core operations | 99% |
 | 3 | Document model and queries | 99% |
-| 4 | SQL | 95% |
+| 4 | Embedded SQL subset | 100% |
 | 5 | Secure service and project isolation | 10% |
 | 6 | Performance and scalability | 60% |
 | 7 | Replication and operations | 20% |

@@ -2667,6 +2667,21 @@ pub(crate) fn get_or_build_select_plan_with_outer(
         return Ok(Arc::clone(plan));
     }
 
+    let plan = build_select_plan(stmt, cached_table, outer_scopes, limits)?;
+    let mut guard = cache.select_plans.write();
+    if guard.len() >= MAX_CACHED_PLANS {
+        guard.clear();
+    }
+    guard.insert(key, Arc::clone(&plan));
+    Ok(plan)
+}
+
+pub(super) fn build_select_plan(
+    stmt: &SelectStmt,
+    cached_table: &CachedTable,
+    outer_scopes: &[&TableDef],
+    limits: &SqlLimits,
+) -> Result<Arc<SelectPlan>, SqlError> {
     let select_has_aggregate = match &stmt.columns {
         SelectColumns::All => false,
         SelectColumns::Items(items) => items
@@ -2682,18 +2697,11 @@ pub(crate) fn get_or_build_select_plan_with_outer(
         || select_has_aggregate
         || order_has_aggregate;
 
-    let plan = if is_aggregate_query {
-        build_aggregate_select_plan(stmt, cached_table, outer_scopes, limits)?
+    if is_aggregate_query {
+        build_aggregate_select_plan(stmt, cached_table, outer_scopes, limits)
     } else {
-        build_simple_select_plan(stmt, cached_table, outer_scopes, limits)?
-    };
-
-    let mut guard = cache.select_plans.write();
-    if guard.len() >= MAX_CACHED_PLANS {
-        guard.clear();
+        build_simple_select_plan(stmt, cached_table, outer_scopes, limits)
     }
-    guard.insert(key, Arc::clone(&plan));
-    Ok(plan)
 }
 
 fn build_simple_select_plan(
@@ -3187,6 +3195,26 @@ fn exec_select(
         });
     }
 
+    if prepared.iter().any(|sub| !sub.outer_bindings.is_empty()) {
+        let SelectPlan::Simple(plan) = plan.as_ref() else {
+            return Err(SqlError::Unsupported {
+                feature: "correlated subquery outside a simple SELECT".into(),
+                offset: None,
+            });
+        };
+        return exec_correlated_select(
+            tx,
+            &cached_table.def,
+            plan,
+            stmt,
+            &prepared,
+            params,
+            limits,
+            cache,
+            force_full_scan,
+        );
+    }
+
     let mut budget = SubqueryBudget::new(limits);
     let sub_values = if prepared.is_empty() {
         Vec::new()
@@ -3230,6 +3258,290 @@ fn exec_select(
         columns: plan.col_names().to_vec(),
         rows,
     })
+}
+
+// Buffer an outer page before running inner queries so inner reads never
+// reenter a storage visitor. One budget covers the entire statement.
+#[allow(clippy::too_many_arguments)]
+fn exec_correlated_select(
+    tx: &DocumentTransaction<'_, '_>,
+    table: &TableDef,
+    plan: &BoundSelectPlan,
+    stmt: &SelectStmt,
+    prepared: &[subquery::PreparedSubquery],
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    cache: &SqlCache,
+    force_full_scan: bool,
+) -> Result<SqlOutcome, SqlError> {
+    let offset = resolve_limit_value(stmt.offset, params, "OFFSET")?.unwrap_or(0);
+    let limit = resolve_limit_value(stmt.limit, params, "LIMIT")?.unwrap_or(usize::MAX);
+    let sorted = !matches!(plan.order_strategy, OrderStrategy::PkAsc);
+    let mut budget = SubqueryBudget::new(limits);
+    let mut fixed: Vec<Option<SubqueryValue>> = vec![None; prepared.len()];
+    let mut rows = Vec::new();
+    let mut order_rows = Vec::new();
+    let mut after = None;
+    let mut skipped = 0;
+    let mut filter_slots = vec![false; prepared.len()];
+    if let Some(filter) = &plan.filter {
+        mark_subquery_slots(&filter.expr, &mut filter_slots);
+    }
+    let mut order_slots = vec![false; prepared.len()];
+    for spec in &plan.order_specs {
+        if let SimpleOrderTarget::Expr(expr) = &spec.target {
+            mark_subquery_slots(expr, &mut order_slots);
+        }
+    }
+    let mut output_slots = vec![false; prepared.len()];
+    for output in &plan.outputs {
+        if let SimpleSelectOutput::Expr(expr) = output {
+            mark_subquery_slots(expr, &mut output_slots);
+        }
+    }
+    let mut evaluate = |needed: &[bool],
+                        obj: &Map<String, Value>,
+                        values: &mut [Option<SubqueryValue>],
+                        budget: &mut SubqueryBudget|
+     -> Result<Vec<SubqueryValue>, SqlError> {
+        for (index, sub) in prepared.iter().enumerate() {
+            if !needed[index] || values[index].is_some() {
+                continue;
+            }
+            if let Some(value) = &fixed[index] {
+                values[index] = Some(value.clone());
+                continue;
+            }
+            let mut bound = Vec::new();
+            let inner_params = if sub.outer_bindings.is_empty() {
+                params
+            } else {
+                bound.extend_from_slice(params);
+                for &column in &sub.outer_bindings {
+                    bound.push(decode_col_ref(obj, &table.columns[column])?.into_owned());
+                }
+                &bound
+            };
+            let value = subquery::execute_one_subquery(
+                tx,
+                sub,
+                inner_params,
+                limits,
+                cache,
+                budget,
+                force_full_scan,
+            )?;
+            if sub.outer_bindings.is_empty() {
+                fixed[index] = Some(value.clone());
+            }
+            values[index] = Some(value);
+        }
+        let resolved: Vec<_> = values
+            .iter()
+            .zip(prepared)
+            .map(|(value, sub)| value.clone().unwrap_or_else(|| sub.empty_value()))
+            .collect();
+        subquery::check_runtime_subquery_values(&plan.subquery_checks, &resolved, params)?;
+        Ok(resolved)
+    };
+
+    let project = |obj, verified_pk, values: &[SubqueryValue]| {
+        let outputs = plan
+            .outputs
+            .iter()
+            .map(|output| match output {
+                SimpleSelectOutput::Expr(expr) => {
+                    SimpleSelectOutput::Expr(subquery::resolve_bound_expr(expr, values))
+                }
+                column => column.clone(),
+            })
+            .collect::<Vec<_>>();
+        project_simple_row(obj, table, &outputs, params, verified_pk)
+    };
+    'pages: loop {
+        let page_size = budget.remaining_visited().saturating_add(1).min(128);
+        let page = tx
+            .scan_documents(&table.name, after.as_deref(), page_size)
+            .map_err(classify_io_error)?;
+        let last_page = page.len() < page_size;
+        for entry in page {
+            budget.charge_visited(1)?;
+            after = Some(entry.id.clone());
+            let obj = doc_into_object(entry.document)?;
+            let verified_pk = verify_doc_pk_id(table, &entry.id, &obj)?;
+            let mut values = vec![None; prepared.len()];
+            if let Some(filter) = &plan.filter {
+                let resolved = evaluate(&filter_slots, &obj, &mut values, &mut budget)?;
+                let filter = subquery::resolve_bound_expr(&filter.expr, &resolved);
+                if !eval_where_doc(Some(&filter), table, &obj, params)? {
+                    continue;
+                }
+            }
+            if sorted {
+                if order_rows.len() >= limits.max_sort_rows {
+                    return Err(SqlError::Bounds(format!(
+                        "sort row count exceeds max_sort_rows ({})",
+                        limits.max_sort_rows
+                    )));
+                }
+                let resolved = evaluate(&order_slots, &obj, &mut values, &mut budget)?;
+                let specs = resolved_order_specs(&plan.order_specs, &resolved);
+                let keys = decode_order_keys(&obj, table, &specs, params)?;
+                for (value, needed) in values.iter_mut().zip(&output_slots) {
+                    if !needed {
+                        *value = None;
+                    }
+                }
+                order_rows.push((
+                    SortRow {
+                        keys,
+                        doc_id: entry.id,
+                        verified_pk,
+                        obj,
+                    },
+                    values,
+                ));
+                continue;
+            }
+            if skipped < offset {
+                skipped += 1;
+                continue;
+            }
+            check_correlated_result_cap(rows.len(), limits)?;
+            let resolved = evaluate(&output_slots, &obj, &mut values, &mut budget)?;
+            rows.push(project(obj, verified_pk, &resolved)?);
+            if rows.len() == limit {
+                break 'pages;
+            }
+        }
+        if last_page {
+            break;
+        }
+    }
+    order_rows.sort_unstable_by(|a, b| compare_sort_rows(&a.0, &b.0, &plan.order_specs));
+    for (row, mut values) in order_rows.into_iter().skip(offset).take(limit) {
+        check_correlated_result_cap(rows.len(), limits)?;
+        let resolved = evaluate(&output_slots, &row.obj, &mut values, &mut budget)?;
+        rows.push(project(row.obj, row.verified_pk, &resolved)?);
+    }
+    Ok(SqlOutcome::Rows {
+        columns: plan.col_names.clone(),
+        rows,
+    })
+}
+
+fn check_correlated_result_cap(count: usize, limits: &SqlLimits) -> Result<(), SqlError> {
+    if count >= limits.max_select_rows {
+        return Err(SqlError::Bounds(format!(
+            "SELECT result exceeds max_select_rows ({})",
+            limits.max_select_rows
+        )));
+    }
+    Ok(())
+}
+
+fn mark_subquery_slots(expr: &BoundExpr, needed: &mut [bool]) {
+    match expr {
+        BoundExpr::Exists(id) | BoundExpr::ScalarSubquery(id) => needed[*id] = true,
+        BoundExpr::InSubquery { expr, sub_id, .. } => {
+            needed[*sub_id] = true;
+            mark_subquery_slots(expr, needed);
+        }
+        BoundExpr::Not(expr) | BoundExpr::IsNull { expr, .. } | BoundExpr::InSet { expr, .. } => {
+            mark_subquery_slots(expr, needed);
+        }
+        BoundExpr::And(exprs) | BoundExpr::Or(exprs) => {
+            for expr in exprs {
+                mark_subquery_slots(expr, needed);
+            }
+        }
+        BoundExpr::Compare { left, right, .. } => {
+            mark_subquery_slots(left, needed);
+            mark_subquery_slots(right, needed);
+        }
+        _ => {}
+    }
+}
+
+fn resolved_order_specs(
+    specs: &[SimpleOrderSpec],
+    values: &[SubqueryValue],
+) -> Vec<SimpleOrderSpec> {
+    specs
+        .iter()
+        .map(|spec| {
+            let mut spec = spec.clone();
+            if let SimpleOrderTarget::Expr(expr) = &mut spec.target {
+                *expr = subquery::resolve_bound_expr(expr, values);
+            }
+            spec
+        })
+        .collect()
+}
+
+/// Compare competing access paths with snapshot-local, bounded probes. Keep
+/// the existing rule-based path on ties, capped estimates, or LIMIT queries
+/// where preserving order and stopping early dominates cardinality.
+fn resolved_filter_for_cost<'p>(
+    plan: &'p BoundSelectPlan,
+    residual: Option<&'p BoundExpr>,
+) -> Option<&'p BoundExpr> {
+    residual.or_else(|| plan.filter.as_ref().map(|filter| &filter.expr))
+}
+
+fn cost_selected_access(
+    tx: &DocumentTransaction<'_, '_>,
+    table: &TableDef,
+    filter: Option<&BoundExpr>,
+    order_by: &[BoundOrderBy],
+    params: &[SqlValue],
+    baseline: AccessPlan,
+    limits: &SqlLimits,
+) -> Result<AccessPlan, SqlError> {
+    const PROBE_ROWS: usize = 64;
+    const MAX_PROBES: usize = 4;
+    if table.indexes.is_empty()
+        || !matches!(filter, Some(BoundExpr::And(_)))
+        || !matches!(
+            baseline,
+            AccessPlan::Index {
+                unique_equality: false,
+                ..
+            } | AccessPlan::PkRange { .. }
+        )
+    {
+        return Ok(baseline);
+    }
+    let mut alternatives = Vec::new();
+    plan::plan_access_candidates(
+        filter,
+        table,
+        order_by,
+        false,
+        params,
+        Some(&mut alternatives),
+    );
+    if alternatives.len() < 2 || !alternatives.contains(&baseline) {
+        return Ok(baseline);
+    }
+    let cap = PROBE_ROWS.min((limits.max_visited_rows / MAX_PROBES).saturating_sub(1));
+    if cap == 0 {
+        return Ok(baseline);
+    }
+    let mut best_count = access_candidate_count(tx, table, &baseline, cap)?;
+    alternatives.retain(|candidate| *candidate != baseline);
+    let mut best = baseline;
+    for candidate in alternatives.into_iter().take(MAX_PROBES - 1) {
+        let count = access_candidate_count(tx, table, &candidate, best_count.min(cap))?;
+        if count < best_count && count <= cap {
+            best_count = count;
+            best = candidate;
+            if count == 0 {
+                break;
+            }
+        }
+    }
+    Ok(best)
 }
 
 /// The access path a simple SELECT reads through, and the WHERE expression
@@ -3400,6 +3712,26 @@ fn exec_simple_select_into(
             plan::plan_access(f_ref, table, &plan.order_by, limit.is_some(), params)
         };
         (access, f_ref)
+    };
+    let (access, bound_filter) = if limit.is_none() && !force_full_scan {
+        let original = resolved_filter_for_cost(plan, bound_filter);
+        let selected = cost_selected_access(
+            tx,
+            table,
+            original,
+            &plan.order_by,
+            params,
+            access.clone(),
+            limits,
+        )?;
+        let residual = if selected == access {
+            bound_filter
+        } else {
+            original
+        };
+        (selected, residual)
+    } else {
+        (access, bound_filter)
     };
     if matches!(access, AccessPlan::Empty) {
         return Ok(());
@@ -4347,6 +4679,10 @@ fn exec_aggregate_select_into(
     } else {
         plan::plan_access(bound_filter, table, &[], false, params)
     };
+
+    if !force_full_scan && plan.ungrouped_min_col.is_none() {
+        access = cost_selected_access(tx, table, bound_filter, &[], params, access, limits)?;
+    }
 
     // Provably equivalent MIN(pk) or MIN(ready_index_leading_col) first-entry optimization.
     let mut stop_on_first_non_null_min = false;
@@ -6513,24 +6849,23 @@ pub(crate) fn explain_table_count(
     Ok(scan_estimate(count, cap))
 }
 
-pub(super) fn explain_access_count(
+fn access_candidate_count(
     tx: &DocumentTransaction<'_, '_>,
     table: &TableDef,
     access: &AccessPlan,
-    limits: &SqlLimits,
-) -> Result<String, SqlError> {
-    let cap = EXPLAIN_COUNT_CAP.min(limits.max_visited_rows);
+    cap: usize,
+) -> Result<usize, SqlError> {
     match access {
-        AccessPlan::Empty => Ok(scan_estimate(0, cap)),
+        AccessPlan::Empty => Ok(0),
         AccessPlan::PkPoint { .. }
         | AccessPlan::Index {
             unique_equality: true,
             ..
-        } => Ok("candidate rows: at most 1".into()),
-        AccessPlan::PkPoints { doc_ids } => {
-            Ok(format!("candidate rows: at most {}", doc_ids.len()))
-        }
-        AccessPlan::FullScan => explain_table_count(tx, table, limits),
+        } => Ok(1),
+        AccessPlan::PkPoints { doc_ids } => Ok(doc_ids.len()),
+        AccessPlan::FullScan => tx
+            .count_documents(&table.name, cap)
+            .map_err(classify_io_error),
         AccessPlan::PkRange {
             after_id, upper, ..
         } => {
@@ -6542,7 +6877,7 @@ pub(super) fn explain_access_count(
             let count = tx
                 .count_document_range(&table.name, after_id.as_deref(), upper, cap)
                 .map_err(classify_io_error)?;
-            Ok(scan_estimate(count, cap))
+            Ok(count)
         }
         AccessPlan::Index {
             index_idx,
@@ -6566,8 +6901,31 @@ pub(super) fn explain_access_count(
                     cap + 1,
                 )
                 .map_err(classify_io_error)?;
-            Ok(scan_estimate(count, cap))
+            Ok(count)
         }
+    }
+}
+
+pub(super) fn explain_access_count(
+    tx: &DocumentTransaction<'_, '_>,
+    table: &TableDef,
+    access: &AccessPlan,
+    limits: &SqlLimits,
+) -> Result<String, SqlError> {
+    let cap = EXPLAIN_COUNT_CAP.min(limits.max_visited_rows);
+    match access {
+        AccessPlan::PkPoint { .. }
+        | AccessPlan::Index {
+            unique_equality: true,
+            ..
+        } => Ok("candidate rows: at most 1".into()),
+        AccessPlan::PkPoints { doc_ids } => {
+            Ok(format!("candidate rows: at most {}", doc_ids.len()))
+        }
+        _ => Ok(scan_estimate(
+            access_candidate_count(tx, table, access, cap)?,
+            cap,
+        )),
     }
 }
 
@@ -6585,6 +6943,26 @@ pub(crate) fn explain_select_plan(
         SelectPlan::Simple(simple) => {
             let (access, residual) =
                 simple_select_access(simple, table, params, limit.is_some(), false);
+            let original = resolved_filter_for_cost(simple, residual);
+            let selected = if limit.is_none() {
+                cost_selected_access(
+                    tx,
+                    table,
+                    original,
+                    &simple.order_by,
+                    params,
+                    access.clone(),
+                    limits,
+                )?
+            } else {
+                access.clone()
+            };
+            let residual = if selected == access {
+                residual
+            } else {
+                original
+            };
+            let access = selected;
             let access_text = if simple.simple_pk_eq.is_some() {
                 "primary-key lookup".to_owned()
             } else {
@@ -6629,6 +7007,19 @@ pub(crate) fn explain_select_plan(
                 false,
                 params,
             );
+            let access = if aggregate.ungrouped_min_col.is_none() {
+                cost_selected_access(
+                    tx,
+                    table,
+                    aggregate.filter.as_ref().map(|f| &f.expr),
+                    &[],
+                    params,
+                    access,
+                    limits,
+                )?
+            } else {
+                access
+            };
             let grouping = if aggregate.group_cols.is_empty() {
                 "one group".to_owned()
             } else {
@@ -6713,6 +7104,32 @@ fn explain(
                     cache,
                 )?;
                 subquery::explain_subqueries(tx, &prepared, params, limits, cache, &mut rows)?;
+                if prepared.iter().any(|sub| !sub.outer_bindings.is_empty()) {
+                    let SelectPlan::Simple(plan) = plan.as_ref() else {
+                        return Err(SqlError::Unsupported {
+                            feature: "correlated subquery outside a simple SELECT".into(),
+                            offset: None,
+                        });
+                    };
+                    let access = AccessPlan::FullScan;
+                    let estimate = explain_access_count(tx, &cached_table.def, &access, limits)?;
+                    let order = if matches!(plan.order_strategy, OrderStrategy::PkAsc) {
+                        "rows stream in key order"
+                    } else {
+                        "rows are sorted by ORDER BY"
+                    };
+                    rows.push(explain_row(
+                        "scan", &cached_table.def.name, describe_access(&access, &cached_table.def),
+                        format!("correlated subqueries evaluated for each eligible row; {order}; {estimate}"),
+                    ));
+                    return Ok(SqlOutcome::Rows {
+                        columns: EXPLAIN_COLUMNS
+                            .iter()
+                            .map(|column| (*column).to_owned())
+                            .collect(),
+                        rows,
+                    });
+                }
             }
             rows.extend(explain_select_plan(
                 tx,

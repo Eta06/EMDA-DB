@@ -293,3 +293,29 @@ fn check_candidate_estimates(db: &SqlDatabase<'_>) {
         matches!(result, Err(SqlError::Bounds(ref s)) if s == "roll back staged estimate fixture")
     );
 }
+
+#[test]
+fn competing_indexes_use_the_narrower_snapshot_range() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("s")).unwrap();
+    let db = SqlDatabase::new(DocumentDatabase::new(&store));
+    setup(&db);
+    db.execute("CREATE INDEX t_v ON t(v)", &[]).unwrap();
+    let query = "SELECT id FROM t WHERE k >= ? AND v = ?";
+    let params = [SqlValue::Integer(9), SqlValue::Integer(3)];
+    assert!(access(&db, query, &params).starts_with("index t_k"));
+    let SqlOutcome::Rows { rows, .. } = db.execute(query, &params).unwrap() else {
+        panic!("expected rows");
+    };
+    let expected: Vec<_> = (0..300)
+        .filter(|id| id % 10 == 9 && id % 7 == 3)
+        .map(|id| vec![SqlValue::Integer(id)])
+        .collect();
+    assert_eq!(rows, expected);
+    let count = "SELECT COUNT(*) FROM t WHERE k >= ? AND v = ?";
+    assert!(access(&db, count, &params).starts_with("index t_k"));
+    let SqlOutcome::Rows { rows, .. } = db.execute(count, &params).unwrap() else {
+        panic!("expected aggregate rows");
+    };
+    assert_eq!(rows, vec![vec![SqlValue::Integer(expected.len() as i64)]]);
+}

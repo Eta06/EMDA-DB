@@ -1,4 +1,4 @@
-//! Comprehensive tests for bounded, uncorrelated subqueries on both writable
+//! Comprehensive tests for bounded subqueries on both writable
 //! backends (`Store` and `CheckpointStore`), including SQLite differential fuzzing.
 use database_engine::sql::{
     DEFAULT_SQL_SUBQUERY_VALUES, MAX_SQL_SUBQUERY_DEPTH, MAX_SQL_SUBQUERY_VALUES,
@@ -99,6 +99,67 @@ fn query_sqlite(conn: &Connection, sql: &str, bool_cols: &[bool]) -> Vec<Vec<Sql
         out.push(cells);
     }
     out
+}
+
+#[test]
+fn correlated_predicates_and_scalar_queries_match_sqlite() {
+    for_both(|db, backend| {
+        let sqlite = Connection::open_in_memory().unwrap();
+        for sql in [
+            "CREATE TABLE a (id INTEGER PRIMARY KEY, outer_key INTEGER)",
+            "CREATE TABLE b (id INTEGER PRIMARY KEY, inner_key INTEGER)",
+            "CREATE INDEX b_key ON b(inner_key)",
+            "INSERT INTO a VALUES (1, 10), (2, 20), (3, NULL), (4, 40)",
+            "INSERT INTO b VALUES (1, 10), (2, 20), (3, 20), (4, NULL)",
+        ] {
+            db.execute(sql, &[]).unwrap();
+            sqlite.execute(sql, []).unwrap();
+        }
+        for sql in [
+            "SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b WHERE inner_key <= outer_key AND b.id > a.id) ORDER BY id",
+            "SELECT id FROM a WHERE outer_key IN (SELECT inner_key FROM b WHERE b.id <= a.id) ORDER BY id",
+            "SELECT id FROM a WHERE outer_key NOT IN (SELECT inner_key FROM b WHERE b.id <= a.id) ORDER BY id",
+            "SELECT id, (SELECT MAX(inner_key) FROM b WHERE b.inner_key <= a.outer_key) AS best FROM a ORDER BY best DESC, id LIMIT 2 OFFSET 1",
+            "SELECT id, (SELECT outer_key FROM b WHERE b.id = a.id) AS outer_value FROM a ORDER BY id",
+            "SELECT id, (SELECT inner_key FROM b WHERE b.inner_key = a.outer_key) AS only_value FROM a WHERE id = 1 ORDER BY id",
+        ] {
+            let actual = rows(db.execute(sql, &[]).unwrap());
+            assert_eq!(actual, query_sqlite(&sqlite, sql, &[]), "{backend}: {sql}");
+        }
+
+        assert!(matches!(
+            db.execute(
+                "SELECT id FROM a WHERE TRUE IN (SELECT outer_key FROM b WHERE b.id = a.id)",
+                &[]
+            ),
+            Err(SqlError::Type(_))
+        ));
+        let query = "SELECT id FROM a WHERE id = 1 AND EXISTS (SELECT 1 FROM b WHERE b.inner_key <= a.outer_key)";
+        let (_, plan) = cols_and_rows(db.execute(&format!("EXPLAIN {query}"), &[]).unwrap());
+        assert!(plan.iter().flatten().any(|cell| {
+            matches!(cell, SqlValue::Text(detail) if detail.contains("bind 1 outer columns"))
+        }));
+        assert!(plan.iter().flatten().any(|cell| {
+            matches!(cell, SqlValue::Text(access) if access == "full scan in primary-key order")
+        }));
+
+        db.set_limits(SqlLimits {
+            max_visited_rows: 2,
+            ..SqlLimits::default()
+        })
+        .unwrap();
+        let query = "SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b WHERE b.inner_key <= a.outer_key) ORDER BY id LIMIT 1";
+        assert_eq!(
+            rows(db.execute(query, &[]).unwrap()),
+            vec![vec![SqlValue::Integer(1)]]
+        );
+        db.set_limits(SqlLimits {
+            max_visited_rows: 1,
+            ..SqlLimits::default()
+        })
+        .unwrap();
+        assert!(matches!(db.execute(query, &[]), Err(SqlError::Bounds(_))));
+    });
 }
 
 #[test]
@@ -869,7 +930,7 @@ fn bounds_nesting_and_correlated_errors() {
         let d5 = "SELECT id FROM outer_t WHERE k IN (SELECT k FROM inner_t WHERE k IN (SELECT k FROM inner_t WHERE k IN (SELECT k FROM inner_t WHERE k IN (SELECT k FROM inner_t WHERE k IN (SELECT k FROM inner_t)))))";
         assert!(matches!(db.prepare(d5).unwrap_err(), SqlError::Bounds(_)));
 
-        // Correlated rejection: unqualified, qualified, depth-2, GROUP BY, SELECT list, JOIN subquery.
+        // Grandparent references, outer grouping keys and correlated JOIN bodies are unsupported.
         db.execute("CREATE TABLE t_out (id INT PRIMARY KEY, only_out INT)", &[])
             .unwrap();
         db.execute("CREATE TABLE t_mid (id INT PRIMARY KEY, only_mid INT)", &[])
@@ -878,20 +939,15 @@ fn bounds_nesting_and_correlated_errors() {
             .unwrap();
 
         for corr_sql in [
-            "SELECT id FROM t_out WHERE EXISTS (SELECT 1 FROM t_in WHERE only_in = only_out)",
-            "SELECT id FROM t_out WHERE EXISTS (SELECT 1 FROM t_in WHERE t_in.only_in > t_out.only_out)",
             "SELECT id FROM t_out WHERE EXISTS (SELECT 1 FROM t_mid WHERE EXISTS (SELECT 1 FROM t_in WHERE only_in = only_out))",
-            "SELECT id FROM t_out WHERE k IN (SELECT only_out FROM t_in)",
             "SELECT id FROM t_out WHERE id IN (SELECT id FROM t_in GROUP BY only_out)",
             "SELECT id FROM t_out WHERE id IN (SELECT t_in.id FROM t_in JOIN t_mid ON t_in.id = t_mid.id WHERE t_out.only_out = 1)",
             "SELECT id FROM t_out WHERE id IN (SELECT t_in.id FROM t_in JOIN t_mid ON t_in.id = t_mid.id WHERE only_out = 1)",
         ] {
-            let sql_to_run =
-                corr_sql.replace("k IN (SELECT only_out", "only_out IN (SELECT only_out");
-            let err = db.execute(&sql_to_run, &[]).unwrap_err();
+            let err = db.execute(corr_sql, &[]).unwrap_err();
             assert!(
                 matches!(err, SqlError::Unsupported { .. }),
-                "{backend}: expected Unsupported for correlated {sql_to_run:?}, got {err:?}"
+                "{backend}: expected Unsupported for correlated {corr_sql:?}, got {err:?}"
             );
         }
 

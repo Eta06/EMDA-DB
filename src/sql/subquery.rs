@@ -482,9 +482,21 @@ pub(crate) struct PreparedSubquery {
     pub(crate) context: &'static str,
     pub(crate) offset: usize,
     pub(crate) output_type: Option<StaticExprType>,
+    pub(super) outer_bindings: Vec<usize>,
     pub(crate) body: PreparedBody,
 }
 
+impl PreparedSubquery {
+    pub(super) fn empty_value(&self) -> SubqueryValue {
+        match self.role {
+            SubqueryRole::Exists => SubqueryValue::Exists(false),
+            SubqueryRole::Scalar => SubqueryValue::Scalar(SqlValue::Null),
+            SubqueryRole::In => SubqueryValue::InSet(Arc::new(SubqueryInSet::default())),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub(crate) enum SubqueryValue {
     Exists(bool),
     InSet(Arc<SubqueryInSet>),
@@ -591,6 +603,88 @@ pub(crate) fn bind_subqueries(
     Ok(prepared)
 }
 
+/// Lift references to the immediate outer row into private parameters.
+fn lift_outer_columns(
+    select: &mut SelectStmt,
+    local: &TableDef,
+    outer: &TableDef,
+    param_base: usize,
+) -> Vec<usize> {
+    fn visit(
+        expr: &mut Expr,
+        local: &TableDef,
+        outer: &TableDef,
+        param_base: usize,
+        bindings: &mut Vec<usize>,
+    ) {
+        let index = match expr {
+            Expr::Column(name) if local.column_index(name).is_none() => outer.column_index(name),
+            Expr::QualifiedColumn { table, column }
+                if *table == outer.name && *table != local.name =>
+            {
+                outer.column_index(column)
+            }
+            Expr::Compare { left, right, .. } => {
+                visit(left, local, outer, param_base, bindings);
+                visit(right, local, outer, param_base, bindings);
+                None
+            }
+            Expr::And(items) | Expr::Or(items) => {
+                for item in items {
+                    visit(item, local, outer, param_base, bindings);
+                }
+                None
+            }
+            Expr::Not(inner)
+            | Expr::IsNull { expr: inner, .. }
+            | Expr::InSubquery { expr: inner, .. } => {
+                visit(inner, local, outer, param_base, bindings);
+                None
+            }
+            _ => None,
+        };
+        if let Some(index) = index {
+            let slot = bindings
+                .iter()
+                .position(|&col| col == index)
+                .unwrap_or_else(|| {
+                    bindings.push(index);
+                    bindings.len() - 1
+                });
+            *expr = Expr::Param(param_base + slot);
+        }
+    }
+
+    let mut bindings = Vec::new();
+    for expression in [&mut select.filter, &mut select.having]
+        .into_iter()
+        .flatten()
+    {
+        visit(expression, local, outer, param_base, &mut bindings);
+    }
+    if let SelectColumns::Items(items) = &mut select.columns {
+        for item in items {
+            match &mut item.expr {
+                SelectExpr::InSubquery { expr, .. } => {
+                    visit(expr, local, outer, param_base, &mut bindings)
+                }
+                SelectExpr::Column { name, .. } if local.column_index(name).is_none() => {
+                    let mut expr = Expr::Column(name.clone());
+                    visit(&mut expr, local, outer, param_base, &mut bindings);
+                    if let Expr::Param(idx) = expr {
+                        if item.alias.is_none() {
+                            item.alias = Some(name.clone());
+                        }
+                        item.expr = SelectExpr::Param { idx };
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    bindings
+}
+
 fn bind_one_subquery(
     tx: &DocumentTransaction<'_, '_>,
     slot: &SubquerySlot,
@@ -602,14 +696,42 @@ fn bind_one_subquery(
     match &slot.subquery.body {
         SubqueryBody::Select(select) => {
             let cached_table = catalog::load_table_cached(tx, &select.table, cache.tables())?;
-            let plan = exec::get_or_build_select_plan_with_outer(
-                slot.subquery.id,
-                select,
-                &cached_table,
-                outer_scopes,
-                limits,
-                cache,
-            )?;
+            let mut stmt = (**select).clone();
+            let bindings = outer_scopes.last().map_or_else(Vec::new, |outer| {
+                lift_outer_columns(&mut stmt, &cached_table.def, outer, params.len())
+            });
+            let param_base = params.len();
+            let mut typed_params = Vec::new();
+            let params = if bindings.is_empty() {
+                params
+            } else {
+                typed_params.extend_from_slice(params);
+                let outer = *outer_scopes.last().expect("outer columns were bound");
+                typed_params.extend(bindings.iter().map(
+                    |&col| match outer.columns[col].col_type {
+                        SqlType::Integer => SqlValue::Integer(0),
+                        SqlType::Real => SqlValue::Real(0.0),
+                        SqlType::Text { .. } => SqlValue::Text(String::new()),
+                        SqlType::Boolean => SqlValue::Boolean(false),
+                    },
+                ));
+                typed_params.as_slice()
+            };
+            let select = &stmt;
+
+            let plan = if bindings.is_empty() {
+                exec::get_or_build_select_plan_with_outer(
+                    slot.subquery.id,
+                    select,
+                    &cached_table,
+                    outer_scopes,
+                    limits,
+                    cache,
+                )?
+            } else {
+                // The lifted parameter positions depend on both scopes.
+                exec::build_select_plan(select, &cached_table, outer_scopes, limits)?
+            };
             let table = &cached_table.def;
             if matches!(slot.role, SubqueryRole::In | SubqueryRole::Scalar) {
                 check_single_column_select(select, table, slot.subquery.offset)?;
@@ -628,12 +750,26 @@ fn bind_one_subquery(
                 limits,
                 cache,
             )?;
+            if nested.iter().any(|sub| !sub.outer_bindings.is_empty()) {
+                return Err(SqlError::Unsupported {
+                    feature: "nested correlated subqueries".into(),
+                    offset: Some(slot.subquery.offset),
+                });
+            }
             plan.validate_params(params)?;
             let _ = exec::resolve_limit_value(select.limit, params, "LIMIT")?;
             let _ = exec::resolve_limit_value(select.offset, params, "OFFSET")?;
 
             let output_type = if matches!(slot.role, SubqueryRole::In | SubqueryRole::Scalar) {
-                select_output_type(select, table, &plan, &nested)
+                match select_output_type(select, table, &plan, &nested) {
+                    Some(StaticExprType::Param(idx)) if idx >= param_base => {
+                        let outer = outer_scopes.last().expect("outer parameter has a scope");
+                        Some(StaticExprType::Typed(
+                            outer.columns[bindings[idx - param_base]].col_type,
+                        ))
+                    }
+                    output => output,
+                }
             } else {
                 Some(StaticExprType::Typed(SqlType::Boolean))
             };
@@ -642,10 +778,11 @@ fn bind_one_subquery(
                 context: slot.context,
                 offset: slot.subquery.offset,
                 output_type,
+                outer_bindings: bindings,
                 body: PreparedBody::Select {
                     cached_table,
                     plan,
-                    stmt: (**select).clone(),
+                    stmt,
                     nested,
                 },
             })
@@ -669,6 +806,7 @@ fn bind_one_subquery(
                 context: slot.context,
                 offset: slot.subquery.offset,
                 output_type: None,
+                outer_bindings: Vec::new(),
                 body: PreparedBody::Join {
                     join: (**join).clone(),
                     param_start: *param_start,
@@ -825,7 +963,7 @@ pub(crate) fn check_subquery_types(
     Ok(())
 }
 
-fn check_runtime_subquery_values(
+pub(super) fn check_runtime_subquery_values(
     checks: &[SubqueryTypeCheck],
     values: &[SubqueryValue],
     params: &[SqlValue],
@@ -951,6 +1089,12 @@ pub(crate) fn execute_subqueries(
     budget: &mut SubqueryBudget,
     force_full_scan: bool,
 ) -> Result<Vec<SubqueryValue>, SqlError> {
+    if prepared.iter().any(|sub| !sub.outer_bindings.is_empty()) {
+        return Err(SqlError::Unsupported {
+            feature: "correlated subquery outside a simple SELECT".into(),
+            offset: None,
+        });
+    }
     let mut values = Vec::with_capacity(prepared.len());
     for sub in prepared {
         values.push(execute_one_subquery(
@@ -967,7 +1111,7 @@ pub(crate) fn execute_subqueries(
     Ok(values)
 }
 
-fn execute_one_subquery(
+pub(super) fn execute_one_subquery(
     tx: &DocumentTransaction<'_, '_>,
     sub: &PreparedSubquery,
     params: &[SqlValue],
@@ -983,6 +1127,9 @@ fn execute_one_subquery(
             stmt,
             nested,
         } => {
+            if !sub.outer_bindings.is_empty() {
+                plan.validate_params(params)?;
+            }
             let limit = exec::resolve_limit_value(stmt.limit, params, "LIMIT")?;
             if limit == Some(0) {
                 return Ok(match sub.role {
@@ -1113,6 +1260,18 @@ pub(crate) fn explain_subqueries(
     out: &mut Vec<Vec<SqlValue>>,
 ) -> Result<(), SqlError> {
     for sub in prepared {
+        if !sub.outer_bindings.is_empty() {
+            out.push(exec::explain_row(
+                "subquery",
+                "",
+                sub.role.label().into(),
+                format!(
+                    "correlated: bind {} outer columns per row",
+                    sub.outer_bindings.len()
+                ),
+            ));
+            continue;
+        }
         match &sub.body {
             PreparedBody::Select {
                 cached_table,

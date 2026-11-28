@@ -377,7 +377,6 @@ fn drop_and_rename_columns_are_atomic_and_preserve_other_indexes() {
         }
         for sql in [
             "ALTER TABLE t DROP COLUMN id",
-            "ALTER TABLE t RENAME COLUMN keep TO replacement",
             "ALTER TABLE t DROP COLUMN chk",
             "ALTER TABLE t RENAME COLUMN a TO id",
         ] {
@@ -557,5 +556,46 @@ fn ddl_inside_explicit_transactions() {
             "{backend}: {dropped:?}"
         );
         assert_eq!(count(db, "t"), 2, "{backend}");
+    });
+}
+
+#[test]
+fn rename_dependent_columns_rewrites_indexes_checks_and_foreign_keys() {
+    for_both(|db, backend| {
+        let sqlite = rusqlite::Connection::open_in_memory().unwrap();
+        sqlite.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        for sql in [
+            "CREATE TABLE p (a INTEGER CHECK(a > 0), b TEXT, PRIMARY KEY(a,b))",
+            "CREATE TABLE c (id INTEGER PRIMARY KEY, a INTEGER, b TEXT CHECK(b <> 'b'), FOREIGN KEY(a,b) REFERENCES p ON UPDATE CASCADE)",
+            "CREATE INDEX cb ON c(a,b)",
+            "INSERT INTO p VALUES(1,'x')",
+            "INSERT INTO c VALUES(10,1,'x')",
+            "ALTER TABLE p RENAME COLUMN a TO \"new a\"",
+            "ALTER TABLE c RENAME COLUMN b TO label",
+            "UPDATE p SET \"new a\" = 2 WHERE \"new a\" = 1",
+        ] {
+            db.execute(sql, &[])
+                .unwrap_or_else(|error| panic!("{backend}: {sql}: {error}"));
+            sqlite.execute(sql, []).unwrap();
+        }
+        for sql in [
+            "UPDATE p SET \"new a\" = 0",
+            "UPDATE c SET label = 'b'",
+            "UPDATE c SET a = 1",
+        ] {
+            assert!(
+                matches!(db.execute(sql, &[]), Err(SqlError::Constraint(_))),
+                "{backend}: {sql}"
+            );
+            assert!(sqlite.execute(sql, []).is_err());
+        }
+        let query = "SELECT a, label FROM c WHERE a=2 AND label='x'";
+        let SqlOutcome::Rows { rows, .. } = db.execute(query, &[]).unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            rows,
+            vec![vec![SqlValue::Integer(2), SqlValue::Text("x".into())]]
+        );
     });
 }

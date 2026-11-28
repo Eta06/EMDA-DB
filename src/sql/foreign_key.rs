@@ -498,18 +498,10 @@ impl PendingDeleteFkChecks {
         cache: &TableCache,
     ) -> Result<(), SqlError> {
         let mut budget = CascadeBudget::default();
-        let mut tuple_removed = self.tuple_removed;
-        apply_delete_actions(
-            tx,
-            table,
-            self.deleted_by_col,
-            limits,
-            cache,
-            &mut budget,
-            &mut tuple_removed,
-            0,
-        )?;
-        tuple_removed.verify(tx, limits, cache, &mut budget.visited)
+        let mut actions = UpdateActions::new(limits, cache, &mut budget);
+        actions.tuple_removed = self.tuple_removed;
+        apply_delete_actions(tx, table, self.deleted_by_col, &mut actions, 0)?;
+        actions.finish(tx)
     }
 }
 
@@ -545,27 +537,23 @@ fn load_child(
     Ok((child, idx))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn apply_delete_actions(
     tx: &mut DocumentTransaction<'_, '_>,
     parent: &TableDef,
     removed_by_col: Vec<(usize, FkKeySet)>,
-    limits: &SqlLimits,
-    cache: &TableCache,
-    budget: &mut CascadeBudget,
-    tuple_removed: &mut Removals,
+    actions: &mut UpdateActions<'_>,
     depth: usize,
 ) -> Result<(), SqlError> {
-    for (ref_col_idx, keys) in &removed_by_col {
+    for (ref_col_idx, keys) in removed_by_col {
         if keys.is_empty() {
             continue;
         }
-        let ref_col_name = parent.columns[*ref_col_idx].name.clone();
+        let ref_col_name = parent.columns[ref_col_idx].name.clone();
         for fk_ref in &parent.referenced_by {
             if fk_ref.ref_column != ref_col_name {
                 continue;
             }
-            let (child, child_col_idx) = load_child(tx, fk_ref, cache)?;
+            let (child, child_col_idx) = load_child(tx, fk_ref, actions.cache)?;
             let child_def = &child.def;
             let action = child_def
                 .foreign_keys
@@ -577,14 +565,15 @@ fn apply_delete_actions(
                 })
                 .map_or(ForeignKeyAction::NoAction, |fk| fk.on_delete);
             match action {
-                ForeignKeyAction::NoAction | ForeignKeyAction::Restrict => {
+                ForeignKeyAction::NoAction => {}
+                ForeignKeyAction::Restrict => {
                     if child_has_any_key(
                         tx,
                         child_def,
                         child_col_idx,
-                        keys,
-                        limits,
-                        &mut budget.visited,
+                        &keys,
+                        actions.limits,
+                        &mut actions.budget.visited,
                     )? {
                         return Err(SqlError::Constraint(format!(
                             "FOREIGN KEY constraint failed: '{}.{}' is referenced by '{}.{}'",
@@ -598,18 +587,18 @@ fn apply_delete_actions(
                             "foreign key actions nest deeper than {MAX_FK_CASCADE_DEPTH} levels"
                         )));
                     }
-                    let rows =
-                        collect_child_rows(tx, child_def, child_col_idx, keys, limits, budget)?;
+                    let rows = collect_child_rows(
+                        tx,
+                        child_def,
+                        child_col_idx,
+                        &keys,
+                        actions.limits,
+                        actions.budget,
+                    )?;
                     if rows.is_empty() {
                         continue;
                     }
-                    budget.changed += rows.len();
-                    if budget.changed > limits.max_mutation_rows {
-                        return Err(SqlError::Bounds(format!(
-                            "foreign key actions change more than max_mutation_rows ({}) rows",
-                            limits.max_mutation_rows
-                        )));
-                    }
+                    actions.charge_mutations(rows.len())?;
                     if action == ForeignKeyAction::Cascade {
                         let mut removed = PendingDeleteFkChecks::new(child_def)?;
                         for (doc_id, obj) in &rows {
@@ -618,19 +607,18 @@ fn apply_delete_actions(
                                 .map_err(classify_io_error)?;
                             removed.record_row(child_def, obj)?;
                         }
-                        tuple_removed.append(removed.tuple_removed);
+                        actions
+                            .tuple_removed
+                            .append(removed.tuple_removed, depth + 1);
                         apply_delete_actions(
                             tx,
                             child_def,
                             removed.deleted_by_col,
-                            limits,
-                            cache,
-                            budget,
-                            tuple_removed,
+                            actions,
                             depth + 1,
                         )?;
                     } else {
-                        let checks = super::exec::bind_table_checks(child_def, limits)?;
+                        let checks = super::exec::bind_table_checks(child_def, actions.limits)?;
                         let column = &child_def.columns[child_col_idx];
                         let mut changed = PendingUpdateFkChecks::new(child_def, &[child_col_idx]);
                         for (doc_id, mut obj) in rows {
@@ -645,15 +633,19 @@ fn apply_delete_actions(
                         }
                         // SET NULL updates a child row. Its dependents follow
                         // ON UPDATE even though the original parent was deleted.
-                        let mut updates = UpdateActions::new(limits, cache, budget);
-                        updates.apply(tx, child_def, changed.parent_changes, depth + 1)?;
-                        tuple_removed.append(changed.tuple_removed);
-                        tuple_removed.append(std::mem::take(&mut updates.tuple_removed));
-                        updates.verify(tx)?;
+                        actions
+                            .tuple_removed
+                            .append(changed.tuple_removed, depth + 1);
+                        actions.apply(tx, child_def, changed.parent_changes, depth + 1)?;
                     }
                 }
             }
         }
+        actions
+            .removed
+            .entry(parent.name.clone())
+            .or_default()
+            .push((ref_col_idx, keys));
     }
     Ok(())
 }
@@ -836,7 +828,7 @@ impl PendingUpdateFkChecks {
         updates: &[(&catalog::ColumnDef, SqlValue)],
     ) -> Result<(), SqlError> {
         if self.track_tuple_parent {
-            self.tuple_removed.record(table, old)?;
+            self.tuple_removed.record_update(table, old, updates)?;
         }
         for (col, changes) in &mut self.parent_changes {
             let column = &table.columns[*col];
@@ -870,7 +862,7 @@ impl PendingUpdateFkChecks {
         }
         actions.tuple_removed = self.tuple_removed;
         actions.apply(tx, table, self.parent_changes, 0)?;
-        actions.verify(tx)
+        actions.finish(tx)
     }
 }
 
@@ -943,13 +935,7 @@ impl<'a> UpdateActions<'a> {
                         "foreign key actions nest deeper than {MAX_FK_CASCADE_DEPTH} levels"
                     )));
                 }
-                self.budget.changed += rows.len();
-                if self.budget.changed > self.limits.max_mutation_rows {
-                    return Err(SqlError::Bounds(format!(
-                        "foreign key actions change more than max_mutation_rows ({}) rows",
-                        self.limits.max_mutation_rows
-                    )));
-                }
+                self.charge_mutations(rows.len())?;
                 let mut downstream = PendingUpdateFkChecks::new(child, &[child_col]);
                 let checks = super::exec::bind_table_checks(child, self.limits)?;
                 let child_column = &child.columns[child_col];
@@ -1009,7 +995,8 @@ impl<'a> UpdateActions<'a> {
                         .or_default()
                         .insert(id);
                 }
-                self.tuple_removed.append(downstream.tuple_removed);
+                self.tuple_removed
+                    .append(downstream.tuple_removed, depth + 1);
                 self.apply(tx, child, downstream.parent_changes, depth + 1)?;
             }
             self.removed
@@ -1018,6 +1005,121 @@ impl<'a> UpdateActions<'a> {
                 .push((ref_col, old_keys));
         }
         Ok(())
+    }
+
+    fn charge_mutations(&mut self, count: usize) -> Result<(), SqlError> {
+        self.budget.changed += count;
+        if self.budget.changed > self.limits.max_mutation_rows {
+            return Err(SqlError::Bounds(format!(
+                "foreign key actions change more than max_mutation_rows ({}) rows",
+                self.limits.max_mutation_rows
+            )));
+        }
+        Ok(())
+    }
+
+    fn finish(mut self, tx: &mut DocumentTransaction<'_, '_>) -> Result<(), SqlError> {
+        while let Some(event) = self.tuple_removed.actions.pop_front() {
+            self.apply_tuple(tx, event)?;
+        }
+        self.verify(tx)
+    }
+
+    fn apply_tuple(
+        &mut self,
+        tx: &mut DocumentTransaction<'_, '_>,
+        event: tuple::Action,
+    ) -> Result<(), SqlError> {
+        let child = catalog::load_table_cached(tx, &event.reference.child_table, self.cache)?;
+        let child = &child.def;
+        let cols = tuple::columns(child, &event.reference.child_columns)?;
+        let rows = tuple::child_rows(
+            tx,
+            child,
+            &cols,
+            &event.old,
+            self.limits,
+            &mut self.budget.visited,
+            self.limits.max_mutation_rows - self.budget.changed + 1,
+        )?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        if event.depth >= MAX_FK_CASCADE_DEPTH {
+            return Err(SqlError::Bounds(format!(
+                "foreign key actions nest deeper than {MAX_FK_CASCADE_DEPTH} levels"
+            )));
+        }
+        self.charge_mutations(rows.len())?;
+        let depth = event.depth + 1;
+        if event.new.is_none() && event.reference.on_delete == ForeignKeyAction::Cascade {
+            let mut downstream = PendingDeleteFkChecks::new(child)?;
+            for entry in rows {
+                let Some(obj) = entry.document.as_object() else {
+                    return Err(classify_io_error(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "stored row is not an object",
+                    )));
+                };
+                super::exec::verify_doc_pk_id(child, &entry.id, obj)?;
+                downstream.record_row(child, obj)?;
+                tx.delete(&child.name, &entry.id)
+                    .map_err(classify_io_error)?;
+            }
+            self.tuple_removed.append(downstream.tuple_removed, depth);
+            return apply_delete_actions(tx, child, downstream.deleted_by_col, self, depth);
+        }
+        let values = event
+            .new
+            .filter(|_| event.reference.on_update == ForeignKeyAction::Cascade);
+        let mut updates = Vec::with_capacity(cols.len());
+        for (i, col) in cols.iter().enumerate() {
+            let column = &child.columns[*col];
+            let value = match values.as_ref().map(|tuple| &tuple[i]) {
+                Some(IndexValue::Integer(n)) => SqlValue::Integer(*n),
+                Some(IndexValue::String(text)) => SqlValue::Text(text.clone()),
+                Some(IndexValue::Boolean(value)) => SqlValue::Boolean(*value),
+                Some(IndexValue::Null) | None => SqlValue::Null,
+            };
+            let value = coerce_for_column(
+                &value,
+                &column.name,
+                column.col_type,
+                column.not_null,
+                false,
+                self.limits.max_text_bytes,
+            )?;
+            updates.push((column, value));
+        }
+        let checks = super::exec::bind_table_checks(child, self.limits)?;
+        let assigns_pk = child.primary_key_columns().any(|key| cols.contains(&key));
+        let mut downstream = PendingUpdateFkChecks::new(child, &cols);
+        for entry in rows {
+            let Value::Object(mut obj) = entry.document else {
+                return Err(classify_io_error(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "stored row is not an object",
+                )));
+            };
+            super::exec::verify_doc_pk_id(child, &entry.id, &obj)?;
+            downstream.record_row(child, &obj, &updates)?;
+            for (column, value) in &updates {
+                let json = super::exec::sql_value_to_json(value, &column.name)?;
+                if json.is_null() {
+                    obj.remove(&column.name);
+                } else {
+                    obj.insert(column.name.clone(), json);
+                }
+            }
+            super::exec::enforce_checks(&checks, child, &obj)?;
+            let id = super::exec::stage_updated_row(tx, child, entry.id, obj, assigns_pk)?;
+            self.changed
+                .entry(child.name.clone())
+                .or_default()
+                .insert(id);
+        }
+        self.tuple_removed.append(downstream.tuple_removed, depth);
+        self.apply(tx, child, downstream.parent_changes, depth)
     }
 
     fn verify(self, tx: &DocumentTransaction<'_, '_>) -> Result<(), SqlError> {

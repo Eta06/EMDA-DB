@@ -60,6 +60,8 @@ pub(crate) struct TupleForeignKeySpec {
     pub(crate) columns: Vec<usize>,
     pub(crate) ref_table: String,
     pub(crate) ref_columns: Vec<String>,
+    pub(crate) on_delete: ForeignKeyAction,
+    pub(crate) on_update: ForeignKeyAction,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -507,6 +509,34 @@ pub(crate) fn parse_check_expression(text: &str, limits: &SqlLimits) -> Result<E
         });
     }
     Ok(expr)
+}
+
+/// Rewrite identifier tokens in a stored CHECK without changing its literals or comments.
+pub(super) fn rename_check_column(
+    text: &str,
+    old: &str,
+    new: &str,
+    limits: &SqlLimits,
+) -> Result<String, SqlError> {
+    let quoted_name = format!("\"{}\"", new.replace('"', "\"\""));
+    let mut result = String::with_capacity(text.len());
+    let mut from = 0;
+    for token in tokenize(text, limits)? {
+        let TokenKind::Ident { text: name, quoted } = token.kind else {
+            continue;
+        };
+        if name != old || (!quoted && is_reserved_keyword(&name)) {
+            continue;
+        }
+        result.push_str(&text[from..token.offset]);
+        result.push_str(&quoted_name);
+        from = token.offset + name.len();
+        if quoted {
+            from += 2 + name.bytes().filter(|&byte| byte == b'"').count();
+        }
+    }
+    result.push_str(&text[from..]);
+    Ok(result)
 }
 
 struct ParsedReferences {
@@ -1337,25 +1367,12 @@ impl Parser<'_> {
                     "foreign key column counts differ".into(),
                 ));
             }
-            if [parsed.on_delete, parsed.on_update]
-                .into_iter()
-                .flatten()
-                .any(|action| {
-                    !matches!(
-                        action,
-                        ForeignKeyAction::NoAction | ForeignKeyAction::Restrict
-                    )
-                })
-            {
-                return Err(SqlError::Unsupported {
-                    feature: "CASCADE or SET NULL on a composite foreign key".into(),
-                    offset: None,
-                });
-            }
             tuple_foreign_keys.push(TupleForeignKeySpec {
                 columns: indices,
                 ref_table: parsed.ref_table,
                 ref_columns: parsed.ref_columns,
+                on_delete: parsed.on_delete.unwrap_or_default(),
+                on_update: parsed.on_update.unwrap_or_default(),
             });
         }
         for (column, parsed) in col_fks {

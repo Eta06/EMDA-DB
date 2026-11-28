@@ -293,7 +293,6 @@ fn ddl_syntax_target_validation_and_errors() {
         for sql in [
             "CREATE TABLE u3 (id INT PRIMARY KEY, p INT REFERENCES parents(id) ON DELETE SET DEFAULT)",
             "CREATE TABLE u6 (id INT PRIMARY KEY, p INT REFERENCES parents(id) ON UPDATE SET DEFAULT)",
-            "CREATE TABLE u7 (id INT PRIMARY KEY, a INT, b INT, FOREIGN KEY (a, b) REFERENCES parents(a, b) ON DELETE CASCADE)",
             "CREATE TABLE u8 (id INT PRIMARY KEY, a INT REFERENCES parents(a, b))",
             "CREATE TABLE u9 (id INT PRIMARY KEY, p INT REFERENCES parents(id) MATCH FULL)",
             "CREATE TABLE u10 (id INT PRIMARY KEY, p INT REFERENCES parents(id) DEFERRABLE)",

@@ -377,3 +377,57 @@ fn random_deletes_match_sqlite() {
         }
     });
 }
+
+#[test]
+fn composite_actions_follow_indexes_chains_and_atomic_rollback() {
+    for_both(SqlLimits::default(), |db, backend| {
+        let sqlite = rusqlite::Connection::open_in_memory().unwrap();
+        sqlite.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+        for sql in [
+            "CREATE TABLE p (a INTEGER, b TEXT, PRIMARY KEY(a,b))",
+            "CREATE TABLE c (a INTEGER, b TEXT, PRIMARY KEY(a,b), FOREIGN KEY(a,b) REFERENCES p ON UPDATE CASCADE ON DELETE CASCADE)",
+            "CREATE TABLE g (id INTEGER PRIMARY KEY, a INTEGER CHECK(a < 10), b TEXT, FOREIGN KEY(a,b) REFERENCES c ON UPDATE CASCADE ON DELETE SET NULL)",
+            "CREATE INDEX ga ON g (a,b)",
+            "CREATE TABLE n (id INTEGER PRIMARY KEY, a INTEGER, b TEXT, FOREIGN KEY(a,b) REFERENCES p ON UPDATE SET NULL)",
+            "INSERT INTO p VALUES (1,'a'), (1,'b')",
+            "INSERT INTO c VALUES (1,'a'), (1,'b')",
+            "INSERT INTO g VALUES (7,1,'a'), (8,1,'b')",
+            "INSERT INTO n VALUES (9,1,'a')",
+            "UPDATE p SET a = 2, b = 'x' WHERE a = 1 AND b = 'a'",
+        ] {
+            db.execute(sql, &[])
+                .unwrap_or_else(|error| panic!("{backend}: {sql}: {error}"));
+            sqlite.execute(sql, []).unwrap();
+        }
+        let invalid = "UPDATE p SET a = 11 WHERE a = 2 AND b = 'x'";
+        assert!(matches!(
+            db.execute(invalid, &[]),
+            Err(SqlError::Constraint(_))
+        ));
+        assert!(sqlite.execute(invalid, []).is_err());
+        let deletion = "DELETE FROM p WHERE a = 1 AND b = 'b'";
+        db.execute(deletion, &[]).unwrap();
+        sqlite.execute(deletion, []).unwrap();
+        for query in [
+            "SELECT a, b FROM p ORDER BY a,b",
+            "SELECT a, b FROM c ORDER BY a,b",
+            "SELECT a, b FROM g ORDER BY id",
+            "SELECT a, b FROM n ORDER BY id",
+        ] {
+            let mut stmt = sqlite.prepare(query).unwrap();
+            let expected = stmt
+                .query_map([], |row| {
+                    Ok(vec![
+                        row.get::<_, Option<i64>>(0)?
+                            .map_or(SqlValue::Null, SqlValue::Integer),
+                        row.get::<_, Option<String>>(1)?
+                            .map_or(SqlValue::Null, SqlValue::Text),
+                    ])
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(rows(db, query), expected, "{backend}: {query}");
+        }
+    });
+}

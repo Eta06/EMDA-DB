@@ -82,7 +82,7 @@ pub(crate) struct IndexDef {
     pub(crate) is_constraint: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ForeignKeyAction {
     #[default]
@@ -95,7 +95,7 @@ pub(crate) enum ForeignKeyAction {
 }
 
 impl ForeignKeyAction {
-    fn is_default(&self) -> bool {
+    pub(super) fn is_default(&self) -> bool {
         *self == Self::NoAction
     }
 }
