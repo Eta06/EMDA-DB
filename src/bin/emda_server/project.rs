@@ -79,12 +79,15 @@ struct CredentialScope {
     kv_prefixes: HashMap<String, DatasetAccess>,
     #[serde(default)]
     document_collections: HashMap<String, DatasetAccess>,
+    #[serde(default)]
+    sql_tables: HashMap<String, DatasetAccess>,
 }
 
 impl CredentialScope {
     fn validate(&self) -> io::Result<()> {
         if self.kv_prefixes.len() > 64
             || self.document_collections.len() > 64
+            || self.sql_tables.len() > 64
             || self
                 .kv_prefixes
                 .keys()
@@ -93,6 +96,9 @@ impl CredentialScope {
                 .document_collections
                 .keys()
                 .any(|name| !(1..=128).contains(&name.len()))
+            || self.sql_tables.keys().any(|name| {
+                !(1..=database_engine::sql::MAX_SQL_IDENTIFIER_BYTES).contains(&name.len())
+            })
         {
             return Err(config_error("invalid credential scope"));
         }
@@ -117,6 +123,10 @@ impl CredentialScope {
             }
             Operation::DocumentCreate { .. } | Operation::Sql { .. } => None,
         };
+        Self::permits(access, required)
+    }
+
+    fn permits(access: Option<&DatasetAccess>, required: Role) -> bool {
         match access {
             Some(DatasetAccess::Read) => required == Role::Read,
             Some(DatasetAccess::Write) => required <= Role::Write,
@@ -171,89 +181,157 @@ struct ProjectStores {
 }
 
 struct StorageState {
-    stores: Option<Arc<ProjectStores>>,
+    lifecycle: Lifecycle,
     last_use: Instant,
-    retry_at: Option<Instant>,
+}
+
+enum Lifecycle {
+    Closed { retry_at: Option<Instant> },
+    Transitioning,
+    Open(Arc<ProjectStores>),
 }
 
 struct StoreLease<'a> {
     stores: Arc<ProjectStores>,
-    state: &'a Mutex<StorageState>,
+    idle_state: Option<&'a Mutex<StorageState>>,
 }
 
 impl Drop for StoreLease<'_> {
     fn drop(&mut self) {
-        self.state.lock().last_use = Instant::now();
+        if let Some(state) = self.idle_state {
+            state.lock().last_use = Instant::now();
+        }
+    }
+}
+
+struct Transition<'a> {
+    state: &'a Mutex<StorageState>,
+    finished: bool,
+}
+
+impl Transition<'_> {
+    fn new(state: &Mutex<StorageState>) -> Transition<'_> {
+        Transition {
+            state,
+            finished: false,
+        }
+    }
+
+    fn finish(mut self, lifecycle: Lifecycle) {
+        let mut state = self.state.lock();
+        state.lifecycle = lifecycle;
+        state.last_use = Instant::now();
+        self.finished = true;
+    }
+}
+
+impl Drop for Transition<'_> {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let mut state = self.state.lock();
+        if matches!(state.lifecycle, Lifecycle::Transitioning) {
+            state.lifecycle = Lifecycle::Closed { retry_at: None };
+        }
     }
 }
 
 impl ProjectStorage {
-    fn open_stores(&self) -> io::Result<Arc<ProjectStores>> {
+    fn open_stores(&self, deadline: Option<Instant>) -> io::Result<Arc<ProjectStores>> {
+        check_wake_deadline(deadline)?;
         // Revalidate on every wake. Project files are never supplied by a request.
+        ensure_private_directory(self.directory.parent().expect("project has a data root"))?;
         ensure_private_directory(&self.directory)?;
-        Ok(Arc::new(ProjectStores {
-            data: open_project_store(
-                &self.directory.join("data"),
-                self.data_log_bytes,
-                self.max_live_keys,
-            )?,
-            sql: open_project_store(
-                &self.directory.join("sql"),
-                self.sql_log_bytes,
-                self.max_live_keys,
-            )?,
-        }))
+        let data = open_project_store(
+            &self.directory.join("data"),
+            self.data_log_bytes,
+            self.max_live_keys,
+        )?;
+        check_wake_deadline(deadline)?;
+        let sql = open_project_store(
+            &self.directory.join("sql"),
+            self.sql_log_bytes,
+            self.max_live_keys,
+        )?;
+        Ok(Arc::new(ProjectStores { data, sql }))
     }
 
     fn lease(&self, deadline: Instant) -> Result<StoreLease<'_>, Failure> {
         if Instant::now() >= deadline {
             return Err(Failure::Timeout);
         }
-        let mut state = self.state.try_lock().ok_or(Failure::Busy)?;
-        if state.stores.is_none() {
-            if state.retry_at.is_some_and(|time| Instant::now() < time) {
+        let mut state = self.state.lock();
+        let idle_state = self.idle_timeout.map(|_| &self.state);
+        match &state.lifecycle {
+            Lifecycle::Open(stores) => {
+                return Ok(StoreLease {
+                    stores: Arc::clone(stores),
+                    idle_state,
+                });
+            }
+            Lifecycle::Transitioning => return Err(Failure::Busy),
+            Lifecycle::Closed {
+                retry_at: Some(time),
+            } if Instant::now() < *time => {
                 return Err(Failure::Unavailable);
             }
-            let _wake = self.waking.enter().ok_or(Failure::Busy)?;
-            match self.open_stores() {
-                Ok(stores) => {
-                    state.stores = Some(stores);
-                    state.retry_at = None;
-                    state.last_use = Instant::now();
+            Lifecycle::Closed { .. } => {}
+        }
+        let _wake = self.waking.enter().ok_or(Failure::Busy)?;
+        state.lifecycle = Lifecycle::Transitioning;
+        drop(state);
+        let transition = Transition::new(&self.state);
+        match self.open_stores(Some(deadline)) {
+            Ok(stores) => {
+                transition.finish(Lifecycle::Open(Arc::clone(&stores)));
+                if Instant::now() >= deadline {
+                    return Err(Failure::Timeout);
                 }
-                Err(_) => {
-                    state.retry_at = Some(Instant::now() + Duration::from_secs(1));
-                    return Err(Failure::Unavailable);
-                }
+                Ok(StoreLease { stores, idle_state })
+            }
+            Err(error) if error.kind() == io::ErrorKind::TimedOut && Instant::now() >= deadline => {
+                Err(Failure::Timeout)
+            }
+            Err(error) => {
+                transition.finish(Lifecycle::Closed {
+                    retry_at: Some(Instant::now() + Duration::from_secs(1)),
+                });
+                eprintln!(
+                    "emda-server project wake failed for {}: {error}",
+                    self.directory.display()
+                );
+                Err(Failure::Unavailable)
             }
         }
-        if Instant::now() >= deadline {
-            return Err(Failure::Timeout);
-        }
-        Ok(StoreLease {
-            stores: Arc::clone(state.stores.as_ref().expect("stores are open")),
-            state: &self.state,
-        })
     }
 
     fn reap_idle(&self, now: Instant) {
         let Some(idle_timeout) = self.idle_timeout else {
             return;
         };
-        let Some(mut state) = self.state.try_lock() else {
-            return;
-        };
-        if now.saturating_duration_since(state.last_use) >= idle_timeout
-            && state
-                .stores
-                .as_ref()
-                .is_some_and(|stores| Arc::strong_count(stores) == 1)
+        let mut state = self.state.lock();
+        if now.saturating_duration_since(state.last_use) < idle_timeout
+            || !matches!(&state.lifecycle, Lifecycle::Open(stores) if Arc::strong_count(stores) == 1)
         {
-            // Drop the stores under the lifecycle lock before another wake can
-            // attempt to acquire either store's exclusive filesystem lock.
-            drop(state.stores.take());
+            return;
         }
+        let stores = std::mem::replace(&mut state.lifecycle, Lifecycle::Transitioning);
+        drop(state);
+        let transition = Transition::new(&self.state);
+        drop(stores);
+        transition.finish(Lifecycle::Closed { retry_at: None });
     }
+}
+
+fn check_wake_deadline(deadline: Option<Instant>) -> io::Result<()> {
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "project wake deadline exceeded",
+        ));
+    }
+    Ok(())
 }
 
 impl Config {
@@ -335,14 +413,13 @@ impl Config {
                 idle_timeout: spec.idle_timeout_ms.map(Duration::from_millis),
                 waking: Arc::clone(&waking),
                 state: Mutex::new(StorageState {
-                    stores: None,
+                    lifecycle: Lifecycle::Closed { retry_at: None },
                     last_use: Instant::now(),
-                    retry_at: None,
                 }),
             };
             if storage.idle_timeout.is_none() {
-                let stores = storage.open_stores()?;
-                storage.state.get_mut().stores = Some(stores);
+                let stores = storage.open_stores(None)?;
+                storage.state.get_mut().lifecycle = Lifecycle::Open(stores);
             }
             opened.insert(
                 spec.id.clone(),
@@ -371,10 +448,12 @@ fn validate_project_store(path: &Path) -> io::Result<()> {
     ensure_private_directory(path)?;
     let mut has_lock = false;
     let mut has_records = false;
+    let mut has_witness = false;
     for entry in fs::read_dir(path)? {
         let entry = entry?;
         has_lock |= entry.file_name() == "store.lock";
         has_records |= entry.file_name() == "records.log";
+        has_witness |= entry.file_name() == "commit.state";
         let info = fs::symlink_metadata(entry.path())?;
         if !info.is_file() || info.nlink() != 1 || info.uid() != rustix::process::geteuid().as_raw()
         {
@@ -383,7 +462,7 @@ fn validate_project_store(path: &Path) -> io::Result<()> {
             ));
         }
     }
-    if has_lock && !has_records {
+    if (has_lock || has_witness) && !has_records {
         return Err(config_error(
             "initialized project store lost its records log",
         ));
@@ -449,6 +528,10 @@ impl Admission {
         }
     }
 
+    pub fn is_idle(&self) -> bool {
+        self.in_flight.load(Ordering::Acquire) == 0
+    }
+
     pub fn enter(self: &Arc<Self>) -> Option<Permit> {
         let mut current = self.in_flight.load(Ordering::Relaxed);
         while current < self.limit {
@@ -491,10 +574,7 @@ impl Project {
             return Err(Failure::Timeout);
         }
         if let Operation::Sql { statement, params } = request.operation {
-            if credential.scope.is_some() {
-                return Err(Failure::Forbidden);
-            }
-            return self.sql(&statement, params, role, deadline);
+            return self.sql(&statement, params, credential, deadline);
         }
 
         let required = match &request.operation {
@@ -544,7 +624,7 @@ impl Project {
         &self,
         statement: &str,
         params: Vec<Value>,
-        role: Role,
+        credential: &Credential,
         deadline: Instant,
     ) -> Result<Value, Failure> {
         let limits = SqlLimits {
@@ -568,9 +648,18 @@ impl Project {
             SqlStatementKind::DataMutation => Role::Write,
             SqlStatementKind::Schema => Role::Admin,
         };
-        if role < required {
+        if credential.role < required {
             return Err(Failure::Forbidden);
         }
+        let table = if let Some(scope) = &credential.scope {
+            let table = statement.isolated_table().ok_or(Failure::Forbidden)?;
+            if !CredentialScope::permits(scope.sql_tables.get(table), required) {
+                return Err(Failure::Forbidden);
+            }
+            Some(table)
+        } else {
+            None
+        };
         let params = params
             .into_iter()
             .map(protocol::sql_value)
@@ -578,9 +667,11 @@ impl Project {
         let lease = self.storage.lease(deadline)?;
         let db = SqlDatabase::with_limits(DocumentDatabase::new(&lease.stores.sql), limits)
             .map_err(sql_failure)?;
-        let result = db
-            .transaction_until(deadline, |tx| tx.execute_prepared(&statement, &params))
-            .map_err(sql_failure)?;
+        let result = match table {
+            Some(table) => db.execute_isolated_until(table, &statement, &params, deadline),
+            None => db.transaction_until(deadline, |tx| tx.execute_prepared(&statement, &params)),
+        }
+        .map_err(sql_failure)?;
         protocol::sql_result(result)
     }
 }
@@ -668,6 +759,7 @@ fn io_failure(error: &io::Error) -> Failure {
     }
     match error.kind() {
         io::ErrorKind::TimedOut => Failure::Timeout,
+        io::ErrorKind::PermissionDenied => Failure::Forbidden,
         io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded | io::ErrorKind::OutOfMemory => {
             Failure::Limit
         }
@@ -752,45 +844,63 @@ mod tests {
     fn wake_admission_and_leases_bound_lifecycle_transitions() {
         let directory = tempfile::tempdir().unwrap();
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let project = directory.path().join("project");
+        create_private_directory(&project).unwrap();
         for name in ["data", "sql"] {
-            create_private_directory(&directory.path().join(name)).unwrap();
+            create_private_directory(&project.join(name)).unwrap();
         }
         let storage = ProjectStorage {
-            directory: directory.path().to_owned(),
+            directory: project.clone(),
             data_log_bytes: 4096,
             sql_log_bytes: 4096,
             max_live_keys: 32,
             idle_timeout: Some(Duration::from_millis(100)),
             waking: Arc::new(Admission::new(1)),
             state: Mutex::new(StorageState {
-                stores: None,
+                lifecycle: Lifecycle::Closed { retry_at: None },
                 last_use: Instant::now(),
-                retry_at: None,
             }),
         };
         let deadline = Instant::now() + Duration::from_secs(5);
         let occupied = storage.waking.enter().unwrap();
         assert!(matches!(storage.lease(deadline), Err(Failure::Busy)));
-        assert!(!directory.path().join("data/store.lock").exists());
+        assert!(!project.join("data/store.lock").exists());
         drop(occupied);
-        let transitioning = storage.state.lock();
+        storage.state.lock().lifecycle = Lifecycle::Transitioning;
+        let transitioning = Transition::new(&storage.state);
         assert!(matches!(storage.lease(deadline), Err(Failure::Busy)));
         drop(transitioning);
         let lease = storage.lease(deadline).unwrap();
         let concurrent = storage.lease(deadline).unwrap();
         assert!(Arc::ptr_eq(&lease.stores, &concurrent.stores));
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let storage = &storage;
+                scope.spawn(move || {
+                    for _ in 0..128 {
+                        assert!(storage.lease(deadline).is_ok(), "warm lease rejected");
+                    }
+                });
+            }
+        });
         storage.reap_idle(Instant::now() + Duration::from_secs(1));
-        assert!(storage.state.lock().stores.is_some());
+        assert!(matches!(storage.state.lock().lifecycle, Lifecycle::Open(_)));
         drop(lease);
         drop(concurrent);
         storage.reap_idle(Instant::now());
-        assert!(storage.state.lock().stores.is_some());
+        assert!(matches!(storage.state.lock().lifecycle, Lifecycle::Open(_)));
         storage.reap_idle(Instant::now() + Duration::from_secs(1));
-        assert!(storage.state.lock().stores.is_none());
+        assert!(matches!(
+            storage.state.lock().lifecycle,
+            Lifecycle::Closed { .. }
+        ));
         assert!(matches!(
             storage.lease(Instant::now()),
             Err(Failure::Timeout)
         ));
-        assert!(storage.state.lock().stores.is_none());
+        assert!(matches!(
+            storage.state.lock().lifecycle,
+            Lifecycle::Closed { .. }
+        ));
     }
 }

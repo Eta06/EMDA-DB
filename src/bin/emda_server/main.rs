@@ -5,13 +5,16 @@ mod protocol;
 
 use project::{Admission, Config, Project};
 use protocol::Failure;
+use rustix::event::{PollFd, PollFlags, poll};
 use rustls::crypto::aws_lc_rs;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
+use signal_hook::consts::{SIGINT, SIGTERM};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -76,22 +79,24 @@ impl Server {
         Ok(())
     }
 
-    fn accept(self: &Arc<Self>, socket: TcpStream) {
+    fn accept(self: &Arc<Self>, socket: TcpStream) -> io::Result<()> {
         let Some(permit) = self.connections.enter() else {
-            return;
+            return Ok(());
         };
         let server = Arc::clone(self);
         let deadline = Instant::now() + self.timeout;
         // A permit lives inside the closure, so a failed spawn also releases it.
-        let _ = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("emda-client".into())
             .spawn(move || {
                 let _permit = permit;
                 let _ = server.handle(socket, deadline);
-            });
+            })?;
+        Ok(())
     }
 
     fn handle(&self, socket: TcpStream, deadline: Instant) -> io::Result<()> {
+        socket.set_nonblocking(false)?;
         socket.set_nodelay(true)?;
         let mut connection =
             ServerConnection::new(Arc::clone(&self.tls)).map_err(io::Error::other)?;
@@ -165,22 +170,99 @@ fn read_config(path: &Path) -> Result<Config, Box<dyn std::error::Error>> {
 }
 
 fn run(path: &Path, single_project: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let config = read_config(path)?;
-    if single_project && config.projects.len() != 1 {
-        return Err("--single-project requires exactly one configured project".into());
+    let (signal, notify) = UnixStream::pair()?;
+    signal_hook::low_level::pipe::register(SIGTERM, notify.try_clone()?)?;
+    signal_hook::low_level::pipe::register(SIGINT, notify)?;
+    let mut config = read_config(path)?;
+    if single_project {
+        if config.projects.len() != 1 {
+            return Err("--single-project requires exactly one configured project".into());
+        }
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        config.tls_cert = parent.join(&config.tls_cert);
+        config.tls_key = parent.join(&config.tls_key);
     }
     let server = Arc::new(Server::open(&config)?);
     let listener = TcpListener::bind(config.bind)?;
+    listener.set_nonblocking(true)?;
     server.start_idle_reaper()?;
+    notify_ready()?;
     println!("READY {}", listener.local_addr()?);
     io::stdout().flush()?;
-    for incoming in listener.incoming() {
-        match incoming {
-            Ok(socket) => server.accept(socket),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+
+    let result = accept_until_signal(&server, &listener, &signal);
+    drop(listener);
+    // Keep owning the stores until every admitted request releases its slot,
+    // including a committed write still sending its response.
+    while !server.connections.is_idle() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    result.map_err(Into::into)
+}
+
+fn accept_until_signal(
+    server: &Arc<Server>,
+    listener: &TcpListener,
+    signal: &UnixStream,
+) -> io::Result<()> {
+    loop {
+        let mut fds = [
+            PollFd::new(signal, PollFlags::IN),
+            PollFd::new(listener, PollFlags::IN),
+        ];
+        match poll(&mut fds, None) {
+            Ok(_) => {}
+            Err(rustix::io::Errno::INTR) => continue,
             Err(error) => return Err(error.into()),
         }
+        if !fds[0].revents().is_empty() {
+            return Ok(());
+        }
+        match listener.accept() {
+            Ok((socket, _)) => {
+                if let Err(error) = server.accept(socket) {
+                    eprintln!("emda-server could not start a client handler: {error}");
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::Interrupted
+                        | io::ErrorKind::WouldBlock
+                        | io::ErrorKind::ConnectionAborted
+                        | io::ErrorKind::ConnectionReset
+                ) => {}
+            Err(error)
+                if matches!(error.raw_os_error(),
+                Some(raw) if raw == rustix::io::Errno::MFILE.raw_os_error()
+                    || raw == rustix::io::Errno::NFILE.raw_os_error()) =>
+            {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => return Err(error),
+        }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn notify_ready() -> io::Result<()> {
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::net::{SocketAddr, UnixDatagram};
+    let Some(path) = std::env::var_os("NOTIFY_SOCKET") else {
+        return Ok(());
+    };
+    let address = match path.as_bytes().strip_prefix(b"@") {
+        Some(name) => SocketAddr::from_abstract_name(name)?,
+        None => SocketAddr::from_pathname(path)?,
+    };
+    UnixDatagram::unbound()?.send_to_addr(b"READY=1", &address)?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn notify_ready() -> io::Result<()> {
     Ok(())
 }
 
@@ -188,7 +270,7 @@ fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let (config, single_project) = match args.as_slice() {
         [flag, config] if flag == "--single-project" => (config, true),
-        [config] => (config, false),
+        [config] if config != "--single-project" => (config, false),
         _ => {
             eprintln!("usage: emda-server [--single-project] <config.json>");
             return ExitCode::FAILURE;

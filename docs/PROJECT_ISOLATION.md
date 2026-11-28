@@ -30,9 +30,9 @@ role and optional dataset scope. Operators control them in configuration.
 For Harbor, keep human membership and service identities separate from their
 keys. Bind each grant to the tenant, project, role and dataset scope. Define
 delegation, issuance, rotation and revocation with an audit record, and
-verify that a project owner cannot grant access in another tenant. Managed
-users, service-account key management and data policies for SQL tables and
-rows remain future work.
+verify that a project owner cannot grant access in another tenant. Single-table SQL grants support scoped reads and mutations within
+these boundaries. Managed users, service-account key management, SQL policies
+spanning multiple tables and row-level policies remain future work.
 
 ## Deployment boundaries
 

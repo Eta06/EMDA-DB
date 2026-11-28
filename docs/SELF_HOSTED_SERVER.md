@@ -75,19 +75,23 @@ applications and automation that only need particular keys or collections.
   "role": "write",
   "scope": {
     "kv_prefixes": {"public/": "read", "ingest/": "write_only", "ingest/audit/": "read"},
-    "document_collections": {"catalog": "read", "events": "write"}
+    "document_collections": {"catalog": "read", "events": "write"},
+    "sql_tables": {"products": "read", "measurements": "write"}
   }
 }
 ```
 
-An explicit scope must be an object. Both maps inside it default to empty.
+An explicit scope must be an object. The maps inside it default to empty.
 Prefixes match original
 UTF-8 key bytes, and the longest matching prefix sets the KV permission.
 Collection names match exactly. A `write` grant includes reading, and
 `write_only` permits mutations and denies read requests. Mutation results
 can still reveal whether a key or document existed. The key's role caps every grant, so a `read` key cannot write. Scoped keys can operate
-on rows within allowed datasets. Creating collections and using SQL require
-project-wide credentials. Self-hosted
+on rows within allowed datasets. SQL scopes cover standalone SELECT, INSERT,
+UPDATE and DELETE on the named table. Joins, CTEs, subqueries, schema changes,
+and writes to tables with foreign-key relationships require project-wide
+credentials. The engine checks these restrictions in the same transaction
+as the statement. Creating collections also requires a project-wide key. Self-hosted
 operators issue, rotate and revoke credentials by updating the server
 configuration and restarting it. End-user account lifecycle and online
 key management are planned for Harbor.
@@ -206,12 +210,14 @@ project. One operation opens and recovers both stores under exclusive locks,
 using the same limits configured for warm operation. At most
 `max_concurrent_wakes` cold opens run across the server (between 1 and 128,
 default 2). A request encountering a concurrent state transition or a full
-wake budget receives `busy` without executing. Failed filesystem or
+wake budget receives `busy` without executing. Warm operations can acquire
+store handles concurrently within the project admission limit. Failed filesystem or
 recovery opens return `unavailable` and delay the next attempt for one
-second. The store returns the same error when an initialized project's
+second. The server logs the diagnostic for operators. The store returns the same error when an initialized project's
 records log has gone missing. No request is retried by the server. The
-regular connection deadline applies before and after opening, and a
-filesystem operation in progress can outlive it.
+regular connection deadline applies before opening, between the two store
+opens and before statement execution. A replay already in progress can
+outlive it.
 
 Sleeping releases engine handles, locks and in-memory store state in the
 shared process. Dedicated worker shutdown, fencing across hosts and measured
@@ -238,8 +244,8 @@ in `/etc/emda/projects/example/`. Configure the following values in
 {
   "bind": "127.0.0.1:7443",
   "data_root": "stores",
-  "tls_cert": "/run/credentials/emda-server@example.service/tls-cert.pem",
-  "tls_key": "/run/credentials/emda-server@example.service/tls-key.pem"
+  "tls_cert": "tls-cert.pem",
+  "tls_key": "tls-key.pem"
 }
 ```
 
@@ -247,6 +253,13 @@ in `/etc/emda/projects/example/`. Configure the following values in
 sudo systemctl daemon-reload
 sudo systemctl enable --now emda-server@example.service
 ```
+
+With `--single-project`, relative TLS paths are resolved alongside
+`server.json`. The data root is relative to the service working directory.
+systemd receives readiness after successful initialization and socket bind.
+SIGINT and SIGTERM close the listener and wait for admitted connections to
+finish. The template allows 90 seconds for stopping before systemd can
+force termination.
 
 The template allows one CPU, uses a 384 MiB memory pressure threshold and
 512 MiB hard ceiling, and allows 48 tasks. Keep the connection cap under the

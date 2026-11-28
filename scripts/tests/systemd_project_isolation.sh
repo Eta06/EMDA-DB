@@ -35,20 +35,19 @@ for project in "$alpha" "$beta"; do
     sudo -n openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
         -subj /CN=localhost -addext subjectAltName=DNS:localhost \
         -keyout "$scratch/$project/tls-key.pem" -out "$scratch/$project/tls-cert.pem" 2>/dev/null
-    sudo -n python3 - "$scratch" "$template" "$project" <<'PY'
+    sudo -n python3 - "$scratch" "$project" <<'PY'
 import hashlib
 import json
 import os
 import pathlib
 import sys
-scratch, template, project = sys.argv[1:]
-tls = f"/run/credentials/{template}@{project}.service"
+scratch, project = sys.argv[1:]
 test_token = bytes([1 if project.startswith("alpha-") else 2]) * 32
 config = {
     "bind": "127.0.0.1:0",
     "data_root": "stores",
-    "tls_cert": f"{tls}/tls-cert.pem",
-    "tls_key": f"{tls}/tls-key.pem",
+    "tls_cert": "tls-cert.pem",
+    "tls_key": "tls-key.pem",
     "require_hybrid_kex": False,
     "max_connections": 8,
     "timeout_ms": 5000,
@@ -75,9 +74,10 @@ if ! sudo -n systemctl start "$alpha_unit" "$beta_unit"; then
 fi
 
 wait_ready() {
-    local unit=$1 port=''
+    local unit=$1 port='' invocation=''
     for ((attempt=0; attempt<100; attempt++)); do
-        port=$(sudo -n journalctl -q -u "$unit" -o cat --no-pager | sed -n 's/^READY 127\.0\.0\.1:\([0-9]*\)$/\1/p' | tail -1)
+        invocation=$(sudo -n systemctl show -p InvocationID --value "$unit")
+        port=$(sudo -n journalctl -q -u "$unit" "_SYSTEMD_INVOCATION_ID=$invocation" -o cat --no-pager | sed -n 's/^READY 127\.0\.0\.1:\([0-9]*\)$/\1/p' | tail -1)
         if [[ -n "$port" ]] && sudo -n systemctl is-active --quiet "$unit"; then
             printf '%s\n' "$port"
             return
@@ -126,6 +126,8 @@ alpha_pid=$(sudo -n systemctl show -p MainPID --value "$alpha_unit")
 beta_pid=$(sudo -n systemctl show -p MainPID --value "$beta_unit")
 alpha_uid=$(awk '$1 == "Uid:" {print $2}' "/proc/$alpha_pid/status")
 beta_uid=$(awk '$1 == "Uid:" {print $2}' "/proc/$beta_pid/status")
+alpha_gid=$(awk '$1 == "Gid:" {print $2}' "/proc/$alpha_pid/status")
+beta_gid=$(awk '$1 == "Gid:" {print $2}' "/proc/$beta_pid/status")
 if [[ "$alpha_uid" -le 0 || "$beta_uid" -le 0 || "$alpha_uid" == "$beta_uid" ]]; then
     printf 'Expected distinct unprivileged project users, got %s and %s\n' "$alpha_uid" "$beta_uid" >&2
     exit 1
@@ -140,14 +142,17 @@ done
 
 alpha_store="/var/lib/emda-$alpha/stores/app/data/records.log"
 beta_store="/var/lib/emda-$beta/stores/app/data/records.log"
-for tuple in "$alpha_pid:$alpha_uid:$alpha_store:$beta_store" "$beta_pid:$beta_uid:$beta_store:$alpha_store"; do
-    IFS=: read -r pid uid own neighbor <<<"$tuple"
-    sudo -n nsenter --mount="/proc/$pid/ns/mnt" -- setpriv \
-        --reuid="$uid" --regid="$uid" --clear-groups /bin/test -r "$own"
-    if sudo -n nsenter --mount="/proc/$pid/ns/mnt" -- setpriv \
-        --reuid="$uid" --regid="$uid" --clear-groups /bin/test -r "$neighbor"; then
-        echo "Project UID $uid can read the neighboring store" >&2
-        exit 1
-    fi
+for tuple in     "$alpha_pid:$alpha_uid:$alpha_gid:$alpha_store:$beta_store:$alpha_unit:$beta_unit"     "$beta_pid:$beta_uid:$beta_gid:$beta_store:$alpha_store:$beta_unit:$alpha_unit"; do
+    IFS=: read -r pid uid gid own neighbor own_unit neighbor_unit <<<"$tuple"
+    runner=(sudo -n nsenter --mount="/proc/$pid/ns/mnt" -- setpriv
+        --reuid="$uid" --regid="$gid" --clear-groups /bin/test)
+    "${runner[@]}" -r "$own"
+    "${runner[@]}" -r "/run/credentials/$own_unit/tls-key.pem"
+    for path in "$neighbor" "/run/credentials/$neighbor_unit/tls-key.pem" "/run/credentials/$neighbor_unit/server.json"; do
+        if "${runner[@]}" -r "$path"; then
+            echo "Project UID $uid can read another project's store or credentials" >&2
+            exit 1
+        fi
+    done
 done
-printf 'Distinct project UIDs, store access boundaries and cgroup limits verified\n'
+printf 'Distinct project UIDs, store and credential access boundaries, and cgroup limits verified\n'

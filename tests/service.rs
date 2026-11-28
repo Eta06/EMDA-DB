@@ -780,3 +780,158 @@ fn a_null_credential_scope_fails_closed_at_startup() {
     assert!(!result.status.success());
     assert!(!fixture.dir.path().join("projects/alpha").exists());
 }
+
+#[test]
+fn sql_table_scopes_deny_indirect_table_reads_and_foreign_key_writes() {
+    let fixture = Fixture::new();
+    let path = fixture.dir.path().join("server.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config["projects"][0]["credentials"][2]["scope"] = json!({
+        "sql_tables": {"catalog":"read", "measurements":"write", "ingest":"write_only"}
+    });
+    fs::write(&path, config.to_string()).unwrap();
+    let server = fixture.start();
+    let sql = |identity, token, statement| {
+        fixture.send(
+            &server,
+            "alpha",
+            identity,
+            token,
+            json!({"op":"sql", "statement":statement}),
+        )
+    };
+    for statement in [
+        "CREATE TABLE catalog (id INT PRIMARY KEY)",
+        "CREATE TABLE measurements (id INT UNIQUE, recorded_at INT, PRIMARY KEY (recorded_at, id))",
+        "CREATE TABLE ingest (id INT PRIMARY KEY)",
+        "CREATE TABLE private (id INT PRIMARY KEY)",
+        "INSERT INTO catalog VALUES (1)",
+        "INSERT INTO private VALUES (1)",
+    ] {
+        assert_eq!(sql("admin", ADMIN, statement)["ok"], true, "{statement}");
+    }
+    assert_eq!(
+        sql("writer", WRITER, "SELECT id FROM catalog")["result"]["rows"],
+        json!([[1]])
+    );
+    assert_eq!(
+        sql(
+            "writer",
+            WRITER,
+            "INSERT INTO measurements VALUES (1, 100), (2, 200)"
+        )["ok"],
+        true
+    );
+    assert_eq!(
+        sql(
+            "writer",
+            WRITER,
+            "SELECT id FROM measurements WHERE recorded_at >= 150 ORDER BY recorded_at"
+        )["result"]["rows"],
+        json!([[2]])
+    );
+    assert_eq!(
+        sql("writer", WRITER, "INSERT INTO ingest VALUES (1)")["ok"],
+        true
+    );
+    for statement in [
+        "SELECT * FROM ingest",
+        "SELECT * FROM private",
+        "INSERT INTO catalog VALUES (2)",
+        "SELECT (SELECT id FROM private) FROM catalog",
+        "SELECT id FROM catalog WHERE id IN (SELECT id FROM private)",
+        "SELECT catalog.id FROM catalog JOIN private ON catalog.id = private.id",
+        "WITH leaked AS (SELECT id FROM private) SELECT id FROM leaked",
+        "INSERT INTO measurements VALUES ((SELECT id FROM private), 0)",
+        "UPDATE measurements SET recorded_at = (SELECT id FROM private)",
+    ] {
+        assert_eq!(
+            sql("writer", WRITER, statement),
+            error("forbidden"),
+            "{statement}"
+        );
+    }
+    assert_eq!(
+        sql(
+            "admin",
+            ADMIN,
+            "CREATE TABLE linked (id INT PRIMARY KEY, parent INT REFERENCES measurements(id) ON DELETE CASCADE)"
+        )["ok"],
+        true
+    );
+    assert_eq!(
+        sql("admin", ADMIN, "INSERT INTO linked VALUES (1, 1)")["ok"],
+        true
+    );
+    assert_eq!(
+        sql("writer", WRITER, "DELETE FROM measurements WHERE id = 1"),
+        error("forbidden")
+    );
+    assert_eq!(
+        sql("admin", ADMIN, "SELECT id FROM linked")["result"]["rows"],
+        json!([[1]])
+    );
+    assert_eq!(
+        sql("writer", WRITER, "SELECT id FROM measurements ORDER BY id")["result"]["rows"],
+        json!([[1], [2]])
+    );
+}
+
+#[test]
+fn sigterm_closes_the_listener_and_drains_an_admitted_mutation() {
+    use rustix::process::{Pid, Signal, kill_process};
+
+    let fixture = Fixture::new();
+    let mut server = fixture.start();
+    let mut connection = fixture.connection(&server, false);
+    connection.conn.complete_io(&mut connection.sock).unwrap();
+    let request = json!({
+        "version":1, "project":"alpha", "credential":"admin", "token":ADMIN,
+        "operation":{"op":"kv_put","key":"drained","value_hex":"12"}
+    })
+    .to_string();
+    // Keep an admitted request in flight when shutdown starts.
+    connection
+        .write_all(&(request.len() as u32).to_be_bytes())
+        .unwrap();
+    kill_process(
+        Pid::from_raw(server.child.id() as i32).unwrap(),
+        Signal::TERM,
+    )
+    .unwrap();
+    let stop_deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match TcpStream::connect_timeout(&server.addr, Duration::from_millis(50)) {
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => break,
+            _ => {
+                assert!(
+                    std::time::Instant::now() < stop_deadline,
+                    "listener stayed open"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+    assert!(server.child.try_wait().unwrap().is_none());
+    connection.write_all(request.as_bytes()).unwrap();
+    assert_eq!(response(&mut connection), json!({"ok":true,"result":null}));
+    drop(connection);
+    let exit_deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Some(status) = server.child.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < exit_deadline,
+            "server did not drain"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let server = fixture.start();
+    let get = json!({"op":"kv_get","key":"drained"});
+    assert_eq!(
+        fixture.send(&server, "alpha", "admin", ADMIN, get)["result"],
+        "12"
+    );
+}

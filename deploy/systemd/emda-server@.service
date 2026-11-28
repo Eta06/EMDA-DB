@@ -3,7 +3,8 @@ Description=EMDA-DB project %i
 After=network.target
 
 [Service]
-Type=exec
+Type=notify
+NotifyAccess=main
 DynamicUser=yes
 User=emda-%i
 StateDirectory=emda-%i
@@ -17,6 +18,7 @@ ExecStartPre=/usr/bin/mkdir -p -m 0700 -- ${STATE_DIRECTORY}/stores
 ExecStart=/usr/local/bin/emda-server --single-project ${CREDENTIALS_DIRECTORY}/server.json
 Restart=on-failure
 RestartSec=2s
+TimeoutStopSec=90s
 
 NoNewPrivileges=yes
 CapabilityBoundingSet=
@@ -29,6 +31,10 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectProc=invisible
+ProtectClock=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictNamespaces=yes
 RestrictSUIDSGID=yes

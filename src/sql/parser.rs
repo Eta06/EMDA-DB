@@ -36,6 +36,48 @@ impl SqlStatement {
         self.param_count
     }
 
+    /// Returns the sole dataset for a SELECT or row mutation with no subqueries.
+    /// Row mutations also require a transaction-time foreign-key check before
+    /// they can be isolated to this dataset.
+    pub fn isolated_table(&self) -> Option<&str> {
+        let local_filter = |filter: &Option<Expr>| filter.as_ref().is_none_or(Expr::is_local);
+        let table = match &self.inner {
+            Statement::Select(select)
+                if local_filter(&select.filter)
+                    && local_filter(&select.having)
+                    && match &select.columns {
+                        SelectColumns::All => true,
+                        SelectColumns::Items(items) => items.iter().all(|item| {
+                            matches!(
+                                item.expr,
+                                SelectExpr::Column { .. }
+                                    | SelectExpr::Literal { .. }
+                                    | SelectExpr::Aggregate(_)
+                                    | SelectExpr::Param { .. }
+                            )
+                        }),
+                    } =>
+            {
+                &select.table
+            }
+            Statement::Insert(insert) if insert.rows.iter().flatten().all(Expr::is_local) => {
+                &insert.table
+            }
+            Statement::Update(update)
+                if local_filter(&update.filter)
+                    && update
+                        .assignments
+                        .iter()
+                        .all(|assignment| assignment.value.is_local()) =>
+            {
+                &update.table
+            }
+            Statement::Delete(delete) if local_filter(&delete.filter) => &delete.table,
+            _ => return None,
+        };
+        Some(table)
+    }
+
     /// Returns the effect of executing the parsed statement.
     pub fn kind(&self) -> SqlStatementKind {
         match self.inner {
@@ -434,6 +476,21 @@ pub(crate) enum Expr {
         subquery: Box<Subquery>,
         negated: bool,
     },
+}
+
+impl Expr {
+    fn is_local(&self) -> bool {
+        match self {
+            Self::Literal(_) | Self::Column(_) | Self::Param(_) | Self::Aggregate(_) => true,
+            Self::Compare { left, right, .. } => left.is_local() && right.is_local(),
+            Self::IsNull { expr, .. } | Self::Not(expr) => expr.is_local(),
+            Self::And(items) | Self::Or(items) => items.iter().all(Self::is_local),
+            Self::QualifiedColumn { .. }
+            | Self::ScalarSubquery(_)
+            | Self::Exists(_)
+            | Self::InSubquery { .. } => false,
+        }
+    }
 }
 
 fn is_top_level_join_select(tokens: &[Token]) -> bool {

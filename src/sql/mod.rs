@@ -125,6 +125,49 @@ impl<'a> SqlDatabase<'a> {
         transaction::run_sql_transaction(&self.db, &self.limits, &self.cache, f)
     }
 
+    /// Executes a statement confined to a caller-authorized table.
+    ///
+    /// Supports standalone SELECT and row mutations without subqueries.
+    /// A mutation is refused if foreign-key checks or actions could access
+    /// another table. The catalog check and statement share one read-set
+    /// transaction, so concurrent schema changes cannot invalidate the check.
+    pub fn execute_isolated_until(
+        &self,
+        table: &str,
+        stmt: &SqlStatement,
+        params: &[SqlValue],
+        deadline: std::time::Instant,
+    ) -> Result<SqlOutcome, SqlError> {
+        let denied = || {
+            SqlError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "statement cannot be confined to the authorized SQL dataset",
+            ))
+        };
+        if stmt.isolated_table() != Some(table) {
+            return Err(denied());
+        }
+        exec::run_tx_until(
+            &self.db,
+            crate::DocumentTransactionMode::ReadSet,
+            Some(deadline),
+            |tx| {
+                let cached = catalog::load_table_cached(tx, table, self.cache.tables())?;
+                let definition = &cached.def;
+                if definition.name != table
+                    || (stmt.kind() == SqlStatementKind::DataMutation
+                        && (!definition.foreign_keys.is_empty()
+                            || !definition.tuple_foreign_keys.is_empty()
+                            || !definition.referenced_by.is_empty()
+                            || !definition.tuple_referenced_by.is_empty()))
+                {
+                    return Err(denied());
+                }
+                exec::execute_statement_in_tx(tx, stmt, params, &self.limits, &self.cache, false)
+            },
+        )
+    }
+
     /// Runs a serializable SQL transaction with a cooperative deadline.
     /// Expiry detected before commit is reported as a timed-out I/O error.
     /// Any uncertain commit still returns [`SqlError::OutcomeUnknown`].

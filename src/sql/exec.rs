@@ -332,8 +332,17 @@ fn run_tx_with_mode<T>(
     mode: DocumentTransactionMode,
     action: impl FnOnce(&mut DocumentTransaction<'_, '_>) -> Result<T, SqlError>,
 ) -> Result<T, SqlError> {
+    run_tx_until(db, mode, None, action)
+}
+
+pub(super) fn run_tx_until<T>(
+    db: &DocumentDatabase<'_>,
+    mode: DocumentTransactionMode,
+    deadline: Option<std::time::Instant>,
+    action: impl FnOnce(&mut DocumentTransaction<'_, '_>) -> Result<T, SqlError>,
+) -> Result<T, SqlError> {
     let mut sql_error: Option<SqlError> = None;
-    let outcome = db.transaction_detailed(mode, None, None, |tx| match action(tx) {
+    let outcome = db.transaction_detailed(mode, deadline, None, |tx| match action(tx) {
         Ok(value) => Ok(value),
         Err(err) => {
             sql_error = Some(err);
