@@ -228,8 +228,6 @@ fn join_errors_are_classified() {
             SqlError::Type(_)
         ));
         for unsupported in [
-            "SELECT u.id FROM users u FULL JOIN teams t ON t.id = u.team JOIN orders o ON o.id = u.id",
-            "SELECT u.id FROM users u FULL JOIN teams t ON t.id = u.team JOIN orders o ON o.id = u.id",
             "SELECT u.id FROM users u CROSS JOIN teams t",
             "SELECT u.id FROM users u NATURAL JOIN teams t",
             "SELECT u.id FROM users u JOIN teams t USING (id)",
@@ -958,6 +956,9 @@ fn right_joins_match_sqlite() {
             "SELECT b.id, a.id, c.id FROM a RIGHT JOIN b ON a.b_id = b.id LEFT JOIN c ON c.b_id = b.id ORDER BY b.id, a.id, c.id",
             "SELECT b.id, c.id FROM a RIGHT JOIN b ON a.b_id = b.id JOIN c ON c.b_id = b.id ORDER BY b.id, c.id",
             "SELECT a.id, b.id FROM a RIGHT JOIN b ON a.b_id = b.id AND a.label <> 'x' ORDER BY b.id, a.id LIMIT 3",
+            "SELECT * FROM a RIGHT JOIN b ON a.b_id = b.id LEFT JOIN c ON c.b_id = b.id ORDER BY b.id, a.id, c.id",
+            "SELECT a.id, b.id, c.id FROM a JOIN b ON a.b_id = b.id RIGHT JOIN c ON c.b_id = b.id ORDER BY c.id, a.id",
+            "SELECT a.id, b.id, c.id FROM a JOIN b ON a.b_id = b.id RIGHT JOIN c ON c.b_id = b.id WHERE a.id IS NULL ORDER BY c.id",
         ] {
             let ours = rows(db, sql, &[]);
             let mut stmt = sqlite.prepare(sql).unwrap();
@@ -970,15 +971,6 @@ fn right_joins_match_sqlite() {
                 .collect::<Result<_, _>>()
                 .unwrap();
             assert_eq!(ours, theirs, "{backend}: {sql}");
-        }
-        for sql in [
-            "SELECT a.id FROM a JOIN b ON a.b_id = b.id RIGHT JOIN c ON c.b_id = b.id",
-            "SELECT a.id FROM a CROSS JOIN b",
-        ] {
-            assert!(
-                matches!(db.execute(sql, &[]), Err(SqlError::Unsupported { .. })),
-                "{backend}: {sql}"
-            );
         }
     });
 }
@@ -1072,7 +1064,7 @@ fn aggregates_over_joins_match_sqlite() {
     });
 }
 
-/// `FULL JOIN` as the only join returns what SQLite returns.
+/// `FULL JOIN` alone and in a chain returns what SQLite returns.
 #[test]
 fn full_joins_match_sqlite() {
     for_both(|db, backend| {
@@ -1081,7 +1073,7 @@ fn full_joins_match_sqlite() {
             "CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER, label TEXT)",
             "CREATE TABLE b (id INTEGER PRIMARY KEY, k INTEGER, name TEXT)",
             "INSERT INTO a VALUES (1, 10, 'x'), (2, 10, 'y'), (3, 30, 'z'), (4, NULL, 'w')",
-            "INSERT INTO b VALUES (7, 10, 'ten'), (8, 20, 'twenty'), (9, NULL, 'none'), (10, 40, NULL)",
+            "INSERT INTO b VALUES (7, 10, 'ten'), (8, 20, 'twenty'), (9, NULL, 'none'), (10, 40, NULL), (11, 10, 'second')",
         ] {
             db.execute(sql, &[]).unwrap();
             sqlite.execute(sql, []).unwrap();
@@ -1093,6 +1085,11 @@ fn full_joins_match_sqlite() {
             "SELECT a.id, b.id FROM a FULL JOIN b ON a.k = b.k AND b.name <> 'ten' ORDER BY a.id DESC, b.id",
             "SELECT a.id, b.id FROM a FULL JOIN b ON a.k = b.k ORDER BY b.id NULLS LAST, a.id LIMIT 3 OFFSET 2",
             "SELECT b.name FROM a FULL JOIN b ON a.k = b.k WHERE b.k > 15 ORDER BY b.name",
+            "SELECT a.id, b.id, c.id FROM a FULL JOIN b ON a.k = b.k JOIN b c ON c.id = b.id ORDER BY a.id, b.id, c.id",
+            "SELECT a.id, b.id, c.id FROM a JOIN b ON a.k = b.k FULL JOIN b c ON c.id = b.id ORDER BY a.id, b.id, c.id",
+            "SELECT a.id, b.id, c.id FROM a FULL JOIN b ON a.k = b.k FULL JOIN b c ON c.k = b.k WHERE a.id IS NULL ORDER BY a.id, b.id, c.id",
+            "SELECT a.id, b.id, c.id FROM a FULL JOIN b ON a.k = b.k RIGHT JOIN b c ON c.id >= b.id ORDER BY a.id NULLS FIRST, b.id, c.id LIMIT 15 OFFSET 2",
+            "SELECT COUNT(*), COUNT(a.id), COUNT(b.id) FROM a FULL JOIN b ON a.k = b.k",
         ] {
             let ours = rows(db, sql, &[]);
             let mut stmt = sqlite.prepare(sql).unwrap();
@@ -1106,24 +1103,11 @@ fn full_joins_match_sqlite() {
                 .unwrap();
             assert_eq!(ours, theirs, "{backend}: {sql}");
         }
-        for sql in [
-            "SELECT a.id FROM a FULL JOIN b ON a.k = b.k JOIN b c ON c.id = b.id",
-            "SELECT a.id FROM a JOIN b ON a.k = b.k FULL JOIN b c ON c.id = b.id",
-            "SELECT COUNT(*) FROM a FULL JOIN b ON a.k = b.k",
-        ] {
-            assert!(
-                matches!(db.execute(sql, &[]), Err(SqlError::Unsupported { .. })),
-                "{backend}: {sql}"
-            );
-        }
         let plan = rows(
             db,
             "EXPLAIN SELECT a.id FROM a FULL JOIN b ON a.k = b.k",
             &[],
         );
-        assert_eq!(
-            plan.last().map(|r| r[0].clone()),
-            Some(SqlValue::Text("full".into()))
-        );
+        assert!(matches!(&plan[1][3], SqlValue::Text(detail) if detail.starts_with("FULL JOIN")));
     });
 }

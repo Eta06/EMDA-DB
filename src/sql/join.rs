@@ -1,4 +1,4 @@
-//! Bounded INNER and LEFT joins over SQL tables.
+//! Bounded inner and outer joins over SQL tables.
 //!
 //! A join statement is `SELECT items FROM t [AS a] {[INNER] | LEFT [OUTER]}
 //! JOIN u [AS b] ON expr ... [WHERE expr] [ORDER BY col ...] [LIMIT n
@@ -19,8 +19,6 @@ use super::plan::AccessPlan;
 mod aggregate;
 #[path = "join_derived.rs"]
 mod derived;
-#[path = "join_full.rs"]
-mod full;
 use super::value::{
     MAX_SQL_COLUMNS, MAX_SQL_TEXT_PK_BYTES, SqlError, SqlLimits, SqlOutcome, SqlType, SqlValue,
     compare_i64_f64, encode_i64_pk_bytes,
@@ -52,8 +50,6 @@ pub(crate) struct JoinSelect {
     /// `GROUP BY` columns; with aggregate items, the statement aggregates.
     group_by: Vec<ColRef>,
     having: Option<JExpr>,
-    /// The only join is a `FULL [OUTER] JOIN`, stored as its `LEFT` half.
-    full: bool,
     /// A derived table or CTE read as `tables[0]` instead of a stored table.
     source: Option<Box<SqlStatement>>,
     cached_plan: RwLock<Option<Arc<JoinPlan>>>,
@@ -71,7 +67,6 @@ impl Clone for JoinSelect {
             offset: self.offset,
             group_by: self.group_by.clone(),
             having: self.having.clone(),
-            full: self.full,
             source: self.source.clone(),
             cached_plan: RwLock::new(None),
         }
@@ -89,7 +84,6 @@ impl PartialEq for JoinSelect {
             && self.offset == other.offset
             && self.group_by == other.group_by
             && self.having == other.having
-            && self.full == other.full
             && self.source == other.source
     }
 }
@@ -104,6 +98,18 @@ struct TableRef {
 enum JoinKind {
     Inner,
     Left,
+    Right,
+    Full,
+}
+
+impl JoinKind {
+    fn preserves_left(self) -> bool {
+        matches!(self, Self::Left | Self::Full)
+    }
+
+    fn preserves_right(self) -> bool {
+        matches!(self, Self::Right | Self::Full)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -322,47 +328,34 @@ impl JoinParser<'_> {
         // first; it is accepted as the first join, where both tables are
         // visible to every later clause either way.
         let mut right_first = false;
-        let mut full = false;
         loop {
-            if self.at_kw("right") {
-                if !joins.is_empty() {
-                    return Err(self.unsupported("RIGHT JOIN after the first join"));
-                }
-                self.advance();
-                self.eat_kw("outer");
-                if !self.at_kw("join") {
-                    return Err(self.syntax("expected JOIN"));
-                }
-                right_first = true;
-            }
-            if self.at_kw("full") {
-                if !joins.is_empty() {
-                    return Err(self.unsupported("FULL JOIN with other joins"));
-                }
-                self.advance();
-                self.eat_kw("outer");
-                if !self.at_kw("join") {
-                    return Err(self.syntax("expected JOIN"));
-                }
-                full = true;
-            }
             if self.at_kw("cross") || self.at_kw("natural") {
                 return Err(self.unsupported("CROSS or NATURAL JOIN"));
             }
             if matches!(self.peek().kind, TokenKind::Comma) {
                 return Err(self.unsupported("comma-separated FROM tables"));
             }
-            let kind = if (right_first || full) && joins.is_empty() {
-                JoinKind::Left
+            let explicit_kind = if self.eat_kw("right") {
+                self.eat_kw("outer");
+                if joins.is_empty() {
+                    right_first = true;
+                    Some(JoinKind::Left)
+                } else {
+                    Some(JoinKind::Right)
+                }
+            } else if self.eat_kw("full") {
+                self.eat_kw("outer");
+                Some(JoinKind::Full)
             } else if self.eat_kw("left") {
                 self.eat_kw("outer");
-                JoinKind::Left
+                Some(JoinKind::Left)
+            } else if self.eat_kw("inner") {
+                Some(JoinKind::Inner)
             } else {
-                self.eat_kw("inner");
-                JoinKind::Inner
+                None
             };
             if !self.eat_kw("join") {
-                if kind == JoinKind::Left {
+                if explicit_kind.is_some() {
                     return Err(self.syntax("expected JOIN"));
                 }
                 break;
@@ -378,7 +371,10 @@ impl JoinParser<'_> {
             }
             self.expect_kw("on")?;
             let on = self.expr()?;
-            joins.push(JoinClause { kind, on });
+            joins.push(JoinClause {
+                kind: explicit_kind.unwrap_or(JoinKind::Inner),
+                on,
+            });
         }
         let filter = if self.eat_kw("where") {
             Some(self.expr()?)
@@ -410,9 +406,6 @@ impl JoinParser<'_> {
         } else if self.at_kw("offset") {
             return Err(self.unsupported("OFFSET without LIMIT"));
         }
-        if full && joins.len() != 1 {
-            return Err(self.unsupported("FULL JOIN with other joins"));
-        }
         if right_first {
             // Keep the written column order for `*`, then put the preserved
             // (right) table first.
@@ -420,8 +413,11 @@ impl JoinParser<'_> {
             for item in items {
                 match item {
                     SelectItem::All => {
-                        expanded.push(SelectItem::TableAll(tables[0].alias.clone(), 0));
-                        expanded.push(SelectItem::TableAll(tables[1].alias.clone(), 0));
+                        expanded.extend(
+                            tables
+                                .iter()
+                                .map(|table| SelectItem::TableAll(table.alias.clone(), 0)),
+                        );
                     }
                     other => expanded.push(other),
                 }
@@ -439,7 +435,6 @@ impl JoinParser<'_> {
             offset,
             group_by,
             having,
-            full,
             source: None,
             cached_plan: RwLock::new(None),
         })
@@ -1256,7 +1251,7 @@ fn eval_cmp_op(op: CompareOp, ordering: Ordering) -> bool {
     }
 }
 
-fn choose_access(table: usize, def: &TableDef, on: &[BExpr]) -> Access {
+fn choose_access(table: usize, def: &TableDef, on: &[BExpr], preserve_build: bool) -> Access {
     // Prefer a primary-key equality, then any column equality.
     let mut best: Option<(usize, bool, usize)> = None; // (conjunct, is_pk, column)
     for (index, conjunct) in on.iter().enumerate() {
@@ -1289,6 +1284,9 @@ fn choose_access(table: usize, def: &TableDef, on: &[BExpr]) -> Access {
         }
         _ => unreachable!(),
     };
+    if preserve_build {
+        return Access::Hash { column, key };
+    }
     if is_pk {
         return Access::Point(key);
     }
@@ -2061,13 +2059,14 @@ fn plan(
             };
             conjuncts(binder.bind_predicate(&join.on, "ON")?)
         };
-        let access = choose_access(table, &defs[table], &on);
+        let access = choose_access(table, &defs[table], &on, join.kind.preserves_right());
         steps.push(Step {
             kind: join.kind,
             on: on.into_iter().map(FastPred::compile).collect(),
             access,
         });
     }
+    let preserves_right = steps.iter().any(|step| step.kind.preserves_right());
     let (early_exprs, late_exprs): (Vec<BExpr>, Vec<BExpr>) = match &statement.filter {
         Some(filter) => {
             let mut binder = Binder {
@@ -2078,7 +2077,9 @@ fn plan(
             };
             conjuncts(binder.bind_predicate(filter, "WHERE")?)
                 .into_iter()
-                .partition(|conjunct| conjunct.max_table().is_none_or(|max| max == 0))
+                .partition(|conjunct| {
+                    !preserves_right && conjunct.max_table().is_none_or(|max| max == 0)
+                })
         }
         None => (Vec::new(), Vec::new()),
     };
@@ -2153,7 +2154,7 @@ fn plan(
         check.check(params)?;
     }
 
-    let first = choose_access(0, &defs[0], &early_exprs);
+    let first = choose_access(0, &defs[0], &early_exprs, false);
     let early: Vec<FastPred> = early_exprs.into_iter().map(FastPred::compile).collect();
     let late: Vec<FastPred> = late_exprs.into_iter().map(FastPred::compile).collect();
     let mut all_steps_point_from = [false; MAX_JOIN_TABLES + 1];
@@ -2186,7 +2187,8 @@ fn plan(
         column: defs[0].primary_key_index,
     };
     let order_satisfied = order.is_empty()
-        || (first_pk_ordered
+        || (!preserves_right
+            && first_pk_ordered
             && (matches!(order.as_slice(), [(slot, false, _)] if *slot == first_key)
                 || (all_steps_point_from[0]
                     && matches!(order.first(), Some((slot, false, _)) if *slot == first_key))));
@@ -2914,6 +2916,8 @@ struct Executor<'a, 'b, 'tx, 'store> {
     arenas: [TableArena; MAX_JOIN_TABLES],
     point_caches: [PointCache; MAX_JOIN_TABLES],
     index_caches: [IndexCache; MAX_JOIN_TABLES],
+    /// For right-preserving steps, indexed by position in the built arena.
+    matched_right: [Option<Vec<bool>>; MAX_JOIN_TABLES],
     budget: Budget<'a>,
     sink: OutputSink,
 }
@@ -3082,7 +3086,7 @@ impl Executor<'_, '_, '_, '_> {
                                 }
                             }
                         }
-                        if !matched && step.kind == JoinKind::Left {
+                        if !matched && step.kind.preserves_left() {
                             self.budget.combine()?;
                             comb[table] = NULL_ROW;
                             next_batch.push(comb);
@@ -3427,6 +3431,9 @@ impl Executor<'_, '_, '_, '_> {
                         }
                         if keep {
                             matched = true;
+                            if let Some(seen) = &mut self.matched_right[done] {
+                                seen[cur as usize] = true;
+                            }
                             self.extend_one(table, comb)?;
                             if self.sink.is_done() {
                                 return Ok(());
@@ -3449,6 +3456,9 @@ impl Executor<'_, '_, '_, '_> {
                     }
                     if keep {
                         matched = true;
+                        if let Some(seen) = &mut self.matched_right[done] {
+                            seen[row_idx as usize] = true;
+                        }
                         self.extend_one(table, comb)?;
                         if self.sink.is_done() {
                             return Ok(());
@@ -3458,10 +3468,33 @@ impl Executor<'_, '_, '_, '_> {
             }
             _ => unreachable!("join step without its built side"),
         }
-        if !matched && step.kind == JoinKind::Left {
+        if !matched && step.kind.preserves_left() {
             self.budget.combine()?;
             comb[table] = NULL_ROW;
             self.extend_one(table, comb)?;
+        }
+        Ok(())
+    }
+
+    fn emit_unmatched_right(&mut self) -> Result<(), SqlError> {
+        // An unmatched row at this step can still match a later step.
+        // Finish each step in join order before examining the next one.
+        for done in 0..self.plan.steps.len() {
+            let Some(seen) = self.matched_right[done].take() else {
+                continue;
+            };
+            for (row_idx, matched) in seen.into_iter().enumerate() {
+                if self.sink.is_done() {
+                    return Ok(());
+                }
+                if !matched {
+                    let table = done + 1;
+                    let mut combined = [NULL_ROW; MAX_JOIN_TABLES];
+                    combined[table] = row_idx as RowIdx;
+                    self.budget.combine()?;
+                    self.extend_one(table, combined)?;
+                }
+            }
         }
         Ok(())
     }
@@ -3476,15 +3509,6 @@ fn run(
 ) -> Result<SqlOutcome, SqlError> {
     if let Some(source) = &statement.source {
         return derived::run(tx, statement, source, params, limits, cache);
-    }
-    if statement.full {
-        if aggregate::is_aggregate(statement) {
-            return Err(SqlError::Unsupported {
-                feature: "aggregates over a FULL JOIN".into(),
-                offset: None,
-            });
-        }
-        return full::run(tx, statement, params, limits, cache);
     }
     if aggregate::is_aggregate(statement) {
         return aggregate::run(tx, statement, params, limits, cache);
@@ -3544,7 +3568,7 @@ fn run(
                             fetch,
                             |id, stored| match with_decoded_stored(def, id, &stored, |vals| {
                                 let key_val = vals[*column];
-                                if !matches!(key_val, ValRef::Null) {
+                                if step.kind.preserves_right() || !matches!(key_val, ValRef::Null) {
                                     let row_idx = arena.push_borrowed(vals, needed);
                                     hash.insert(key_val, row_idx);
                                 }
@@ -3630,6 +3654,13 @@ fn run(
         }
     }
     let sink = OutputSink::new(&join_plan, wanted, offset, limits);
+    let matched_right = std::array::from_fn(|done| {
+        join_plan
+            .steps
+            .get(done)
+            .filter(|step| step.kind.preserves_right())
+            .map(|_| vec![false; arenas[done + 1].len()])
+    });
 
     let mut executor = Executor {
         tx,
@@ -3641,6 +3672,7 @@ fn run(
         arenas,
         point_caches,
         index_caches,
+        matched_right,
         budget,
         sink,
     };
@@ -3814,6 +3846,7 @@ fn run(
         }
     }
 
+    executor.emit_unmatched_right()?;
     let rows = executor
         .sink
         .finish(&mut executor.arenas, &join_plan, wanted, offset, limits)?;
@@ -3845,18 +3878,6 @@ pub(crate) fn explain(
             )),
             SqlValue::Text("WHERE, grouping, ORDER BY and LIMIT apply to its rows".into()),
         ]]);
-    }
-    if statement.full {
-        let mut left_half = statement.clone();
-        left_half.full = false;
-        let mut rows = explain(tx, &left_half, params, limits, cache)?;
-        rows.push(vec![
-            SqlValue::Text("full".into()),
-            SqlValue::Text(String::new()),
-            SqlValue::Text("then the mirrored LEFT JOIN's rows that matched nothing".into()),
-            SqlValue::Text("the union is sorted and limited after both halves".into()),
-        ]);
-        return Ok(rows);
     }
     if aggregate::is_aggregate(statement) {
         let prepared = aggregate::prepare(tx, statement, cache)?;
@@ -3900,6 +3921,8 @@ pub(crate) fn explain(
             let kind = match plan.steps[index - 1].kind {
                 JoinKind::Inner => "INNER JOIN",
                 JoinKind::Left => "LEFT JOIN",
+                JoinKind::Right => "RIGHT JOIN",
+                JoinKind::Full => "FULL JOIN",
             };
             format!("{kind}; ON checked on every candidate")
         };
@@ -3956,6 +3979,8 @@ pub(crate) fn explain(
         } else {
             "rows are sorted by ORDER BY"
         }
+    } else if plan.steps.iter().any(|step| step.kind.preserves_right()) {
+        "matched rows stream, then unmatched right rows are passed to later joins"
     } else if statement.limit.is_some() {
         "rows stream in the first table's key order and reading stops at OFFSET + LIMIT"
     } else {

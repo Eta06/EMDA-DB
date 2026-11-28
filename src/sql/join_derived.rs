@@ -186,7 +186,6 @@ impl JoinParser<'_> {
             offset,
             group_by,
             having,
-            full: false,
             source: Some(Box::new(source)),
             cached_plan: RwLock::new(None),
         })
