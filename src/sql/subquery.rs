@@ -118,17 +118,17 @@ pub(crate) fn record_visited_rows(n: usize) {
     });
 }
 
-struct VisitScopeGuard {
+pub(super) struct VisitScopeGuard {
     prev: Option<usize>,
 }
 
 impl VisitScopeGuard {
-    fn enter() -> Self {
+    pub(super) fn enter() -> Self {
         let prev = ACTIVE_VISIT_COUNT.with(|cell| cell.replace(Some(0)));
         Self { prev }
     }
 
-    fn take_and_restore(self) -> usize {
+    pub(super) fn take_and_restore(self) -> usize {
         let count = ACTIVE_VISIT_COUNT.with(|cell| cell.replace(self.prev));
         std::mem::forget(self);
         count.unwrap_or(0)

@@ -10,11 +10,16 @@
 use super::aggregate::{self, Resolver};
 use super::{ColRef, JExpr, JoinParser, JoinSelect, OrderItem, SelectItem, limit_value};
 use crate::document::DocumentTransaction;
-use crate::sql::exec::{SqlCache, SqlValueRef, compare_order_cell_ref};
-use crate::sql::lexer::{Token, TokenKind};
-use crate::sql::parser::{CompareOp, SqlStatement, parse_statement};
+use crate::sql::catalog::ColumnDef;
+use crate::sql::exec::{self, ScalarKey, SqlCache, SqlValueRef, compare_order_cell_ref};
+use crate::sql::lexer::{Token, TokenKind, tokenize};
+use crate::sql::parser::{CompareOp, SqlStatement, Statement, parse_statement};
+use crate::sql::subquery::{VisitScopeGuard, record_visited_rows};
 use crate::sql::value::{SqlError, SqlLimits, SqlOutcome, SqlType, SqlValue};
 use std::cmp::Ordering;
+use std::collections::HashSet;
+use std::ops::Range;
+use std::sync::Arc;
 
 /// CTEs one `WITH` may declare.
 pub(crate) const MAX_SQL_CTES: usize = 8;
@@ -46,14 +51,192 @@ pub(crate) fn is_derived_select(tokens: &[Token]) -> bool {
     }
 }
 
+type MaterializedRows = Vec<Vec<SqlValue>>;
+
+#[derive(Debug, PartialEq)]
+pub(super) enum Source {
+    Select(Box<SqlStatement>),
+    Recursive(Box<RecursiveSource>),
+    /// A placeholder in the parsed recursive member.
+    Frontier,
+    Working {
+        columns: Arc<Vec<ColumnDef>>,
+        rows: Arc<MaterializedRows>,
+    },
+}
+
+impl Source {
+    pub(super) fn columns(
+        &self,
+        tx: &DocumentTransaction<'_, '_>,
+        limits: &SqlLimits,
+        cache: &SqlCache,
+    ) -> Result<Vec<ColumnDef>, SqlError> {
+        match self {
+            Self::Select(statement) => exec::read_columns(tx, statement, limits, cache),
+            Self::Recursive(source) => source.columns(tx, limits, cache),
+            Self::Working { columns, .. } => Ok((**columns).clone()),
+            Self::Frontier => unreachable!("recursive member is bound to a working table"),
+        }
+    }
+
+    pub(super) fn rows(
+        &self,
+        tx: &DocumentTransaction<'_, '_>,
+        limits: &SqlLimits,
+        cache: &SqlCache,
+    ) -> Result<Arc<MaterializedRows>, SqlError> {
+        match self {
+            Self::Select(statement) => {
+                let SqlOutcome::Rows { rows, .. } =
+                    exec::run_read_in_tx(tx, statement, limits, cache)?
+                else {
+                    unreachable!("a SELECT returns rows");
+                };
+                Ok(Arc::new(rows))
+            }
+            Self::Recursive(source) => source.rows(tx, limits, cache).map(Arc::new),
+            Self::Working { rows, .. } => Ok(Arc::clone(rows)),
+            Self::Frontier => unreachable!("recursive member is bound to a working table"),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub(super) struct RecursiveSource {
+    anchor: SqlStatement,
+    member: JoinSelect,
+    frontier: usize,
+    aliases: Vec<String>,
+    distinct: bool,
+}
+
+impl RecursiveSource {
+    fn member_with_frontier(
+        &self,
+        columns: Arc<Vec<ColumnDef>>,
+        rows: Arc<MaterializedRows>,
+    ) -> JoinSelect {
+        let mut member = self.member.clone();
+        member.tables[self.frontier].query = Some(Arc::new(Source::Working { columns, rows }));
+        member
+    }
+
+    fn columns(
+        &self,
+        tx: &DocumentTransaction<'_, '_>,
+        limits: &SqlLimits,
+        cache: &SqlCache,
+    ) -> Result<Vec<ColumnDef>, SqlError> {
+        let mut columns = exec::read_columns(tx, &self.anchor, limits, cache)?;
+        if !self.aliases.is_empty() {
+            if columns.len() != self.aliases.len() {
+                return Err(SqlError::Type(
+                    "recursive CTE column list has the wrong length".into(),
+                ));
+            }
+            for (column, name) in columns.iter_mut().zip(&self.aliases) {
+                column.name = name.clone();
+            }
+        }
+        let member = self.member_with_frontier(Arc::new(columns.clone()), Arc::new(Vec::new()));
+        let recursive = super::read_columns(tx, &member, limits, cache)?;
+        if columns.len() != recursive.len()
+            || columns
+                .iter()
+                .zip(recursive)
+                .any(|(a, b)| !a.col_type.matches_base(b.col_type))
+        {
+            return Err(SqlError::Type(
+                "recursive CTE terms must have matching column counts and types".into(),
+            ));
+        }
+        Ok(columns)
+    }
+
+    fn rows(
+        &self,
+        tx: &DocumentTransaction<'_, '_>,
+        limits: &SqlLimits,
+        cache: &SqlCache,
+    ) -> Result<MaterializedRows, SqlError> {
+        let columns = Arc::new(self.columns(tx, limits, cache)?);
+        let scope = VisitScopeGuard::enter();
+        let SqlOutcome::Rows { mut rows, .. } =
+            exec::run_read_in_tx(tx, &self.anchor, limits, cache)?
+        else {
+            unreachable!("a SELECT returns rows");
+        };
+        let mut visits = scope.take_and_restore();
+        record_visited_rows(visits);
+        let mut seen = HashSet::new();
+        let mut result = Vec::new();
+        let mut bytes = 0_usize;
+        loop {
+            if self.distinct {
+                rows.retain(|row| {
+                    seen.insert(
+                        row.iter()
+                            .map(|cell| ScalarKey::from_value_ref(value_ref(cell)))
+                            .collect::<Vec<_>>(),
+                    )
+                });
+            }
+            if rows.is_empty() {
+                return Ok(result);
+            }
+            if result.len() + rows.len() > limits.max_select_rows {
+                return Err(SqlError::Bounds(
+                    "recursive CTE exceeds max_select_rows".into(),
+                ));
+            }
+            for row in &rows {
+                bytes = bytes.saturating_add(row.len() * std::mem::size_of::<SqlValue>());
+                for cell in row {
+                    if let SqlValue::Text(text) = cell {
+                        bytes = bytes.saturating_add(text.len());
+                    }
+                }
+                if bytes > crate::MAX_ATOMIC_BATCH_BYTES {
+                    return Err(SqlError::Bounds(
+                        "recursive CTE exceeds its 16 MiB result buffer".into(),
+                    ));
+                }
+            }
+            result.extend(rows.iter().cloned());
+            if visits >= limits.max_visited_rows {
+                return Err(SqlError::Bounds(
+                    "recursive CTE exceeds max_visited_rows".into(),
+                ));
+            }
+            let remaining = SqlLimits {
+                max_visited_rows: limits.max_visited_rows - visits,
+                ..*limits
+            };
+            let member = self.member_with_frontier(Arc::clone(&columns), Arc::new(rows));
+            let scope = VisitScopeGuard::enter();
+            let SqlOutcome::Rows { rows: next, .. } =
+                super::run(tx, &member, &[], &remaining, cache)?
+            else {
+                unreachable!("a SELECT returns rows");
+            };
+            let read = scope.take_and_restore();
+            visits = visits.saturating_add(read);
+            record_visited_rows(read);
+            rows = next;
+        }
+    }
+}
+
 impl JoinParser<'_> {
-    /// `"(" select ")"` at the cursor, parsed from its own text.
-    pub(super) fn source_query(&mut self, sql: &str) -> Result<SqlStatement, SqlError> {
-        let open = self.pos;
+    /// Token range inside parentheses, leaving the cursor after the closing
+    /// parenthesis. Bound nesting before recursively parsing source text.
+    fn source_tokens(&mut self) -> Result<Range<usize>, SqlError> {
         self.expect(&TokenKind::LParen, "(")?;
+        let start = self.pos;
         let mut depth = 1usize;
-        let mut close = self.pos;
-        while depth > 0 {
+        let mut close = start;
+        loop {
             match self.tokens.get(close).map(|t| &t.kind) {
                 Some(TokenKind::LParen) => {
                     depth += 1;
@@ -63,64 +246,159 @@ impl JoinParser<'_> {
                         ));
                     }
                 }
+                Some(TokenKind::RParen) if depth == 1 => break,
                 Some(TokenKind::RParen) => depth -= 1,
                 Some(TokenKind::Eof) | None => return Err(self.syntax("unclosed '('")),
                 _ => {}
             }
             close += 1;
         }
-        let close = close - 1;
-        let text = &sql[self.tokens[open + 1].offset..self.tokens[close].offset];
-        let statement = parse_statement(text, self.limits).map_err(|error| match error {
-            SqlError::Syntax { offset, message } => SqlError::Syntax {
-                offset: offset + self.tokens[open + 1].offset,
-                message,
-            },
-            other => other,
-        })?;
-        if !matches!(
-            &statement.inner,
-            super::super::parser::Statement::Select(_) | super::super::parser::Statement::Join(_)
-        ) {
+        self.pos = close + 1;
+        Ok(start..close)
+    }
+
+    fn read_source_text(&self, sql: &str, tokens: Range<usize>) -> Result<SqlStatement, SqlError> {
+        let start = self.tokens[tokens.start].offset;
+        let end = self.tokens[tokens.end].offset;
+        let statement =
+            parse_statement(&sql[start..end], self.limits).map_err(|error| match error {
+                SqlError::Syntax { offset, message } => SqlError::Syntax {
+                    offset: offset + start,
+                    message,
+                },
+                other => other,
+            })?;
+        if !matches!(&statement.inner, Statement::Select(_) | Statement::Join(_)) {
             return Err(self.unsupported("a derived table or CTE that is not a SELECT"));
         }
         if statement.param_count() > 0 {
             return Err(SqlError::Unsupported {
                 feature: "parameters inside a derived table or CTE".into(),
-                offset: Some(self.tokens[open].offset),
+                offset: Some(start),
             });
         }
-        self.pos = close + 1;
         Ok(statement)
+    }
+
+    pub(super) fn source_query(&mut self, sql: &str) -> Result<SqlStatement, SqlError> {
+        let tokens = self.source_tokens()?;
+        self.read_source_text(sql, tokens)
+    }
+
+    fn recursive_source(
+        &self,
+        sql: &str,
+        body: Range<usize>,
+        union: usize,
+        name: &str,
+        aliases: Vec<String>,
+        ctes: &super::CteSources,
+    ) -> Result<Source, SqlError> {
+        let anchor = self.read_source_text(sql, body.start..union)?;
+        let all = matches!(&self.tokens[union + 1].kind, TokenKind::Ident { text, quoted: false } if text == "all");
+        let start_token = union + 1 + usize::from(all);
+        if start_token >= body.end {
+            return Err(self.syntax("expected a recursive SELECT after UNION"));
+        }
+        let text = &sql[self.tokens[start_token].offset..self.tokens[body.end].offset];
+        let mut member_parser = JoinParser {
+            tokens: tokenize(text, self.limits)?,
+            pos: 0,
+            params: 0,
+            depth: 0,
+            limits: self.limits,
+        };
+        let mut member_sources = ctes.clone();
+        member_sources.push((name.to_owned(), Arc::new(Source::Frontier)));
+        let member = member_parser.select_with_ctes(text, &member_sources)?;
+        if !matches!(member_parser.peek().kind, TokenKind::Eof) {
+            return Err(member_parser.unsupported("recursive CTE with multiple recursive terms"));
+        }
+        let mut fronts = member.tables.iter().enumerate().filter_map(|(i, table)| {
+            matches!(table.query.as_deref(), Some(Source::Frontier)).then_some(i)
+        });
+        let frontier = fronts
+            .next()
+            .ok_or_else(|| self.unsupported("recursive CTE without a recursive table reference"))?;
+        if fronts.next().is_some()
+            || member_parser.params != 0
+            || aggregate::is_aggregate(&member)
+            || member.limit.is_some()
+            || !member.order_by.is_empty()
+        {
+            return Err(self.unsupported("recursive CTE member needs one recursive reference and no aggregate, parameters, ordering or limit"));
+        }
+        Ok(Source::Recursive(Box::new(RecursiveSource {
+            anchor,
+            member,
+            frontier,
+            aliases,
+            distinct: !all,
+        })))
     }
 
     pub(super) fn cte_sources(&mut self, sql: &str) -> Result<super::CteSources, SqlError> {
         let mut ctes = super::CteSources::new();
-        if self.eat_kw("with") {
-            if self.at_kw("recursive") {
-                return Err(self.unsupported("WITH RECURSIVE"));
+        if !self.eat_kw("with") {
+            return Ok(ctes);
+        }
+        let recursive = self.eat_kw("recursive");
+        loop {
+            let name = self.ident("CTE name")?;
+            if ctes.iter().any(|(existing, _)| *existing == name) {
+                return Err(self.syntax("a CTE name is declared twice"));
             }
-            loop {
-                let name = self.ident("CTE name")?;
-                if ctes.iter().any(|(existing, _)| *existing == name) {
-                    return Err(self.syntax("a CTE name is declared twice"));
+            let mut aliases = Vec::new();
+            if self.eat(&TokenKind::LParen) {
+                loop {
+                    let alias = self.ident("CTE column name")?;
+                    if aliases.contains(&alias) {
+                        return Err(self.syntax("a CTE column is declared twice"));
+                    }
+                    aliases.push(alias);
+                    if !self.eat(&TokenKind::Comma) {
+                        break;
+                    }
                 }
-                if matches!(self.peek().kind, TokenKind::LParen) {
-                    return Err(self.unsupported("CTE column lists"));
+                self.expect(&TokenKind::RParen, ")")?;
+            }
+            self.expect_kw("as")?;
+            let body = self.source_tokens()?;
+            let mut depth = 0_usize;
+            let union = body.clone().find(|&pos| match &self.tokens[pos].kind {
+                TokenKind::LParen => {
+                    depth += 1;
+                    false
                 }
-                self.expect_kw("as")?;
-                ctes.push((name, std::sync::Arc::new(self.source_query(sql)?)));
-                if ctes.len() > MAX_SQL_CTES {
-                    return Err(SqlError::Bounds(format!(
-                        "a WITH declares at most {MAX_SQL_CTES} CTEs"
-                    )));
+                TokenKind::RParen => {
+                    depth -= 1;
+                    false
                 }
-                if !self.eat(&TokenKind::Comma) {
-                    break;
+                TokenKind::Ident {
+                    text,
+                    quoted: false,
+                } => depth == 0 && text == "union",
+                _ => false,
+            });
+            let source = match (recursive, union) {
+                (true, Some(union)) => {
+                    self.recursive_source(sql, body, union, &name, aliases, &ctes)?
                 }
+                _ if !aliases.is_empty() => {
+                    return Err(self.unsupported("column lists on non-recursive CTEs"));
+                }
+                _ => Source::Select(Box::new(self.read_source_text(sql, body)?)),
+            };
+            ctes.push((name, Arc::new(source)));
+            if ctes.len() > MAX_SQL_CTES {
+                return Err(SqlError::Bounds(format!(
+                    "a WITH declares at most {MAX_SQL_CTES} CTEs"
+                )));
+            }
+            if !self.eat(&TokenKind::Comma) {
+                return Ok(ctes);
             }
         }
-        Ok(ctes)
     }
 }
 

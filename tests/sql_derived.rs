@@ -3,10 +3,13 @@ use database_engine::{
     CheckpointStore, DocumentDatabase, SqlDatabase, SqlError, SqlOutcome, SqlValue, Store,
 };
 
-fn for_both(mut f: impl FnMut(&SqlDatabase<'_>, &str)) {
+fn for_both(mut f: impl FnMut(&mut SqlDatabase<'_>, &str)) {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("ordinary")).unwrap();
-    f(&SqlDatabase::new(DocumentDatabase::new(&store)), "Store");
+    f(
+        &mut SqlDatabase::new(DocumentDatabase::new(&store)),
+        "Store",
+    );
     drop(store);
     let log = dir.path().join("checkpoint-log");
     let initial = Store::open(&log).unwrap();
@@ -16,7 +19,7 @@ fn for_both(mut f: impl FnMut(&SqlDatabase<'_>, &str)) {
     drop(initial);
     let checkpoint = CheckpointStore::open(&log, dir.path().join("checkpoint"), &digest).unwrap();
     f(
-        &SqlDatabase::new(DocumentDatabase::with_checkpoint_store(&checkpoint)),
+        &mut SqlDatabase::new(DocumentDatabase::with_checkpoint_store(&checkpoint)),
         "CheckpointStore",
     );
 }
@@ -88,6 +91,7 @@ fn derived_tables_and_ctes_match_sqlite() {
             "WITH a AS (SELECT id, dept FROM emp WHERE id < 5) SELECT x.id, y.id FROM a x FULL JOIN a y ON x.dept = y.dept ORDER BY x.id, y.id",
             "WITH stat AS (SELECT dept, COUNT(*) AS n FROM emp GROUP BY dept) SELECT d.title, s.n FROM dept d JOIN stat s ON s.dept = d.id ORDER BY d.id",
             "WITH a AS (SELECT id FROM emp) SELECT id FROM emp ORDER BY id LIMIT 1",
+            "WITH RECURSIVE r AS (SELECT id FROM emp WHERE id < 1) SELECT id FROM r",
             "SELECT d.id, COUNT(e.id) AS n FROM (SELECT id, dept FROM emp WHERE id < 2) e RIGHT JOIN dept d ON d.id = e.dept GROUP BY d.id ORDER BY d.id",
             "SELECT d.id, e.n FROM dept d JOIN (SELECT x.id, COUNT(y.id) AS n FROM dept x LEFT JOIN emp y ON x.id = y.dept GROUP BY x.id) e ON d.id = e.id ORDER BY d.id",
         ] {
@@ -115,7 +119,6 @@ fn derived_tables_and_ctes_match_sqlite() {
         );
         for sql in [
             "SELECT * FROM (SELECT id FROM emp WHERE id > ?) AS d",
-            "WITH RECURSIVE r AS (SELECT id FROM emp) SELECT id FROM r",
             "WITH a AS (SELECT id FROM emp) SELECT id FROM a JOIN dept ON dept.id = a.id",
             "SELECT * FROM (DELETE FROM emp) AS d",
         ] {
@@ -135,5 +138,81 @@ fn derived_tables_and_ctes_match_sqlite() {
         assert!(
             matches!(&plan[1][3], SqlValue::Text(detail) if detail.contains("materialized source"))
         );
+    });
+}
+
+#[test]
+fn recursive_ctes_match_sqlite_and_enforce_cumulative_bounds() {
+    for_both(|db, backend| {
+        let sqlite = rusqlite::Connection::open_in_memory().unwrap();
+        for sql in [
+            "CREATE TABLE roots (id INTEGER PRIMARY KEY)",
+            "CREATE TABLE edges (id INTEGER PRIMARY KEY, src INTEGER, dst INTEGER, label TEXT)",
+            "CREATE INDEX edges_src ON edges(src)",
+            "INSERT INTO roots VALUES (1)",
+            "INSERT INTO edges VALUES (1, 1, 2, 'a'), (2, 1, 3, 'b'), (3, 2, 4, 'c'), (4, 3, 5, 'd'), (5, 4, 6, 'e')",
+        ] {
+            db.execute(sql, &[]).unwrap();
+            sqlite.execute(sql, []).unwrap();
+        }
+        let all = "WITH RECURSIVE walk(node) AS (
+            SELECT id FROM roots UNION ALL
+            SELECT e.dst FROM walk w JOIN edges e ON e.src = w.node
+        ) SELECT node FROM walk ORDER BY node";
+        let check = |db: &SqlDatabase<'_>, sql: &str| {
+            let mut stmt = sqlite.prepare(sql).unwrap();
+            let expected: Vec<_> = stmt
+                .query_map([], |row| Ok(vec![from_sqlite(row.get(0)?)]))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(rows(db, sql, &[]), expected, "{backend}: {sql}");
+        };
+        check(db, all);
+        let plan = rows(db, &format!("EXPLAIN {all}"), &[]);
+        assert!(
+            matches!(&plan[0][3], SqlValue::Text(detail) if detail.contains("recursive materialized source"))
+        );
+        let cycle = "INSERT INTO edges VALUES (6, 6, 1, 'cycle')";
+        db.execute(cycle, &[]).unwrap();
+        sqlite.execute(cycle, []).unwrap();
+        let distinct = all.replace("UNION ALL", "UNION");
+        check(db, &distinct);
+
+        let original = *db.limits();
+        db.set_limits(database_engine::SqlLimits {
+            max_select_rows: 6,
+            ..original
+        })
+        .unwrap();
+        check(db, &distinct);
+        assert!(matches!(db.execute(all, &[]), Err(SqlError::Bounds(_))));
+        db.set_limits(database_engine::SqlLimits {
+            max_select_rows: 5,
+            ..original
+        })
+        .unwrap();
+        assert!(matches!(
+            db.execute(&distinct, &[]),
+            Err(SqlError::Bounds(_))
+        ));
+        db.set_limits(database_engine::SqlLimits {
+            max_visited_rows: 4,
+            ..original
+        })
+        .unwrap();
+        assert!(matches!(
+            db.execute(&distinct, &[]),
+            Err(SqlError::Bounds(_))
+        ));
+        db.set_limits(original).unwrap();
+
+        let wrong_type = all.replace("SELECT e.dst", "SELECT e.label");
+        assert!(matches!(
+            db.execute(&wrong_type, &[]),
+            Err(SqlError::Type(_))
+        ));
+        let no_children = all.replace("SELECT id FROM roots", "SELECT id FROM roots WHERE id < 0");
+        assert!(rows(db, &no_children, &[]).is_empty());
     });
 }

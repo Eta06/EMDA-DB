@@ -92,10 +92,10 @@ impl PartialEq for JoinSelect {
 struct TableRef {
     name: String,
     alias: String,
-    query: Option<Arc<SqlStatement>>,
+    query: Option<Arc<derived::Source>>,
 }
 
-type CteSources = Vec<(String, Arc<SqlStatement>)>;
+type CteSources = Vec<(String, Arc<derived::Source>)>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum JoinKind {
@@ -294,6 +294,10 @@ impl JoinParser<'_> {
 
     fn select(&mut self, sql: &str) -> Result<JoinSelect, SqlError> {
         let ctes = self.cte_sources(sql)?;
+        self.select_with_ctes(sql, &ctes)
+    }
+
+    fn select_with_ctes(&mut self, sql: &str, ctes: &CteSources) -> Result<JoinSelect, SqlError> {
         self.expect_kw("select")?;
         if self.at_kw("distinct") || self.at_kw("all") {
             return Err(self.unsupported("SELECT DISTINCT or ALL in a join"));
@@ -306,7 +310,7 @@ impl JoinParser<'_> {
             }
         }
         self.expect_kw("from")?;
-        let mut tables = vec![self.table_ref(sql, &ctes)?];
+        let mut tables = vec![self.table_ref(sql, ctes)?];
         let mut joins = Vec::new();
         // `a RIGHT JOIN b ON c` is `b LEFT JOIN a ON c` with `a`'s columns
         // first; it is accepted as the first join, where both tables are
@@ -344,7 +348,7 @@ impl JoinParser<'_> {
                 }
                 break;
             }
-            tables.push(self.table_ref(sql, &ctes)?);
+            tables.push(self.table_ref(sql, ctes)?);
             if tables.len() > MAX_JOIN_TABLES {
                 return Err(SqlError::Bounds(format!(
                     "join has more than {MAX_JOIN_TABLES} tables"
@@ -410,7 +414,10 @@ impl JoinParser<'_> {
             tables.swap(0, 1);
         }
         let source = if tables.len() == 1 {
-            tables[0].query.as_deref().cloned().map(Box::new)
+            match tables[0].query.as_deref() {
+                Some(derived::Source::Select(statement)) => Some(statement.clone()),
+                _ => None,
+            }
         } else {
             None
         };
@@ -552,7 +559,7 @@ impl JoinParser<'_> {
 
     fn table_ref(&mut self, sql: &str, ctes: &CteSources) -> Result<TableRef, SqlError> {
         if matches!(self.peek().kind, TokenKind::LParen) {
-            let query = Arc::new(self.source_query(sql)?);
+            let query = Arc::new(derived::Source::Select(Box::new(self.source_query(sql)?)));
             self.eat_kw("as");
             let alias = self.ident("derived table alias")?;
             return Ok(TableRef {
@@ -1993,7 +2000,7 @@ fn load_table_defs(
     let mut defs: Vec<Arc<TableDef>> = Vec::with_capacity(statement.tables.len());
     for (index, table) in statement.tables.iter().enumerate() {
         if let Some(query) = &table.query {
-            let columns = exec::read_columns(tx, query, limits, cache)?;
+            let columns = query.columns(tx, limits, cache)?;
             let mut names = std::collections::HashSet::new();
             if columns.iter().any(|col| !names.insert(col.name.as_str())) {
                 return Err(SqlError::Syntax {
@@ -3603,11 +3610,7 @@ fn run(
                         .expect("earlier derived source"),
                 )
             } else {
-                let SqlOutcome::Rows { rows, .. } = exec::run_read_in_tx(tx, query, limits, cache)?
-                else {
-                    unreachable!("a SELECT returns rows");
-                };
-                Arc::new(rows)
+                query.rows(tx, limits, cache)?
             };
             materialized[index] = Some(rows);
         } else {
@@ -4000,6 +4003,7 @@ fn run(
     }
 
     executor.emit_unmatched_right()?;
+    super::subquery::record_visited_rows(executor.budget.visited);
     let rows = executor
         .sink
         .finish(&mut executor.arenas, &join_plan, wanted, offset, limits)?;
@@ -4082,9 +4086,14 @@ pub(crate) fn explain(
             };
             format!("{kind}; ON checked on every candidate")
         };
-        let estimate = if statement.tables[index].query.is_some() {
+        let estimate = if let Some(source) = &statement.tables[index].query {
+            let description = if matches!(source.as_ref(), derived::Source::Recursive(_)) {
+                "recursive materialized source"
+            } else {
+                "materialized source"
+            };
             format!(
-                "materialized source; candidate rows: at most {}",
+                "{description}; candidate rows: at most {}",
                 limits.max_select_rows
             )
         } else {

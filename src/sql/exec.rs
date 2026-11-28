@@ -216,7 +216,11 @@ pub(super) fn read_columns(
         BoundExpr::Literal(SqlValue::Boolean(_))
         | BoundExpr::Exists(_)
         | BoundExpr::InSubquery { .. }
-        | BoundExpr::Not(_) => Some(SqlType::Boolean),
+        | BoundExpr::Not(_)
+        | BoundExpr::And(_)
+        | BoundExpr::Or(_)
+        | BoundExpr::Compare { .. }
+        | BoundExpr::IsNull { .. } => Some(SqlType::Boolean),
         _ => None,
     };
     let types: Vec<_> = match plan.as_ref() {
@@ -3749,7 +3753,7 @@ fn exec_simple_select_into(
     Ok(())
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum ScalarKey {
     Null,
     Integer(i64),
@@ -3767,7 +3771,7 @@ fn canonical_f64_bits(f: f64) -> u64 {
 }
 
 impl ScalarKey {
-    fn from_value_ref(v: SqlValueRef<'_>) -> Self {
+    pub(super) fn from_value_ref(v: SqlValueRef<'_>) -> Self {
         match v {
             SqlValueRef::Null => Self::Null,
             SqlValueRef::Integer(n) => Self::Integer(n),
