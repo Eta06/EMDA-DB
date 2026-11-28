@@ -187,8 +187,13 @@ pub(crate) fn execute(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AlterTable {
     table: String,
-    column: String,
-    action: ColumnAction,
+    action: AlterAction,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AlterAction {
+    Column { name: String, change: ColumnAction },
+    RenameTable(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -211,7 +216,7 @@ pub(crate) fn is_alter_table(tokens: &[Token]) -> bool {
     keyword(0, "alter") && keyword(1, "table")
 }
 
-/// Parses one column migration.
+/// Parses one table or column migration.
 pub(crate) fn parse_alter_table(
     tokens: &[Token],
     limits: &SqlLimits,
@@ -232,6 +237,14 @@ pub(crate) fn parse_alter_table(
     let mut pos = 2;
     let table = ident(pos, "table name")?;
     pos += 1;
+    if kw(pos, "rename") && kw(pos + 1, "to") {
+        let name = ident(pos + 2, "new table name")?;
+        finish_alter(tokens, pos + 3)?;
+        return Ok(AlterTable {
+            table,
+            action: AlterAction::RenameTable(name),
+        });
+    }
     if kw(pos, "drop") && kw(pos + 1, "constraint") {
         return Err(unsupported(pos, "ALTER TABLE ... DROP CONSTRAINT"));
     }
@@ -253,8 +266,10 @@ pub(crate) fn parse_alter_table(
         finish_alter(tokens, pos)?;
         return Ok(AlterTable {
             table,
-            column,
-            action,
+            action: AlterAction::Column {
+                name: column,
+                change: action,
+            },
         });
     }
     if !kw(pos, "add") {
@@ -350,10 +365,12 @@ pub(crate) fn parse_alter_table(
     finish_alter(tokens, pos)?;
     Ok(AlterTable {
         table,
-        column,
-        action: ColumnAction::Add {
-            column_type,
-            not_null,
+        action: AlterAction::Column {
+            name: column,
+            change: ColumnAction::Add {
+                column_type,
+                not_null,
+            },
         },
     })
 }
@@ -377,7 +394,7 @@ fn finish_alter(tokens: &[Token], mut pos: usize) -> Result<(), SqlError> {
     Ok(())
 }
 
-/// Applies one column migration inside the caller's transaction.
+/// Applies one table or column migration inside the caller's transaction.
 pub(crate) fn alter_in_tx(
     tx: &mut DocumentTransaction<'_, '_>,
     statement: &AlterTable,
@@ -385,18 +402,22 @@ pub(crate) fn alter_in_tx(
     cache: &SqlCache,
 ) -> Result<SqlOutcome, SqlError> {
     let table = catalog::load_table_cached(tx, &statement.table, cache.tables())?;
+    let (column_name, change) = match &statement.action {
+        AlterAction::Column { name, change } => (name, change),
+        AlterAction::RenameTable(name) => return rename_table(tx, &table.def, name, limits, cache),
+    };
     let mut updated = catalog::TableDef::clone(&table.def);
     if let ColumnAction::Add {
         column_type,
         not_null,
-    } = statement.action
+    } = *change
     {
-        if table.def.column_index(&statement.column).is_some() {
+        if table.def.column_index(column_name).is_some() {
             return Err(SqlError::Syntax {
                 offset: 0,
                 message: format!(
                     "column '{}' already exists in table '{}'",
-                    statement.column, statement.table
+                    column_name, statement.table
                 ),
             });
         }
@@ -414,21 +435,21 @@ pub(crate) fn alter_in_tx(
         {
             return Err(SqlError::Constraint(format!(
                 "cannot add NOT NULL column '{}' to non-empty table '{}': existing rows would be NULL",
-                statement.column, statement.table
+                column_name, statement.table
             )));
         }
         updated.columns.push(ColumnDef {
-            name: statement.column.clone(),
+            name: column_name.clone(),
             col_type: column_type,
             not_null,
             default: None,
         });
     } else {
-        let rename = match &statement.action {
+        let rename = match change {
             ColumnAction::Rename(name) => Some(name.as_str()),
             _ => None,
         };
-        let column = &statement.column;
+        let column = column_name;
         let index = updated
             .column_index(column)
             .ok_or_else(|| SqlError::NoSuchColumn {
@@ -581,4 +602,113 @@ fn rewrite_column(
             .map_err(exec::classify_io_error)?;
     }
     Ok(())
+}
+
+/// Copies an admitted table to its new collection and publishes the change
+/// with all foreign key references in one durable transaction.
+fn rename_table(
+    tx: &mut DocumentTransaction<'_, '_>,
+    old: &catalog::TableDef,
+    new_name: &str,
+    limits: &SqlLimits,
+    cache: &SqlCache,
+) -> Result<SqlOutcome, SqlError> {
+    if old
+        .indexes
+        .iter()
+        .any(|index| index.state != IndexState::Ready)
+    {
+        return Err(SqlError::Constraint(
+            "cannot rename a table while index maintenance is active".into(),
+        ));
+    }
+    let mut renamed = old.clone();
+    renamed.name = new_name.to_owned();
+    rewrite_related_names(&mut renamed, &old.name, new_name);
+    catalog::create_table(tx, &renamed, false)?;
+
+    let row_limit = limits.max_mutation_rows.min(limits.max_visited_rows);
+    let (mut count, mut after) = (0, None);
+    loop {
+        let page = tx
+            .scan_documents(
+                &old.name,
+                after.as_deref(),
+                (row_limit - count + 1).min(128),
+            )
+            .map_err(exec::classify_io_error)?;
+        let Some(last) = page.last() else { break };
+        after = Some(last.id.clone());
+        count += page.len();
+        if count > row_limit {
+            return Err(SqlError::Bounds(format!(
+                "table rename exceeds its {row_limit}-row migration bound"
+            )));
+        }
+        for entry in page {
+            let obj = entry.document.as_object().ok_or_else(|| {
+                SqlError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "stored row is not an object",
+                ))
+            })?;
+            exec::verify_doc_pk_id(old, &entry.id, obj)?;
+            tx.insert(new_name, &entry.id, &entry.document)
+                .map_err(|error| exec::map_write_constraint_error(error, new_name))?;
+        }
+    }
+
+    let related = old
+        .foreign_keys
+        .iter()
+        .map(|fk| fk.ref_table.as_str())
+        .chain(old.referenced_by.iter().map(|fk| fk.child_table.as_str()))
+        .chain(
+            old.tuple_foreign_keys
+                .iter()
+                .map(|fk| fk.ref_table.as_str()),
+        )
+        .chain(
+            old.tuple_referenced_by
+                .iter()
+                .map(|fk| fk.child_table.as_str()),
+        )
+        .filter(|name| *name != old.name)
+        .collect::<std::collections::BTreeSet<_>>();
+    for related in related {
+        let cached = catalog::load_table_cached(tx, related, cache.tables())?;
+        let mut table = (*cached.def).clone();
+        rewrite_related_names(&mut table, &old.name, new_name);
+        table.validate()?;
+        catalog::save_table_def(tx, &cached.catalog_key, &table)?;
+    }
+    tx.drop_collection(&old.name)
+        .map_err(exec::classify_io_error)?;
+    catalog::remove_table(tx, &old.name)?;
+    Ok(SqlOutcome::TableAltered)
+}
+
+fn rewrite_related_names(table: &mut catalog::TableDef, old: &str, new: &str) {
+    for name in table
+        .foreign_keys
+        .iter_mut()
+        .map(|fk| &mut fk.ref_table)
+        .chain(table.referenced_by.iter_mut().map(|fk| &mut fk.child_table))
+        .chain(
+            table
+                .tuple_foreign_keys
+                .iter_mut()
+                .map(|fk| &mut fk.ref_table),
+        )
+        .chain(
+            table
+                .tuple_referenced_by
+                .iter_mut()
+                .map(|fk| &mut fk.child_table),
+        )
+    {
+        if name == old {
+            new.clone_into(name);
+        }
+    }
 }

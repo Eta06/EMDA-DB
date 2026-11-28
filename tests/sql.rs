@@ -848,7 +848,6 @@ fn unsupported_sql_features_return_unsupported_naming_feature() {
         "DROP TABLE a CASCADE",
         "DROP TABLE a, b",
         "DROP INDEX idx",
-        "ALTER TABLE a RENAME TO b",
         "BEGIN",
         "COMMIT",
         "ROLLBACK",

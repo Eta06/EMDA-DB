@@ -310,7 +310,6 @@ fn add_column_rules_and_errors() {
             Err(SqlError::NoSuchTable(_))
         ));
         for statement in [
-            "ALTER TABLE filled RENAME TO other",
             "ALTER TABLE filled ADD CONSTRAINT u UNIQUE (id)",
             "ALTER TABLE filled ADD COLUMN c INTEGER UNIQUE",
             "ALTER TABLE filled ADD COLUMN c INTEGER PRIMARY KEY",
@@ -431,6 +430,71 @@ fn drop_and_rename_columns_are_atomic_and_preserve_other_indexes() {
             db.execute("INSERT INTO t (id, keep) VALUES (4, 404)", &[]),
             Err(SqlError::Constraint(_))
         ));
+    });
+}
+
+#[test]
+fn table_rename_moves_rows_indexes_and_both_directions_of_foreign_keys() {
+    for_both(|db, backend| {
+        let sqlite = rusqlite::Connection::open_in_memory().unwrap();
+        sqlite.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+        for sql in [
+            "CREATE TABLE root (id INTEGER PRIMARY KEY)",
+            "CREATE TABLE old (a INTEGER REFERENCES root(id), b TEXT, pa INTEGER, pb TEXT, tag TEXT UNIQUE, PRIMARY KEY(a,b), FOREIGN KEY(pa,pb) REFERENCES old(a,b))",
+            "CREATE TABLE child (id INTEGER PRIMARY KEY, pa INTEGER, pb TEXT, tag TEXT REFERENCES old(tag), FOREIGN KEY(pa,pb) REFERENCES old(a,b))",
+            "INSERT INTO root VALUES (1)",
+            "INSERT INTO old VALUES (1,'root',NULL,NULL,'t1'), (1,'leaf',1,'root','t2')",
+            "INSERT INTO child VALUES (1,1,'leaf','t2')",
+        ] {
+            db.execute(sql, &[]).unwrap();
+            sqlite.execute(sql, []).unwrap();
+        }
+        let statement = db.prepare("SELECT tag FROM old WHERE tag = 't2'").unwrap();
+        db.execute_prepared(&statement, &[]).unwrap();
+        let result: Result<(), SqlError> = db.transaction(|tx| {
+            tx.execute("ALTER TABLE old RENAME TO transient", &[])?;
+            tx.execute("SELECT tag FROM transient WHERE tag = 't2'", &[])?;
+            Err(SqlError::Constraint("rollback rename".into()))
+        });
+        assert!(matches!(result, Err(SqlError::Constraint(ref s)) if s == "rollback rename"));
+        db.execute_prepared(&statement, &[]).unwrap();
+        assert!(matches!(
+            db.execute("ALTER TABLE old RENAME TO child", &[]),
+            Err(SqlError::TableExists(_))
+        ));
+        for sql in [
+            "ALTER TABLE old RENAME TO renamed",
+            "INSERT INTO child VALUES (2,1,'root','t1')",
+            "INSERT INTO renamed VALUES (1,'branch',1,'root','t3')",
+        ] {
+            db.execute(sql, &[]).unwrap();
+            sqlite.execute(sql, []).unwrap();
+        }
+        assert!(matches!(
+            db.execute_prepared(&statement, &[]),
+            Err(SqlError::NoSuchTable(_))
+        ));
+        for sql in [
+            "DELETE FROM renamed WHERE a = 1 AND b = 'leaf'",
+            "DELETE FROM root WHERE id = 1",
+            "INSERT INTO child VALUES (3,1,'missing','t3')",
+        ] {
+            assert!(
+                matches!(db.execute(sql, &[]), Err(SqlError::Constraint(_))),
+                "{backend}: {sql}"
+            );
+            assert!(sqlite.execute(sql, []).is_err(), "{sql}");
+        }
+        let sql = "SELECT tag FROM renamed WHERE tag = 't2'";
+        let SqlOutcome::Rows { rows, .. } = db.execute(sql, &[]).unwrap() else {
+            panic!()
+        };
+        assert_eq!(
+            rows,
+            vec![vec![SqlValue::Text(
+                sqlite.query_row(sql, [], |row| row.get(0)).unwrap()
+            )]]
+        );
     });
 }
 
