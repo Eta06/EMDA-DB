@@ -13,6 +13,7 @@ use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::ExitCode;
@@ -209,6 +210,7 @@ fn run(path: &Path, single_project: bool) -> Result<(), Box<dyn std::error::Erro
         &signal,
         &mut reload,
         config.credentials_file.as_deref(),
+        config.credentials_poll_ms.map(Duration::from_millis),
     );
     drop(listener);
     // Keep owning the stores until every admitted request releases its slot,
@@ -225,14 +227,24 @@ fn accept_until_signal(
     signal: &UnixStream,
     reload: &mut UnixStream,
     credentials_file: Option<&Path>,
+    poll_interval: Option<Duration>,
 ) -> io::Result<()> {
+    let mut poll_due = poll_interval.map(|interval| Instant::now() + interval);
+    let mut seen_policy = None;
     loop {
         let mut fds = [
             PollFd::new(signal, PollFlags::IN),
             PollFd::new(reload, PollFlags::IN),
             PollFd::new(listener, PollFlags::IN),
         ];
-        match poll(&mut fds, None) {
+        let timeout = poll_due.map(|when| {
+            let delay = when.saturating_duration_since(Instant::now());
+            rustix::event::Timespec {
+                tv_sec: delay.as_secs() as _,
+                tv_nsec: delay.subsec_nanos().into(),
+            }
+        });
+        match poll(&mut fds, timeout.as_ref()) {
             Ok(_) => {}
             Err(rustix::io::Errno::INTR) => continue,
             Err(error) => return Err(error.into()),
@@ -253,6 +265,32 @@ fn accept_until_signal(
                         "emda-server rejected credential reload; previous policy retained"
                     ),
                 },
+            }
+        }
+        if let (Some(due), Some(interval), Some(path)) = (poll_due, poll_interval, credentials_file)
+        {
+            if Instant::now() >= due {
+                poll_due = Some(Instant::now() + interval);
+                if let Ok(meta) = std::fs::metadata(path) {
+                    let current = (
+                        meta.dev(),
+                        meta.ino(),
+                        meta.len(),
+                        meta.mtime(),
+                        meta.mtime_nsec(),
+                    );
+                    if seen_policy != Some(current) {
+                        match server.hosted.reload_credentials(path) {
+                            Ok(()) => {
+                                seen_policy = Some(current);
+                                eprintln!("emda-server credential policy reloaded");
+                            }
+                            Err(_) => eprintln!(
+                                "emda-server rejected credential reload; previous policy retained"
+                            ),
+                        }
+                    }
+                }
             }
         }
         if !accept {
@@ -309,11 +347,16 @@ fn notify_ready() -> io::Result<()> {
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if let [command, rest @ ..] = args.as_slice() {
-        if command == "keys" {
-            return match project::keys::run(rest) {
+        if command == "keys" || command == "key-api" {
+            let result = if command == "keys" {
+                project::keys::run(rest)
+            } else {
+                project::key_api::run(rest)
+            };
+            return match result {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
-                    eprintln!("emda-server keys: {error}");
+                    eprintln!("emda-server {}: {error}", command.to_string_lossy());
                     ExitCode::FAILURE
                 }
             };

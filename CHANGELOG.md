@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add a host-local delegated key authority with separate management
+  accounts and project grants, plus optional automatic policy detection.
+
 - Add local operator commands to issue, list, rotate and revoke scoped API
   keys in the durable self-hosted policy.
 

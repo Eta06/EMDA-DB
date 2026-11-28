@@ -132,8 +132,8 @@ which already authenticated can finish under their original grants. To rotate
 without interrupting clients, publish a new credential ID and digest, migrate
 clients, then remove the old credential in a second update. Removing an ID
 revokes it for subsequent requests. The server's reload log records success or
-failure without token material. Harbor's end-user accounts and managed key
-issuance and revocation remain separate work.
+failure without token material. Harbor can use the host-local key API below
+for delegated issuance and revocation.
 
 ### Operator key commands
 
@@ -165,6 +165,64 @@ sudo emda-server keys /etc/emda/projects/example/server.json \
   revoke example site-reader
 sudo systemctl reload emda-server@example.service
 ```
+
+### Delegated key management API
+
+Run the key authority as a separate host-local process. Use an operator-owned
+policy file, an operator-owned accounts file and a private directory for the
+Unix socket. The data service can keep its read-only policy mount. Pass the
+host policy path to the authority.
+
+```sh
+emda-server key-api ./server.json ./accounts.json ./credentials.json ./private/keys.sock
+```
+
+An accounts file contains a separate set of identities and grants.
+
+```json
+{
+  "accounts": [
+    {
+      "id": "project-automation",
+      "token_sha256": "<management token digest>",
+      "expires_unix_seconds": 1900000000,
+      "projects": {"example": "manage_read"}
+    }
+  ]
+}
+```
+
+Generate management tokens independently of data tokens. An account can
+receive `list`, `manage_read` or `manage_write` for each configured project.
+Managers can issue, rotate or revoke keys at or below their granted role.
+A managed key cannot outlive the account that issues or rotates it.
+Project-wide administrative data keys stay under operator control.
+Publish account changes atomically. The authority reads the current
+account policy at each request.
+
+Each connection exchanges one four-byte big-endian length and its UTF-8
+JSON body in each direction. Requests are limited to 64 KiB and responses
+to 1 MiB. The request has `account`, `token`, `project` and an
+`operation` object. The operation has an `op` field with one of:
+
+| Operation | Fields |
+| --- | --- |
+| `list` | none |
+| `issue` | `id`, `role`, `expires_unix_seconds` and optional `scope` |
+| `rotate` | `id`, `expires_unix_seconds` |
+| `revoke` | `id` |
+
+Success returns `{"ok":true,"result":...}`. Issue and rotate return the
+new token in `result.token`. Listing returns metadata only. A failed
+publication can return `outcome_unknown`; check the policy before retrying.
+Removing a management account prevents new management requests. Revoke any
+data keys that should be disabled through the key policy.
+
+Set `credentials_poll_ms` to an interval from 100 to 60,000 milliseconds
+to let the data service detect atomic policy replacements without a signal.
+Otherwise apply published changes with the existing operator reload.
+The private socket is a host-local interface. Remote Harbor traffic still
+requires an authenticated gateway and hosted identity provisioning.
 
 ## Rust client
 

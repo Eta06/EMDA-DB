@@ -7,6 +7,9 @@ use database_engine::{
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 
+#[path = "key_api.rs"]
+pub mod key_api;
+
 #[path = "keys.rs"]
 pub mod keys;
 use serde_json::{Value, json};
@@ -33,6 +36,7 @@ pub struct Config {
     pub max_connections: usize,
     pub timeout_ms: u64,
     pub credentials_file: Option<PathBuf>,
+    pub credentials_poll_ms: Option<u64>,
     #[serde(default = "default_concurrent_wakes")]
     max_concurrent_wakes: usize,
     pub projects: Vec<ProjectConfig>,
@@ -573,6 +577,9 @@ impl Config {
     pub fn open_projects(&self) -> Result<HostedProjects, Box<dyn std::error::Error>> {
         if !(1..=128).contains(&self.max_connections)
             || !(100..=60_000).contains(&self.timeout_ms)
+            || self
+                .credentials_poll_ms
+                .is_some_and(|ms| self.credentials_file.is_none() || !(100..=60_000).contains(&ms))
             || !(1..=128).contains(&self.max_concurrent_wakes)
             || !(1..=128).contains(&self.projects.len())
         {
@@ -1173,6 +1180,7 @@ mod tests {
             max_concurrent_wakes: 1,
             timeout_ms: 1000,
             credentials_file: None,
+            credentials_poll_ms: None,
             projects: vec![project("alpha", 1), project("beta", 2)],
         };
         let projects = config.open_projects().unwrap().projects;

@@ -36,6 +36,12 @@ verify that a project owner cannot grant access in another tenant. Single-table 
 these boundaries. Managed users, service-account key management, SQL policies
 spanning multiple tables and row-level policies remain future work.
 
+The host-local key authority uses separate management tokens and project
+grants for listing and managing scoped data keys. The data service consumes
+the resulting durable policy independently. Hosted identity provisioning and
+the remote gateway remain to integrate.
+[Delegated key API](SELF_HOSTED_SERVER.md#delegated-key-management-api)
+
 ## Deployment boundaries
 
 - **Shared self-hosted process.** Credentials, operations and store handles

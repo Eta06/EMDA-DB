@@ -35,49 +35,9 @@ pub fn run(args: &[OsString]) -> Result<(), Box<dyn std::error::Error>> {
         .as_deref()
         .ok_or_else(|| config_error("configure credentials_file before using key commands"))?;
     let path = override_path.unwrap_or(configured_path);
-    if config
-        .projects
-        .iter()
-        .any(|project| !project.credentials.is_empty())
-    {
-        return Err(
-            config_error("live credentials and inline credentials cannot be combined").into(),
-        );
-    }
-    let parent = path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let parent_metadata = fs::symlink_metadata(parent)?;
-    if !parent_metadata.is_dir()
-        || parent_metadata.uid() != rustix::process::geteuid().as_raw()
-        || parent_metadata.mode() & 0o022 != 0
-    {
-        return Err(config_error(
-            "credential directory must be operator-owned and not writable by others",
-        )
-        .into());
-    }
-    let lock = File::from(rustix::fs::open(
-        parent.join(".emda-key-policy.lock"),
-        OFlags::CREATE | OFlags::RDWR | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-        Mode::RUSR | Mode::WUSR,
-    )?);
-    check_operator_file(&lock.metadata()?)?;
-    lock.lock_exclusive()?;
-
-    let metadata = fs::symlink_metadata(path)?;
-    check_operator_file(&metadata)?;
-    let mut policy: CredentialFile = crate::read_json_file(path)?;
-    let configured = || config.projects.iter().map(|project| project.id.as_str());
-    validate_credential_file(&policy, configured())?;
+    let mut policy = Policy::open(&config, path)?;
     let project = identifier(project)?;
-    let credentials = &mut policy
-        .projects
-        .iter_mut()
-        .find(|candidate| candidate.id == project)
-        .ok_or_else(|| config_error("project is not configured"))?
-        .credentials;
+    let credentials = policy.project(project)?;
     let output = match (command.to_str(), rest) {
         (Some("list"), []) => {
             let mut keys: Vec<_> = credentials.iter().collect();
@@ -126,13 +86,121 @@ pub fn run(args: &[OsString]) -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => return Err(config_error("expected list, issue <id> <role> <expiry> [scope.json], rotate <id> <expiry>, or revoke <id>").into()),
     };
-    validate_credential_file(&policy, configured())?;
-    publish(parent, path, &metadata, &policy)?;
+    policy.commit()?;
     if let Some(token) = output {
         writeln!(io::stdout().lock(), "{token}")?;
     }
     eprintln!("Credential policy saved. Reload the running service to apply it.");
     Ok(())
+}
+
+pub(super) struct Policy<'a> {
+    config: &'a Config,
+    path: &'a Path,
+    parent: &'a Path,
+    metadata: fs::Metadata,
+    file: CredentialFile,
+    _lock: File,
+}
+
+impl<'a> Policy<'a> {
+    pub(super) fn open(
+        config: &'a Config,
+        path: &'a Path,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::open_with_lock(config, path, true)
+    }
+
+    pub(super) fn try_open(
+        config: &'a Config,
+        path: &'a Path,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::open_with_lock(config, path, false)
+    }
+
+    fn open_with_lock(
+        config: &'a Config,
+        path: &'a Path,
+        wait: bool,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        if config
+            .projects
+            .iter()
+            .any(|project| !project.credentials.is_empty())
+        {
+            return Err(
+                config_error("live credentials and inline credentials cannot be combined").into(),
+            );
+        }
+        let parent = path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let parent_metadata = fs::symlink_metadata(parent)?;
+        if !parent_metadata.is_dir()
+            || parent_metadata.uid() != rustix::process::geteuid().as_raw()
+            || parent_metadata.mode() & 0o022 != 0
+        {
+            return Err(config_error(
+                "credential directory must be operator-owned and not writable by others",
+            )
+            .into());
+        }
+        let lock = File::from(rustix::fs::open(
+            parent.join(".emda-key-policy.lock"),
+            OFlags::CREATE | OFlags::RDWR | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        )?);
+        check_operator_file(&lock.metadata()?)?;
+        if wait {
+            lock.lock_exclusive()?;
+        } else {
+            lock.try_lock_exclusive()?;
+        }
+
+        let metadata = fs::symlink_metadata(path)?;
+        check_operator_file(&metadata)?;
+        let policy: CredentialFile = crate::read_json_file(path)?;
+        let configured = || config.projects.iter().map(|project| project.id.as_str());
+        validate_credential_file(&policy, configured())?;
+
+        Ok(Self {
+            config,
+            path,
+            parent,
+            metadata,
+            file: policy,
+            _lock: lock,
+        })
+    }
+
+    pub(super) fn contains_digest(&self, digest: &str) -> bool {
+        self.file
+            .projects
+            .iter()
+            .flat_map(|project| &project.credentials)
+            .any(|key| key.token_sha256 == digest)
+    }
+
+    pub(super) fn project(&mut self, id: &str) -> io::Result<&mut Vec<CredentialConfig>> {
+        self.file
+            .projects
+            .iter_mut()
+            .find(|project| project.id == id)
+            .map(|project| &mut project.credentials)
+            .ok_or_else(|| config_error("project is not configured"))
+    }
+
+    pub(super) fn commit(self) -> Result<(), Box<dyn std::error::Error>> {
+        validate_credential_file(
+            &self.file,
+            self.config
+                .projects
+                .iter()
+                .map(|project| project.id.as_str()),
+        )?;
+        publish(self.parent, self.path, &self.metadata, &self.file)
+    }
 }
 
 fn identifier(value: &OsString) -> io::Result<&str> {
@@ -155,13 +223,13 @@ fn future_expiry(value: &OsString) -> Result<u64, Box<dyn std::error::Error>> {
     Ok(expiry)
 }
 
-fn generate_token() -> io::Result<(String, String)> {
+pub(super) fn generate_token() -> io::Result<(String, String)> {
     let mut token = [0_u8; 32];
     File::open("/dev/urandom")?.read_exact(&mut token)?;
     Ok((protocol::hex(&token), protocol::hex(&Sha256::digest(token))))
 }
 
-fn check_operator_file(metadata: &fs::Metadata) -> io::Result<()> {
+pub(super) fn check_operator_file(metadata: &fs::Metadata) -> io::Result<()> {
     if !metadata.is_file()
         || metadata.nlink() != 1
         || metadata.uid() != rustix::process::geteuid().as_raw()

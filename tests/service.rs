@@ -1254,3 +1254,146 @@ fn operator_key_commands_preserve_scopes_and_update_live_credentials() {
     fs::set_permissions(&policy, fs::Permissions::from_mode(0o666)).unwrap();
     assert!(!run(&["list", "alpha"]).status.success());
 }
+
+#[test]
+fn management_accounts_delegate_keys_without_crossing_project_boundaries() {
+    use std::os::unix::net::UnixStream;
+
+    const MANAGER: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+    let fixture = Fixture::new();
+    let root = fixture.dir.path();
+    let config_path = root.join("server.json");
+    let policy = root.join("keys.json");
+    let accounts = root.join("accounts.json");
+    let socket = root.join("management.sock");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    let mut policies = Vec::new();
+    for project in config["projects"].as_array_mut().unwrap() {
+        let credentials = project
+            .as_object_mut()
+            .unwrap()
+            .remove("credentials")
+            .unwrap();
+        policies.push(json!({"id":project["id"],"credentials":credentials}));
+    }
+    fs::write(&policy, json!({"projects":policies}).to_string()).unwrap();
+    config["credentials_file"] = json!(policy);
+    config["credentials_poll_ms"] = 100.into();
+    fs::write(&config_path, config.to_string()).unwrap();
+    let digest = format!("{:x}", Sha256::digest([0x11_u8; 32]));
+    let identity = json!({"id":"automation","token_sha256":digest,"expires_unix_seconds":4102444800_u64,
+        "projects":{"alpha":"manage_write","beta":"list"}});
+    fs::write(&accounts, json!({"accounts":[identity]}).to_string()).unwrap();
+    let data = fixture.start();
+    let start_manager = || {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_emda-server"))
+            .arg("key-api")
+            .args([&config_path, &accounts, &policy, &socket])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let mut msg = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut msg)
+            .unwrap();
+        assert_eq!(msg.trim(), "READY");
+        Running {
+            child,
+            addr: data.addr,
+        }
+    };
+    let manager = start_manager();
+    let request = |token, project, operation| {
+        let mut stream = UnixStream::connect(&socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(4)))
+            .unwrap();
+        let body =
+            json!({"account":"automation","token":token,"project":project,"operation":operation})
+                .to_string();
+        stream
+            .write_all(&(body.len() as u32).to_be_bytes())
+            .unwrap();
+        stream.write_all(body.as_bytes()).unwrap();
+        response(&mut stream)
+    };
+
+    let list = json!({"op":"list"});
+    assert_eq!(request(ADMIN, "alpha", list.clone()), error("unauthorized"));
+    assert_eq!(
+        request(MANAGER, "unknown", list.clone()),
+        error("forbidden")
+    );
+    assert_eq!(
+        request(MANAGER, "beta", json!({"op":"revoke","id":"admin"})),
+        error("forbidden")
+    );
+    assert_eq!(
+        request(MANAGER, "alpha", json!({"op":"revoke","id":"admin"})),
+        error("forbidden")
+    );
+    let issue = |role| {
+        json!({"op":"issue","id":"ingestor","role":role,"expires_unix_seconds":4102444700_u64,
+        "scope":{"kv_prefixes":{"events/":"write"}}})
+    };
+    assert_eq!(
+        request(MANAGER, "alpha", issue("admin")),
+        error("forbidden")
+    );
+    let created = request(MANAGER, "alpha", issue("write"));
+    let token = created["result"]["token"].as_str().unwrap();
+    let listing = request(MANAGER, "alpha", list.clone()).to_string();
+    assert!(listing.contains("ingestor"));
+    assert!(!listing.contains(token));
+    assert!(!listing.contains("token_sha256"));
+
+    let send = |secret: &str, op| fixture.send(&data, "alpha", "ingestor", secret, op);
+    let kv_get = json!({"op":"kv_get","key":"events/1"});
+    let await_policy = |secret: &str, expected: Value| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(4);
+        while send(secret, kv_get.clone()) != expected {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "credential change did not propagate"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    await_policy(token, json!({"ok":true,"result":null}));
+    assert_eq!(send(MANAGER, kv_get.clone()), error("unauthorized"));
+    assert_eq!(
+        send(token, json!({"op":"kv_get","key":"private/1"})),
+        error("forbidden")
+    );
+    assert_eq!(
+        send(
+            token,
+            json!({"op":"kv_put","key":"events/1","value_hex":"aa"})
+        )["ok"],
+        true
+    );
+
+    let rotated = request(
+        MANAGER,
+        "alpha",
+        json!({"op":"rotate","id":"ingestor","expires_unix_seconds":4102444701_u64}),
+    );
+    let new_token = rotated["result"]["token"].as_str().unwrap();
+    await_policy(new_token, json!({"ok":true,"result":"aa"}));
+    assert_eq!(send(token, kv_get.clone()), error("unauthorized"));
+    drop(manager);
+    let _manager = start_manager();
+    assert!(
+        request(MANAGER, "alpha", list.clone())
+            .to_string()
+            .contains("ingestor")
+    );
+    assert_eq!(
+        request(MANAGER, "alpha", json!({"op":"revoke","id":"ingestor"}))["ok"],
+        true
+    );
+    await_policy(new_token, error("unauthorized"));
+    fs::write(&accounts, json!({"accounts":[]}).to_string()).unwrap();
+    assert_eq!(request(MANAGER, "alpha", list), error("unauthorized"));
+}
