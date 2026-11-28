@@ -1208,3 +1208,21 @@ fn sql_tx_crash_ordinary_store() {
 fn sql_tx_crash_checkpoint_store() {
     run_tx_crash_drill(BackendKind::Checkpoint, CHECKPOINT_CRASH_SEED);
 }
+
+#[test]
+fn timed_sql_transaction_discards_staged_rows_after_deadline() {
+    for_each_backend(|_, db| {
+        db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)", &[])
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_millis(100);
+        let result = db.transaction_until(deadline, |tx| {
+            tx.execute("INSERT INTO t VALUES (1)", &[])?;
+            thread::sleep(deadline.saturating_duration_since(Instant::now()));
+            Ok(())
+        });
+        assert!(
+            matches!(result, Err(SqlError::Io(ref error)) if error.kind() == io::ErrorKind::TimedOut)
+        );
+        assert_eq!(query_i64(db, "SELECT COUNT(*) FROM t", &[]), 0);
+    });
+}

@@ -29,6 +29,34 @@ impl SqlStatement {
     pub fn param_count(&self) -> usize {
         self.param_count
     }
+
+    /// Returns the effect of executing the parsed statement.
+    pub fn kind(&self) -> SqlStatementKind {
+        match self.inner {
+            Statement::Select(_) | Statement::Join(_) | Statement::Explain(_) => {
+                SqlStatementKind::Query
+            }
+            Statement::Insert(_) | Statement::Update(_) | Statement::Delete(_) => {
+                SqlStatementKind::DataMutation
+            }
+            Statement::CreateTable(_)
+            | Statement::CreateIndex(_)
+            | Statement::DropIndex(_)
+            | Statement::DropTable(_)
+            | Statement::AlterTable(_) => SqlStatementKind::Schema,
+        }
+    }
+}
+
+/// The access category of a parsed SQL statement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SqlStatementKind {
+    /// Reads or explains a query.
+    Query,
+    /// Changes rows without modifying schema.
+    DataMutation,
+    /// Changes the schema or starts index maintenance.
+    Schema,
 }
 
 #[derive(Clone, Debug, PartialEq)]

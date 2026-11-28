@@ -21,7 +21,7 @@ mod value;
 #[cfg(test)]
 mod tests;
 
-pub use parser::SqlStatement;
+pub use parser::{SqlStatement, SqlStatementKind};
 pub use transaction::SqlTransaction;
 pub use value::{
     DEFAULT_SQL_DISTINCT_VALUES, DEFAULT_SQL_GROUPS, DEFAULT_SQL_SORT_ROWS,
@@ -123,6 +123,23 @@ impl<'a> SqlDatabase<'a> {
         f: impl FnOnce(&mut SqlTransaction<'_>) -> Result<T, SqlError>,
     ) -> Result<T, SqlError> {
         transaction::run_sql_transaction(&self.db, &self.limits, &self.cache, f)
+    }
+
+    /// Runs a serializable SQL transaction with a cooperative deadline.
+    /// Expiry detected before commit is reported as a timed-out I/O error.
+    /// Any uncertain commit still returns [`SqlError::OutcomeUnknown`].
+    pub fn transaction_until<T>(
+        &self,
+        deadline: std::time::Instant,
+        f: impl FnOnce(&mut SqlTransaction<'_>) -> Result<T, SqlError>,
+    ) -> Result<T, SqlError> {
+        transaction::run_sql_transaction_until(
+            &self.db,
+            &self.limits,
+            &self.cache,
+            Some(deadline),
+            f,
+        )
     }
 
     /// Runs [`Self::transaction`] up to `max_attempts` times, retrying **only** confirmed

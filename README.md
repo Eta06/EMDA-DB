@@ -91,8 +91,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 - **SQL expansion.** More join, subquery and migration forms, continued
   query performance work, and server access.
-- **Service and operations.** A network API with authentication, project
-  isolation and quotas, safe scale-to-zero, replication and failover.
+- **Service and operations.** The experimental [self-hosted server](docs/SELF_HOSTED_SERVER.md)
+  serves authenticated SQL, document and key-value operations. OS-level project
+  isolation, scale-to-zero, replication and failover are in development.
 - **Platforms and clients.** Windows and language SDKs are planned.
 
 ## Milestones
@@ -105,7 +106,7 @@ Progress on `main` on 2026-11-28, from [roadmap progress](docs/ROADMAP_PROGRESS.
 | 2 | Durable storage and core operations | 99% |
 | 3 | Document model and queries | 99% |
 | 4 | Embedded SQL subset | 100% |
-| 5 | Secure service and project isolation | 10% |
+| 5 | Secure service and project isolation | 40% |
 | 6 | Performance and scalability | 60% |
 | 7 | Replication and operations | 20% |
 | 8 | Broader features and tooling | 10% |

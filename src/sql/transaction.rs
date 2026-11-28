@@ -4,6 +4,7 @@ use super::parser::{self, SqlStatement};
 use super::value::{SqlError, SqlLimits, SqlOutcome, SqlValue};
 use crate::document::{DocumentDatabase, DocumentTransaction, DocumentTransactionMode};
 use std::io;
+use std::time::Instant;
 
 trait DocTxDispatch {
     fn execute_stmt(
@@ -137,31 +138,42 @@ pub(crate) fn run_sql_transaction<T>(
     cache: &SqlCache,
     action: impl FnOnce(&mut SqlTransaction<'_>) -> Result<T, SqlError>,
 ) -> Result<T, SqlError> {
+    run_sql_transaction_until(db, limits, cache, None, action)
+}
+
+pub(super) fn run_sql_transaction_until<T>(
+    db: &DocumentDatabase<'_>,
+    limits: &SqlLimits,
+    cache: &SqlCache,
+    deadline: Option<Instant>,
+    action: impl FnOnce(&mut SqlTransaction<'_>) -> Result<T, SqlError>,
+) -> Result<T, SqlError> {
     let mut sql_error: Option<SqlError> = None;
-    let outcome = db.transaction_detailed(DocumentTransactionMode::ReadSet, None, None, |doc_tx| {
-        let mut sql_tx = SqlTransaction {
-            tx: doc_tx,
-            limits,
-            cache,
-            poisoned: None,
-        };
-        match action(&mut sql_tx) {
-            Ok(value) => {
-                if let Some(reason) = sql_tx.poisoned.take() {
-                    sql_error = Some(SqlError::TransactionAborted(format!(
-                        "cannot commit after earlier statement error: {reason}"
-                    )));
-                    Err(io::Error::other("sql transaction poisoned"))
-                } else {
-                    Ok(value)
+    let outcome =
+        db.transaction_detailed(DocumentTransactionMode::ReadSet, deadline, None, |doc_tx| {
+            let mut sql_tx = SqlTransaction {
+                tx: doc_tx,
+                limits,
+                cache,
+                poisoned: None,
+            };
+            match action(&mut sql_tx) {
+                Ok(value) => {
+                    if let Some(reason) = sql_tx.poisoned.take() {
+                        sql_error = Some(SqlError::TransactionAborted(format!(
+                            "cannot commit after earlier statement error: {reason}"
+                        )));
+                        Err(io::Error::other("sql transaction poisoned"))
+                    } else {
+                        Ok(value)
+                    }
+                }
+                Err(err) => {
+                    sql_error = Some(err);
+                    Err(io::Error::other("sql transaction aborted"))
                 }
             }
-            Err(err) => {
-                sql_error = Some(err);
-                Err(io::Error::other("sql transaction aborted"))
-            }
-        }
-    });
+        });
     exec::map_transaction_outcome(outcome, sql_error)
 }
 

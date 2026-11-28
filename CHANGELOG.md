@@ -4,6 +4,11 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add the feature-gated self-hosted TLS server for SQL, documents and key-value
+  requests. It has project-scoped credentials and roles, separate project
+  stores, request and connection admission, log quotas, and hybrid TLS 1.3 key
+  establishment by default. See [server configuration](docs/SELF_HOSTED_SERVER.md).
+
 - Add SQL derived tables `FROM (SELECT ...) AS name` and non-recursive
   `WITH` CTEs. The source query, any supported `SELECT` or join, runs in
   the statement's transaction and its rows (at most `max_select_rows`)

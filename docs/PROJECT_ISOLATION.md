@@ -1,8 +1,10 @@
 # Project isolation: design goals
 
-Strong isolation is a core requirement. **It is not implemented today.** The prototype is a local embedded store; its advisory file lock only coordinates cooperating processes. It does not authenticate users, enforce project permissions, isolate tenants, or provide a security sandbox.
+The [self-hosted server](SELF_HOSTED_SERVER.md) enforces authenticated project
+routing, role checks, separate stores, and connection and log admission
+limits. The server's processes, service accounts, file provisioning, backups
+and host remain distinct trust boundaries.
 
-No shared software/hardware system can promise absolute isolation against every possible failure. Define a concrete threat model, layers, and measured guarantees instead of calling process boundaries or quotas "perfect isolation."
 
 ## Trust boundaries
 
@@ -21,9 +23,54 @@ Differentiate the developer/owner of a project from its end users. Verify identi
 
 Any future support for developer-supplied executable code needs a separate sandbox and build/run threat model. Declarative records or queries must not gain arbitrary filesystem, network, or host-code access.
 
-## Isolation tiers to evaluate
+## Deployment boundaries
 
-The baseline proposal is project-scoped workers with least-privilege OS and storage controls on shared infrastructure. Stronger optional tiers could use per-project virtual machines or dedicated hosts where warranted. All tiers still require authentication, safe database code, secure operations, and tested recovery; stronger isolation increases resource use and cost. No tier or pricing is implemented or promised yet.
+- **Shared self-hosted process.** Credentials, operations and store handles
+  resolve within one configured project. Private directories and startup
+  checks reject symlinks, hard links, non-regular store entries and ownership
+  mismatches at project storage paths. An in-process compromise or a
+  privileged local actor can affect all projects in that process.
+- **OS-enforced separation.** Run one server instance per project under a
+  separate unprivileged service account, with only its own data, TLS key and
+  credentials mounted. On Linux, constrain the process and its descendants
+  with cgroup v2 CPU, memory, I/O and process limits, and enforce storage
+  quotas on the project volume for logs, metadata and temporary files. Use
+  filesystem and network namespaces, a read-only system filesystem, and no
+  ambient privileges. For mutually untrusted or highly sensitive workloads,
+  a VM can reduce reliance on a shared kernel.
+- **Managed lifecycle.** Run a separate control plane for authentication,
+  routing, quotas and ownership. A dormant project should consume storage
+  without a running database worker. A wake operation needs a single
+  authenticated owner with fencing, per-project and global concurrency caps,
+  and queue bounds. Shutdown must stop admitting writes, drain active
+  transactions or preserve their uncertain outcome, then release ownership.
+  Host provisioning, fencing and lifecycle recovery still need
+  implementation and failure tests.
+
+See [Linux cgroup v2](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html),
+[systemd process controls](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)
+and [systemd resource controls](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html).
+
+## Cryptography and data protection
+
+- **In transit.** The server requires `X25519MLKEM768` by default. It combines
+  ephemeral X25519 with NIST ML-KEM-768 to protect confidentiality against
+  collection today and decryption with a future quantum computer. The
+  default TLS cipher uses AES-256-GCM. A deliberate compatibility setting
+  allows classical key agreement. TLS credentials still use the certificate
+  and signature algorithms configured by the operator. [IETF RFC 10024](https://datatracker.ietf.org/doc/html/rfc10024)
+  and [NIST FIPS 203](https://csrc.nist.gov/pubs/fips/203/final).
+- **Identity.** Evaluate ML-DSA for certificate signatures once the issuing
+  chain, TLS library and clients support the same profile. Plan dual support
+  during migration and test downgrade, rotation and revocation behavior.
+  [NIST FIPS 204](https://csrc.nist.gov/pubs/fips/204/final).
+- **At rest and in backups.** The server currently uses the existing log
+  and witness formats. At-rest confidentiality requires a separately
+  managed encrypted volume or future authenticated encryption of log,
+  checkpoint and backup data. Plan per-project 256-bit keys, versioned
+  envelope encryption and independent key management. Test format upgrades,
+  key rotation, encrypted restore, and fail-closed behavior with lost or
+  wrong keys before making an engine encryption claim.
 
 ## Evidence before public claims
 

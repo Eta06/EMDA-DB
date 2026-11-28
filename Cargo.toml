@@ -6,12 +6,22 @@ rust-version = "1.85"
 license = "Apache-2.0"
 publish = false
 
+[features]
+server = ["dep:rustls", "dep:subtle", "rustix/process"]
+
+[[bin]]
+name = "emda-server"
+path = "src/bin/emda_server/main.rs"
+required-features = ["server"]
+
 [dependencies]
 crc32fast = "1.5"
 fs2 = "0.4"
 hmac = "0.12.1"
 parking_lot = "0.12.5"
 rustix = { version = "1.1", features = ["fs"] }
+rustls = { version = "0.23.46", default-features = false, features = ["std", "aws_lc_rs", "prefer-post-quantum"], optional = true }
+subtle = { version = "2.6", optional = true }
 sha2 = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

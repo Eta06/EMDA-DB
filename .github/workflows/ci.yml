@@ -40,6 +40,8 @@ jobs:
           cargo +${{ matrix.toolchain }} fmt --manifest-path fuzz/Cargo.toml --all -- --check
       - name: Lint
         run: cargo +${{ matrix.toolchain }} clippy --all-targets --locked -- -D warnings
+      - name: Test TLS service and project authorization
+        run: cargo +${{ matrix.toolchain }} test --locked --features server --bin emda-server --test service
       - name: Run tests
         run: cargo +${{ matrix.toolchain }} test --all-targets --locked
       - name: Test optimized build

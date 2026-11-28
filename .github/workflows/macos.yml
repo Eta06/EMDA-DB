@@ -46,6 +46,8 @@ jobs:
           uname -m
           sw_vers
           rustc +${{ matrix.toolchain }} --version
+      - name: Test TLS service and project authorization
+        run: cargo +${{ matrix.toolchain }} test --locked --features server --bin emda-server --test service
       - name: Test library and integration tests
         run: cargo +${{ matrix.toolchain }} test --locked --lib --tests
       - name: Test filesystem fault probe
