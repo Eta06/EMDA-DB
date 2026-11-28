@@ -1119,3 +1119,138 @@ fn a_project_rate_limit_preserves_other_projects_admission() {
     let beta = fixture.send(&server, "beta", "admin", OTHER, status);
     assert_eq!(beta["result"]["requests"]["rate_limited"], 0);
 }
+
+#[test]
+fn operator_key_commands_preserve_scopes_and_update_live_credentials() {
+    use rustix::process::{Pid, Signal, kill_process};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let fixture = Fixture::new();
+    let root = fixture.dir.path();
+    let path = root.join("server.json");
+    let policy = root.join("keys.json");
+    let scope = root.join("scope.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for project in config["projects"].as_array_mut().unwrap() {
+        project.as_object_mut().unwrap().remove("credentials");
+    }
+    config["credentials_file"] = json!(policy);
+    fs::write(&path, config.to_string()).unwrap();
+    fs::write(
+        &scope,
+        json!({"kv_prefixes":{"tenant/":"write"}}).to_string(),
+    )
+    .unwrap();
+    fs::write(
+        &policy,
+        json!({"projects":[
+            {"id":"alpha","credentials":[]},
+            {"id":"beta","credentials":[]}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    fs::set_permissions(&policy, fs::Permissions::from_mode(0o640)).unwrap();
+    let server = fixture.start();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_emda-server"))
+            .arg("keys")
+            .arg(&path)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let issue = |id| {
+        run(&[
+            "issue",
+            "alpha",
+            id,
+            "write",
+            "4102444800",
+            scope.to_str().unwrap(),
+        ])
+    };
+    let (issued, other) = std::thread::scope(|s| {
+        let parallel = s.spawn(|| issue("operator-two"));
+        (issue("operator"), parallel.join().unwrap())
+    });
+    let token = |output: std::process::Output| {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let token = String::from_utf8(output.stdout).unwrap().trim().to_owned();
+        assert_eq!(token.len(), 64);
+        token
+    };
+    let original = token(issued);
+    let other_token = token(other);
+    assert_ne!(original, other_token);
+    assert_eq!(fs::metadata(&policy).unwrap().mode() & 0o777, 0o640);
+    assert!(!fs::read_to_string(&policy).unwrap().contains(&original));
+    let listing = run(&["list", "alpha"]);
+    assert!(listing.status.success());
+    let listing = String::from_utf8(listing.stdout).unwrap();
+    assert!(listing.contains("operator-two"));
+    assert!(listing.contains("tenant/"));
+    assert!(!listing.contains("token_sha256"));
+    assert!(!listing.contains(&original));
+
+    let reload = || {
+        kill_process(
+            Pid::from_raw(server.child.id() as i32).unwrap(),
+            Signal::HUP,
+        )
+        .unwrap()
+    };
+    let call = |secret: &str, operation: Value| {
+        fixture.send(&server, "alpha", "operator", secret, operation)
+    };
+    let get = json!({"op":"kv_get","key":"tenant/1"});
+    let check_reload = |secret, expected: &Value| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while call(secret, get.clone()) != *expected {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "key command did not reload"
+            );
+            std::thread::sleep(Duration::from_millis(15));
+        }
+    };
+    let denied = error("unauthorized");
+    assert_eq!(call(&original, get.clone()), denied);
+    let before_duplicate = fs::read(&policy).unwrap();
+    assert!(!issue("operator").status.success());
+    assert_eq!(fs::read(&policy).unwrap(), before_duplicate);
+    reload();
+    check_reload(&original, &json!({"ok":true,"result":null}));
+    assert_eq!(
+        call(
+            &original,
+            json!({"op":"kv_put","key":"tenant/1","value_hex":"11"})
+        )["ok"],
+        true
+    );
+    assert_eq!(
+        call(&original, json!({"op":"kv_get","key":"private/1"})),
+        error("forbidden")
+    );
+
+    let rotated = token(run(&["rotate", "alpha", "operator", "4102444801"]));
+    reload();
+    check_reload(&rotated, &json!({"ok":true,"result":"11"}));
+    assert_eq!(
+        call(&rotated, json!({"op":"kv_get","key":"private/1"})),
+        error("forbidden")
+    );
+    assert_eq!(call(&original, get.clone()), denied);
+
+    assert!(run(&["revoke", "alpha", "operator"]).status.success());
+    reload();
+    check_reload(&rotated, &denied);
+    let remaining = fixture.send(&server, "alpha", "operator-two", &other_token, get);
+    assert_eq!(remaining["result"], "11");
+    fs::set_permissions(&policy, fs::Permissions::from_mode(0o666)).unwrap();
+    assert!(!run(&["list", "alpha"]).status.success());
+}

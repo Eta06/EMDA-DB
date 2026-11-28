@@ -158,10 +158,11 @@ impl Write for DeadlineSocket {
     }
 }
 
+const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+
 fn read_json_file<T: serde::de::DeserializeOwned>(
     path: &Path,
 ) -> Result<T, Box<dyn std::error::Error>> {
-    const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
     let mut bytes = Vec::new();
     use rustix::fs::{Mode, OFlags};
     let file = File::from(rustix::fs::open(
@@ -307,11 +308,24 @@ fn notify_ready() -> io::Result<()> {
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if let [command, rest @ ..] = args.as_slice() {
+        if command == "keys" {
+            return match project::keys::run(rest) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("emda-server keys: {error}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+    }
     let (config, single_project) = match args.as_slice() {
         [flag, config] if flag == "--single-project" => (config, true),
         [config] if config != "--single-project" => (config, false),
         _ => {
-            eprintln!("usage: emda-server [--single-project] <config.json>");
+            eprintln!(
+                "usage: emda-server [--single-project] <config.json> or emda-server keys <config.json> <command> ..."
+            );
             return ExitCode::FAILURE;
         }
     };

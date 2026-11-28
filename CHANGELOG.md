@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add local operator commands to issue, list, rotate and revoke scoped API
+  keys in the durable self-hosted policy.
+
 - Add per-project request rate limits, administrator resource status and
   verified physical storage ceilings on dedicated Linux project volumes.
 

@@ -135,6 +135,37 @@ revokes it for subsequent requests. The server's reload log records success or
 failure without token material. Harbor's end-user accounts and managed key
 issuance and revocation remain separate work.
 
+### Operator key commands
+
+With a live credentials file configured, use the local operator CLI to list,
+issue, rotate and revoke keys. Initialize the policy with one entry per
+configured project. Each entry can start with an empty `credentials` array.
+
+```sh
+emda-server keys ./server.json list example
+emda-server keys ./server.json issue example site-reader read 1900000000 ./scope.json
+emda-server keys ./server.json rotate example site-reader 1900000001
+emda-server keys ./server.json revoke example site-reader
+```
+
+`scope.json` is the optional scope object shown above. Rotation retains the
+key's role and scope. Issue and rotate print the new token once on stdout.
+The policy stores its digest. Listing shows ID, role, expiry and scope.
+Commands serialize concurrent operators, validate the replacement, preserve
+owner, group and permission bits, and sync the policy and directory. Use an
+operator-owned directory and regular policy file with write access limited
+to the operator. Coordinate any direct file edits with the CLI.
+
+Reload after preparing a change. On hosts where the systemd service sees the
+file through a private mount, use the host path when invoking the CLI.
+
+```sh
+sudo emda-server keys /etc/emda/projects/example/server.json \
+  --policy-file /etc/emda/projects/example/live/credentials.json \
+  revoke example site-reader
+sudo systemctl reload emda-server@example.service
+```
+
 ## Rust client
 
 Enable the `remote-client` feature and use `database_engine::remote::Client`.

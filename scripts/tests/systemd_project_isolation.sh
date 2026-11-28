@@ -97,7 +97,6 @@ wait_ready() {
 alpha_port=$(wait_ready "$alpha_unit")
 beta_port=$(wait_ready "$beta_unit")
 sudo -n python3 - "$scratch" "$alpha" "$alpha_port" "$beta" "$beta_port" "$alpha_unit" <<'PY'
-import hashlib
 import json
 import pathlib
 import socket
@@ -129,16 +128,15 @@ assert send(alpha, alpha_port, "01" * 32, put) == {"ok": True, "result": None}
 assert send(beta, beta_port, "02" * 32, key) == {"ok": True, "result": None}
 assert send(beta, beta_port, "01" * 32, key) == {"ok": False, "error": "unauthorized"}
 assert send(alpha, alpha_port, "01" * 32, key) == {"ok": True, "result": "abcd"}
-policy = pathlib.Path(scratch) / alpha / "live" / "credentials.json"
-auth = json.loads(policy.read_text())
-auth["projects"][0]["credentials"][0]["token_sha256"] = hashlib.sha256(bytes([3]) * 32).hexdigest()
-new_policy = policy.with_suffix(".tmp")
-new_policy.write_text(json.dumps(auth))
-new_policy.chmod(0o644)
-new_policy.replace(policy)
+project_dir = pathlib.Path(scratch) / alpha
+policy = project_dir / "live" / "credentials.json"
+new_token = subprocess.run([
+    str(pathlib.Path(scratch) / "emda-server"), "keys", str(project_dir / "server.json"),
+    "--policy-file", str(policy), "rotate", "app", "operator", "4102444800",
+], check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
 subprocess.run(["systemctl", "reload", alpha_unit], check=True)
 deadline = time.monotonic() + 3
-while send(alpha, alpha_port, "03" * 32, key) != {"ok": True, "result": "abcd"}:
+while send(alpha, alpha_port, new_token, key) != {"ok": True, "result": "abcd"}:
     assert time.monotonic() < deadline, "systemd reload did not publish the new key"
     time.sleep(0.02)
 assert send(alpha, alpha_port, "01" * 32, key) == {"ok": False, "error": "unauthorized"}

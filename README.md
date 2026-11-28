@@ -107,7 +107,7 @@ Progress on `main` on 2026-11-28, from [roadmap progress](docs/ROADMAP_PROGRESS.
 | 2 | Durable storage and core operations | 99% |
 | 3 | Document model and queries | 99% |
 | 4 | Embedded SQL subset | 100% |
-| 5 | Secure service and project isolation | 80% |
+| 5 | Secure service and project isolation | 85% |
 | 6 | Performance and scalability | 60% |
 | 7 | Replication and operations | 20% |
 | 8 | Broader features and tooling | 10% |

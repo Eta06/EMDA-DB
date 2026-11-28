@@ -5,7 +5,10 @@ use database_engine::{
     SqlLimits, Store, TransactionFailure, is_transaction_conflict,
 };
 use parking_lot::{Mutex, RwLock};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+#[path = "keys.rs"]
+pub mod keys;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -117,14 +120,18 @@ impl RateLimiter {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CredentialConfig {
     id: String,
     token_sha256: String,
     expires_unix_seconds: u64,
     role: Role,
-    #[serde(default, deserialize_with = "deserialize_scope")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_scope",
+        skip_serializing_if = "Option::is_none"
+    )]
     scope: Option<CredentialScope>,
 }
 
@@ -135,7 +142,7 @@ where
     CredentialScope::deserialize(deserializer).map(Some)
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CredentialScope {
     #[serde(default)]
@@ -201,7 +208,7 @@ impl CredentialScope {
     }
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum DatasetAccess {
     Read,
@@ -209,7 +216,7 @@ enum DatasetAccess {
     WriteOnly,
 }
 
-#[derive(Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Role {
     Read,
@@ -227,13 +234,13 @@ struct Credential {
 type ProjectCredentials = HashMap<String, Arc<Credential>>;
 type CredentialBook = HashMap<String, ProjectCredentials>;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CredentialFile {
     projects: Vec<CredentialProject>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CredentialProject {
     id: String,
@@ -268,23 +275,30 @@ fn load_credential_file<'a>(
     path: &Path,
     project_ids: impl Iterator<Item = &'a str>,
 ) -> Result<CredentialBook, Box<dyn std::error::Error>> {
+    let source = super::read_json_file(path)?;
+    validate_credential_file(&source, project_ids).map_err(Into::into)
+}
+
+fn validate_credential_file<'a>(
+    source: &CredentialFile,
+    project_ids: impl Iterator<Item = &'a str>,
+) -> io::Result<CredentialBook> {
     let mut expected: HashSet<_> = project_ids.collect();
-    let source: CredentialFile = super::read_json_file(path)?;
     if source.projects.len() != expected.len() {
-        return Err(
-            config_error("credentials file must list every configured project once").into(),
-        );
+        return Err(config_error(
+            "credentials file must list every configured project once",
+        ));
     }
     let mut book = HashMap::with_capacity(expected.len());
     let mut digests = HashSet::new();
-    for project in source.projects {
+    for project in &source.projects {
         if !expected.remove(project.id.as_str()) {
-            return Err(
-                config_error("credentials file has an unknown or duplicate project").into(),
-            );
+            return Err(config_error(
+                "credentials file has an unknown or duplicate project",
+            ));
         }
         book.insert(
-            project.id,
+            project.id.clone(),
             build_credentials(&project.credentials, &mut digests)?,
         );
     }
