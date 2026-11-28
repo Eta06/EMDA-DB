@@ -1162,18 +1162,13 @@ impl Store {
         crate::cancellation::check(cancellation)?;
         let _admission =
             crate::transaction_budget::ActiveTransaction::acquire(&self.transaction_budget)?;
-        let snapshot = if let Some(deadline) = deadline {
-            self.snapshot_until(MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_KEY_BYTES, deadline)
-                .map_err(|error| {
-                    if error.kind() == io::ErrorKind::TimedOut {
-                        TimedTransactionError::DeadlineExceeded
-                    } else {
-                        TimedTransactionError::Operation(error)
-                    }
-                })?
-        } else {
-            self.snapshot(MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_KEY_BYTES)?
-        };
+        let snapshot = self.transaction_snapshot(deadline).map_err(|error| {
+            if deadline.is_some() && error.kind() == io::ErrorKind::TimedOut {
+                TimedTransactionError::DeadlineExceeded
+            } else {
+                TimedTransactionError::Operation(error)
+            }
+        })?;
         crate::cancellation::check(cancellation)?;
         let mut txn = Transaction {
             snapshot,

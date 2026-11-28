@@ -100,6 +100,64 @@ fn key_count_matches_full_scan_on_both_backends() {
 }
 
 #[test]
+fn ordinary_sql_can_opt_into_larger_transaction_snapshots() {
+    use database_engine::{MAX_SNAPSHOT_KEY_BYTES, MAX_SNAPSHOT_KEYS};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s");
+    let store = Store::open(&path).unwrap();
+    let db = SqlDatabase::new(DocumentDatabase::new(&store));
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)", &[])
+        .unwrap();
+    for start in (0..MAX_SNAPSHOT_KEYS).step_by(256) {
+        let rows = (start..start + 256)
+            .map(|id| format!("({id})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        db.execute(&format!("INSERT INTO t VALUES {rows}"), &[])
+            .unwrap();
+    }
+    let query = "SELECT COUNT(*) FROM t";
+    assert!(matches!(db.execute(query, &[]), Err(SqlError::Bounds(_))));
+    // One row key per row, plus the table catalog and collection metadata.
+    let key_count = MAX_SNAPSHOT_KEYS + 2;
+    store
+        .set_transaction_snapshot_limits(key_count - 1, MAX_SNAPSHOT_KEY_BYTES)
+        .unwrap();
+    assert!(matches!(db.execute(query, &[]), Err(SqlError::Bounds(_))));
+    store
+        .set_transaction_snapshot_limits(key_count, MAX_SNAPSHOT_KEY_BYTES)
+        .unwrap();
+    assert_eq!(count(&db, query), MAX_SNAPSHOT_KEYS as i64);
+    assert!(
+        store
+            .snapshot(MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_KEY_BYTES)
+            .is_err()
+    );
+
+    store
+        .set_snapshot_budget_limits(16, key_count - 1, MAX_SNAPSHOT_KEY_BYTES)
+        .unwrap();
+    assert!(
+        matches!(db.execute(query, &[]), Err(SqlError::Bounds(ref reason)) if reason.contains("aggregate snapshot limit"))
+    );
+    store
+        .set_snapshot_budget_limits(16, key_count, MAX_SNAPSHOT_KEY_BYTES)
+        .unwrap();
+    assert_eq!(count(&db, query), MAX_SNAPSHOT_KEYS as i64);
+    drop(db);
+    drop(store);
+
+    let store = Store::open(&path).unwrap();
+    let db = SqlDatabase::new(DocumentDatabase::new(&store));
+    assert!(matches!(db.execute(query, &[]), Err(SqlError::Bounds(_))));
+    store
+        .set_transaction_snapshot_limits(key_count, MAX_SNAPSHOT_KEY_BYTES)
+        .unwrap();
+    assert_eq!(count(&db, query), MAX_SNAPSHOT_KEYS as i64);
+}
+
+#[test]
 fn key_count_respects_the_visit_bound() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("s")).unwrap();

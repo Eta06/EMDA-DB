@@ -41,6 +41,7 @@ pub(super) struct SnapshotBudget {
     active_limit: usize,
     key_limit: usize,
     key_byte_limit: usize,
+    transaction_limits: (usize, usize),
 }
 
 pub(super) enum SnapshotStorage<T> {
@@ -90,6 +91,7 @@ impl Default for SnapshotBudget {
             active_limit: MAX_ACTIVE_SNAPSHOTS,
             key_limit: MAX_SNAPSHOT_TOTAL_KEYS,
             key_byte_limit: MAX_SNAPSHOT_TOTAL_KEY_BYTES,
+            transaction_limits: (MAX_SNAPSHOT_KEYS, MAX_SNAPSHOT_KEY_BYTES),
         }
     }
 }
@@ -290,6 +292,36 @@ impl Store {
             .set_limits(active, keys, key_bytes)
     }
 
+    /// Sets the per-transaction index snapshot caps for this open store.
+    /// Defaults are [`MAX_SNAPSHOT_KEYS`] and [`MAX_SNAPSHOT_KEY_BYTES`].
+    /// A transaction still reserves its full key count and key bytes against
+    /// the aggregate snapshot budget. This does not change existing views or
+    /// the caps on standalone snapshots. The setting resets on reopen.
+    pub fn set_transaction_snapshot_limits(
+        &self,
+        max_keys: usize,
+        max_key_bytes: usize,
+    ) -> io::Result<()> {
+        if max_keys > MAX_SNAPSHOT_TOTAL_KEYS || max_key_bytes > MAX_SNAPSHOT_TOTAL_KEY_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "transaction snapshot limits exceed supported maximum",
+            ));
+        }
+        self.snapshot_budget
+            .lock()
+            .map_err(|_| io::Error::other("snapshot budget poisoned"))?
+            .transaction_limits = (max_keys, max_key_bytes);
+        Ok(())
+    }
+
+    pub(super) fn transaction_snapshot(
+        &self,
+        deadline: Option<Instant>,
+    ) -> io::Result<Snapshot<'_>> {
+        Self::capture_snapshot(Some(self), None, None, deadline)
+    }
+
     /// Captures a stable index view, rejecting a store that exceeds either limit.
     /// Limits cannot exceed the public hard per-snapshot limits. The operation
     /// retains an immutable index view, not values, and never returns a partial
@@ -304,7 +336,7 @@ impl Store {
         max_key_bytes: usize,
         deadline: Option<Instant>,
     ) -> io::Result<Snapshot<'_>> {
-        Self::capture_snapshot(Some(self), None, max_keys, max_key_bytes, deadline)
+        Self::capture_snapshot(Some(self), None, Some((max_keys, max_key_bytes)), deadline)
     }
 
     pub(super) fn owned_snapshot(
@@ -313,20 +345,21 @@ impl Store {
         max_key_bytes: usize,
         deadline: Option<Instant>,
     ) -> io::Result<Snapshot<'static>> {
-        Self::capture_snapshot(None, Some(store), max_keys, max_key_bytes, deadline)
+        Self::capture_snapshot(None, Some(store), Some((max_keys, max_key_bytes)), deadline)
     }
 
     fn capture_snapshot(
         borrowed: Option<&Store>,
         owned: Option<Arc<Self>>,
-        max_keys: usize,
-        max_key_bytes: usize,
+        read_limits: Option<(usize, usize)>,
         deadline: Option<Instant>,
     ) -> io::Result<Snapshot<'_>> {
         let store = borrowed
             .or(owned.as_deref())
             .expect("snapshot capture has a store");
-        if max_keys > MAX_SNAPSHOT_KEYS || max_key_bytes > MAX_SNAPSHOT_KEY_BYTES {
+        if read_limits
+            .is_some_and(|(keys, bytes)| keys > MAX_SNAPSHOT_KEYS || bytes > MAX_SNAPSHOT_KEY_BYTES)
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "snapshot limits exceed supported maximum",
@@ -340,19 +373,22 @@ impl Store {
         if store.commits.failed() {
             return Err(uncertain_error());
         }
-        if inner.index.len() > max_keys {
-            return Err(io::Error::other("snapshot key count limit exceeded"));
-        }
-        let key_bytes = inner.index_key_bytes;
-        if key_bytes > max_key_bytes {
-            return Err(io::Error::other("snapshot key byte limit exceeded"));
-        }
         let key_count = inner.index.len();
-        store
-            .snapshot_budget
-            .lock()
-            .map_err(|_| io::Error::other("snapshot budget poisoned"))?
-            .reserve(key_count, key_bytes)?;
+        let key_bytes = inner.index_key_bytes;
+        {
+            let mut budget = store
+                .snapshot_budget
+                .lock()
+                .map_err(|_| io::Error::other("snapshot budget poisoned"))?;
+            let (max_keys, max_key_bytes) = read_limits.unwrap_or(budget.transaction_limits);
+            if key_count > max_keys {
+                return Err(io::Error::other("snapshot key count limit exceeded"));
+            }
+            if key_bytes > max_key_bytes {
+                return Err(io::Error::other("snapshot key byte limit exceeded"));
+            }
+            budget.reserve(key_count, key_bytes)?;
+        }
         // Protect the reservation even if allocating the shared state unwinds.
         let mut reservation = SnapshotReservation {
             store,
