@@ -135,6 +135,10 @@ pub(crate) struct TableDef {
     pub(crate) foreign_keys: Vec<ForeignKeyDef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) referenced_by: Vec<ForeignKeyRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) tuple_foreign_keys: Vec<super::tuple_foreign_key::Constraint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) tuple_referenced_by: Vec<super::tuple_foreign_key::Reference>,
     /// `CHECK` expressions as written; bound and enforced by the executor.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) checks: Vec<String>,
@@ -182,6 +186,8 @@ impl TableDef {
             indexes,
             foreign_keys,
             referenced_by,
+            tuple_foreign_keys: Vec::new(),
+            tuple_referenced_by: Vec::new(),
             checks: Vec::new(),
         };
         def.validate()?;
@@ -310,7 +316,7 @@ impl TableDef {
                 }
             }
         }
-        if self.foreign_keys.len() > MAX_SQL_FOREIGN_KEYS {
+        if self.foreign_keys.len() + self.tuple_foreign_keys.len() > MAX_SQL_FOREIGN_KEYS {
             return Err(SqlError::Bounds(format!(
                 "table '{}' cannot have more than {MAX_SQL_FOREIGN_KEYS} foreign keys",
                 self.name
@@ -349,6 +355,7 @@ impl TableDef {
                 )));
             }
         }
+        super::tuple_foreign_key::validate(self)?;
         Ok(())
     }
 

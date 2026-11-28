@@ -445,6 +445,14 @@ pub(crate) fn alter_in_tx(
                 .referenced_by
                 .iter()
                 .any(|reference| reference.ref_column == *column)
+            || updated
+                .tuple_foreign_keys
+                .iter()
+                .any(|constraint| constraint.columns.contains(&index))
+            || updated
+                .tuple_referenced_by
+                .iter()
+                .any(|reference| reference.ref_columns.contains(column))
         {
             return Err(SqlError::Constraint(format!(
                 "cannot alter column '{}.{column}' because a key or index depends on it",
@@ -472,6 +480,9 @@ pub(crate) fn alter_in_tx(
             }
             for def in &mut updated.foreign_keys {
                 shift(&mut def.column);
+            }
+            for def in &mut updated.tuple_foreign_keys {
+                def.columns.iter_mut().for_each(shift);
             }
         }
         if let Err(error) = exec::bind_table_checks(&updated, limits) {

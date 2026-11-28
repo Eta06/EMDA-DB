@@ -857,7 +857,7 @@ fn unsupported_sql_features_return_unsupported_naming_feature() {
         "CREATE TABLE a (id INT PRIMARY KEY, x INT, CONSTRAINT c CHECK (x > 0))",
         "CREATE TABLE a (id INT PRIMARY KEY, p INT REFERENCES b(id) MATCH FULL)",
         "CREATE TABLE a (id INT PRIMARY KEY, p INT REFERENCES b(id) DEFERRABLE)",
-        "CREATE TABLE a (id INT PRIMARY KEY, FOREIGN KEY (id, p) REFERENCES b(id, p))",
+        "CREATE TABLE a (id INT PRIMARY KEY, p INT, FOREIGN KEY (id, p) REFERENCES b(id, p) ON UPDATE CASCADE)",
         "CREATE TABLE a (id INT PRIMARY KEY, r REAL UNIQUE)",
         "SELECT DISTINCT id FROM a",
         "SELECT id FROM a UNION SELECT id FROM b",

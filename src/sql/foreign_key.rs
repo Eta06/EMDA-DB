@@ -4,6 +4,7 @@ use super::catalog::{
 };
 use super::exec::classify_io_error;
 use super::parser::ForeignKeySpec;
+use super::tuple_foreign_key::{self as tuple, Removals};
 use super::value::{
     MAX_SQL_INDEX_TEXT_BYTES, MAX_SQL_TEXT_PK_BYTES, SqlError, SqlLimits, SqlType, SqlValue,
     coerce_for_column, encode_i64_pk_bytes,
@@ -291,6 +292,16 @@ pub(crate) fn ensure_table_droppable(table: &TableDef) -> Result<(), SqlError> {
             table.name, fk_ref.child_table, fk_ref.child_column
         )));
     }
+    if let Some(reference) = table
+        .tuple_referenced_by
+        .iter()
+        .find(|reference| reference.child_table != table.name)
+    {
+        return Err(SqlError::Constraint(format!(
+            "cannot drop table '{}': referenced by composite foreign key on '{}'",
+            table.name, reference.child_table
+        )));
+    }
     Ok(())
 }
 
@@ -300,13 +311,16 @@ pub(crate) fn detach_parent_references(
     child: &TableDef,
     cache: &TableCache,
 ) -> Result<(), SqlError> {
-    if child.foreign_keys.is_empty() {
-        return Ok(());
-    }
     let mut parent_names: Vec<&str> = child
         .foreign_keys
         .iter()
         .map(|fk| fk.ref_table.as_str())
+        .chain(
+            child
+                .tuple_foreign_keys
+                .iter()
+                .map(|fk| fk.ref_table.as_str()),
+        )
         .filter(|name| *name != child.name)
         .collect();
     parent_names.sort_unstable();
@@ -319,11 +333,14 @@ pub(crate) fn detach_parent_references(
             Err(err) => return Err(err),
         };
         let mut updated = TableDef::clone(&cached_parent.def);
-        let prev_len = updated.referenced_by.len();
+        let prev_len = updated.referenced_by.len() + updated.tuple_referenced_by.len();
         updated
             .referenced_by
             .retain(|r| r.child_table != child.name);
-        if updated.referenced_by.len() != prev_len {
+        updated
+            .tuple_referenced_by
+            .retain(|r| r.child_table != child.name);
+        if updated.referenced_by.len() + updated.tuple_referenced_by.len() != prev_len {
             updated.validate()?;
             catalog::save_table_def(tx, &cached_parent.catalog_key, &updated)?;
         }
@@ -337,6 +354,7 @@ pub(crate) fn ensure_index_not_fk_target(
     table: &TableDef,
     index: &IndexDef,
 ) -> Result<(), SqlError> {
+    tuple::ensure_index_not_target(table, index)?;
     if !index.unique || index.columns.len() != 1 || table.referenced_by.is_empty() {
         return Ok(());
     }
@@ -374,6 +392,7 @@ pub(crate) fn check_inserted_docs(
     docs: &[&Value],
     cache: &TableCache,
 ) -> Result<(), SqlError> {
+    tuple::check_children(tx, table, docs, cache)?;
     if table.foreign_keys.is_empty() || docs.is_empty() {
         return Ok(());
     }
@@ -415,7 +434,7 @@ pub(crate) fn check_inserted_prepared_rows(
     rows: &[(String, Value)],
     cache: &TableCache,
 ) -> Result<(), SqlError> {
-    if table.foreign_keys.is_empty() || rows.is_empty() {
+    if (table.foreign_keys.is_empty() && table.tuple_foreign_keys.is_empty()) || rows.is_empty() {
         return Ok(());
     }
     let doc_refs: Vec<&Value> = rows.iter().map(|(_, doc)| doc).collect();
@@ -426,6 +445,7 @@ pub(crate) fn check_inserted_prepared_rows(
 pub(crate) struct PendingDeleteFkChecks {
     /// `(ref_col_idx, FkKeySet)` for each distinct referenced column of `table`.
     deleted_by_col: Vec<(usize, FkKeySet)>,
+    tuple_removed: Removals,
 }
 
 impl PendingDeleteFkChecks {
@@ -433,6 +453,7 @@ impl PendingDeleteFkChecks {
         if table.referenced_by.is_empty() {
             return Ok(Self {
                 deleted_by_col: Vec::new(),
+                tuple_removed: Removals::default(),
             });
         }
         let mut col_indices: Vec<usize> = table
@@ -446,7 +467,10 @@ impl PendingDeleteFkChecks {
         for col_idx in col_indices {
             deleted_by_col.push((col_idx, FkKeySet::new(table.columns[col_idx].col_type)?));
         }
-        Ok(Self { deleted_by_col })
+        Ok(Self {
+            deleted_by_col,
+            tuple_removed: Removals::default(),
+        })
     }
 
     pub(crate) fn record_row(
@@ -454,6 +478,7 @@ impl PendingDeleteFkChecks {
         table: &TableDef,
         obj: &Map<String, Value>,
     ) -> Result<(), SqlError> {
+        self.tuple_removed.record(table, obj)?;
         for (col_idx, set) in &mut self.deleted_by_col {
             if let Some(key) = extract_json_fk_key(obj, &table.columns[*col_idx])? {
                 set.insert(key)?;
@@ -472,10 +497,8 @@ impl PendingDeleteFkChecks {
         limits: &SqlLimits,
         cache: &TableCache,
     ) -> Result<(), SqlError> {
-        if self.deleted_by_col.is_empty() {
-            return Ok(());
-        }
         let mut budget = CascadeBudget::default();
+        let mut tuple_removed = self.tuple_removed;
         apply_delete_actions(
             tx,
             table,
@@ -483,8 +506,10 @@ impl PendingDeleteFkChecks {
             limits,
             cache,
             &mut budget,
+            &mut tuple_removed,
             0,
-        )
+        )?;
+        tuple_removed.verify(tx, limits, cache, &mut budget.visited)
     }
 }
 
@@ -528,6 +553,7 @@ fn apply_delete_actions(
     limits: &SqlLimits,
     cache: &TableCache,
     budget: &mut CascadeBudget,
+    tuple_removed: &mut Removals,
     depth: usize,
 ) -> Result<(), SqlError> {
     for (ref_col_idx, keys) in &removed_by_col {
@@ -592,6 +618,7 @@ fn apply_delete_actions(
                                 .map_err(classify_io_error)?;
                             removed.record_row(child_def, obj)?;
                         }
+                        tuple_removed.append(removed.tuple_removed);
                         apply_delete_actions(
                             tx,
                             child_def,
@@ -599,6 +626,7 @@ fn apply_delete_actions(
                             limits,
                             cache,
                             budget,
+                            tuple_removed,
                             depth + 1,
                         )?;
                     } else {
@@ -619,6 +647,8 @@ fn apply_delete_actions(
                         // ON UPDATE even though the original parent was deleted.
                         let mut updates = UpdateActions::new(limits, cache, budget);
                         updates.apply(tx, child_def, changed.parent_changes, depth + 1)?;
+                        tuple_removed.append(changed.tuple_removed);
+                        tuple_removed.append(std::mem::take(&mut updates.tuple_removed));
                         updates.verify(tx)?;
                     }
                 }
@@ -756,6 +786,8 @@ type KeyChanges = Vec<(usize, HashMap<FkKey, Option<FkKey>>)>;
 pub(crate) struct PendingUpdateFkChecks {
     pub(crate) checks_children: bool,
     parent_changes: KeyChanges,
+    track_tuple_parent: bool,
+    tuple_removed: Removals,
 }
 
 impl PendingUpdateFkChecks {
@@ -764,6 +796,20 @@ impl PendingUpdateFkChecks {
             .foreign_keys
             .iter()
             .any(|fk| assigned_cols.contains(&fk.column));
+        let checks_children = checks_children
+            || table.tuple_foreign_keys.iter().any(|constraint| {
+                constraint
+                    .columns
+                    .iter()
+                    .any(|column| assigned_cols.contains(column))
+            });
+        let track_tuple_parent = table.tuple_referenced_by.iter().any(|reference| {
+            reference.ref_columns.iter().any(|name| {
+                table
+                    .column_index(name)
+                    .is_some_and(|column| assigned_cols.contains(&column))
+            })
+        });
         let mut parents: Vec<usize> = table
             .referenced_by
             .iter()
@@ -774,6 +820,8 @@ impl PendingUpdateFkChecks {
         parents.dedup();
         Self {
             checks_children,
+            track_tuple_parent,
+            tuple_removed: Removals::default(),
             parent_changes: parents
                 .into_iter()
                 .map(|col| (col, HashMap::new()))
@@ -787,6 +835,9 @@ impl PendingUpdateFkChecks {
         old: &Map<String, Value>,
         updates: &[(&catalog::ColumnDef, SqlValue)],
     ) -> Result<(), SqlError> {
+        if self.track_tuple_parent {
+            self.tuple_removed.record(table, old)?;
+        }
         for (col, changes) in &mut self.parent_changes {
             let column = &table.columns[*col];
             let Some(old_key) = extract_json_fk_key(old, column)? else {
@@ -817,6 +868,7 @@ impl PendingUpdateFkChecks {
         if self.checks_children && !changed_ids.is_empty() {
             actions.changed.insert(table.name.clone(), changed_ids);
         }
+        actions.tuple_removed = self.tuple_removed;
         actions.apply(tx, table, self.parent_changes, 0)?;
         actions.verify(tx)
     }
@@ -827,6 +879,7 @@ struct UpdateActions<'a> {
     cache: &'a TableCache,
     budget: &'a mut CascadeBudget,
     removed: HashMap<String, Vec<(usize, FkKeySet)>>,
+    tuple_removed: Removals,
     changed: HashMap<String, HashSet<String>>,
 }
 
@@ -837,6 +890,7 @@ impl<'a> UpdateActions<'a> {
             cache,
             budget,
             removed: HashMap::new(),
+            tuple_removed: Removals::default(),
             changed: HashMap::new(),
         }
     }
@@ -955,6 +1009,7 @@ impl<'a> UpdateActions<'a> {
                         .or_default()
                         .insert(id);
                 }
+                self.tuple_removed.append(downstream.tuple_removed);
                 self.apply(tx, child, downstream.parent_changes, depth + 1)?;
             }
             self.removed
@@ -1011,7 +1066,8 @@ impl<'a> UpdateActions<'a> {
                 }
             }
         }
-        Ok(())
+        self.tuple_removed
+            .verify(tx, self.limits, self.cache, &mut self.budget.visited)
     }
 }
 

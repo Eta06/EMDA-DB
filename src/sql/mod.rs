@@ -15,6 +15,7 @@ mod parser;
 mod plan;
 mod subquery;
 mod transaction;
+mod tuple_foreign_key;
 mod value;
 
 #[cfg(test)]

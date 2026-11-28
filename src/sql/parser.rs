@@ -55,6 +55,13 @@ pub(crate) struct ForeignKeySpec {
     pub(crate) on_update: ForeignKeyAction,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TupleForeignKeySpec {
+    pub(crate) columns: Vec<usize>,
+    pub(crate) ref_table: String,
+    pub(crate) ref_columns: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CreateTableStmt {
     pub(crate) if_not_exists: bool,
@@ -63,6 +70,7 @@ pub(crate) struct CreateTableStmt {
     pub(crate) primary_key_columns: Vec<usize>,
     pub(crate) unique_constraints: Vec<Vec<usize>>,
     pub(crate) foreign_keys: Vec<ForeignKeySpec>,
+    pub(crate) tuple_foreign_keys: Vec<TupleForeignKeySpec>,
     /// `CHECK` expressions, column- and table-level, as written.
     pub(crate) checks: Vec<String>,
 }
@@ -503,7 +511,7 @@ pub(crate) fn parse_check_expression(text: &str, limits: &SqlLimits) -> Result<E
 
 struct ParsedReferences {
     ref_table: String,
-    ref_column: Option<String>,
+    ref_columns: Vec<String>,
     on_delete: Option<ForeignKeyAction>,
     on_update: Option<ForeignKeyAction>,
 }
@@ -1022,7 +1030,7 @@ impl Parser<'_> {
         let mut col_uniques: Vec<usize> = Vec::new();
         let mut table_uniques: Vec<Vec<(String, usize)>> = Vec::new();
         let mut col_fks: Vec<(usize, ParsedReferences)> = Vec::new();
-        let mut table_fks: Vec<(String, usize, ParsedReferences)> = Vec::new();
+        let mut table_fks = Vec::new();
         let mut checks: Vec<String> = Vec::new();
 
         if matches!(self.peek().kind, TokenKind::RParen) {
@@ -1107,25 +1115,10 @@ impl Parser<'_> {
                 table_uniques.push(u_cols);
             } else if self.eat_kw("foreign") {
                 self.expect_kw("key")?;
-                self.expect_kind(&TokenKind::LParen, "'('")?;
-                if matches!(self.peek().kind, TokenKind::RParen) {
-                    return Err(SqlError::Syntax {
-                        offset: self.peek().offset,
-                        message: "FOREIGN KEY constraint must declare a column".into(),
-                    });
-                }
-                let (fk_col, fk_offset) =
-                    self.expect_ident("column name in FOREIGN KEY constraint")?;
-                if matches!(self.peek().kind, TokenKind::Comma) {
-                    return Err(SqlError::Unsupported {
-                        feature: "composite FOREIGN KEY constraint".into(),
-                        offset: Some(self.peek().offset),
-                    });
-                }
-                self.expect_kind(&TokenKind::RParen, "')'")?;
+                let columns = self.parse_fk_columns("FOREIGN KEY column")?;
                 self.expect_kw("references")?;
                 let parsed_ref = self.parse_references_tail()?;
-                table_fks.push((fk_col, fk_offset, parsed_ref));
+                table_fks.push((columns, parsed_ref));
             } else if self.eat_kw("check") {
                 checks.push(self.parse_check_clause()?);
             } else if self.at_kw("constraint") {
@@ -1319,32 +1312,68 @@ impl Parser<'_> {
         }
 
         let mut foreign_keys = Vec::with_capacity(col_fks.len() + table_fks.len());
-        for (col_idx, parsed_ref) in col_fks {
-            foreign_keys.push(ForeignKeySpec {
-                column: col_idx,
-                ref_table: parsed_ref.ref_table,
-                ref_column: parsed_ref.ref_column,
-                on_delete: parsed_ref.on_delete.unwrap_or_default(),
-                on_update: parsed_ref.on_update.unwrap_or_default(),
+        let mut tuple_foreign_keys = Vec::new();
+        for (names, parsed) in table_fks {
+            let indices = names
+                .into_iter()
+                .map(|(name, offset)| {
+                    columns
+                        .iter()
+                        .position(|column| column.name == name)
+                        .ok_or_else(|| SqlError::Syntax {
+                            offset,
+                            message: format!(
+                                "FOREIGN KEY column '{name}' is not declared in table"
+                            ),
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if indices.len() == 1 {
+                col_fks.push((indices[0], parsed));
+                continue;
+            }
+            if !parsed.ref_columns.is_empty() && parsed.ref_columns.len() != indices.len() {
+                return Err(SqlError::Constraint(
+                    "foreign key column counts differ".into(),
+                ));
+            }
+            if [parsed.on_delete, parsed.on_update]
+                .into_iter()
+                .flatten()
+                .any(|action| {
+                    !matches!(
+                        action,
+                        ForeignKeyAction::NoAction | ForeignKeyAction::Restrict
+                    )
+                })
+            {
+                return Err(SqlError::Unsupported {
+                    feature: "CASCADE or SET NULL on a composite foreign key".into(),
+                    offset: None,
+                });
+            }
+            tuple_foreign_keys.push(TupleForeignKeySpec {
+                columns: indices,
+                ref_table: parsed.ref_table,
+                ref_columns: parsed.ref_columns,
             });
         }
-        for (fk_col, fk_offset, parsed_ref) in table_fks {
-            let col_idx = columns
-                .iter()
-                .position(|c| c.name == fk_col)
-                .ok_or_else(|| SqlError::Syntax {
-                    offset: fk_offset,
-                    message: format!("FOREIGN KEY column '{fk_col}' is not declared in table"),
-                })?;
+        for (column, parsed) in col_fks {
+            if parsed.ref_columns.len() > 1 {
+                return Err(SqlError::Unsupported {
+                    feature: "a single child foreign key column cannot reference a tuple".into(),
+                    offset: None,
+                });
+            }
             foreign_keys.push(ForeignKeySpec {
-                column: col_idx,
-                ref_table: parsed_ref.ref_table,
-                ref_column: parsed_ref.ref_column,
-                on_delete: parsed_ref.on_delete.unwrap_or_default(),
-                on_update: parsed_ref.on_update.unwrap_or_default(),
+                column,
+                ref_table: parsed.ref_table,
+                ref_column: parsed.ref_columns.into_iter().next(),
+                on_delete: parsed.on_delete.unwrap_or_default(),
+                on_update: parsed.on_update.unwrap_or_default(),
             });
         }
-        if foreign_keys.len() > super::catalog::MAX_SQL_FOREIGN_KEYS {
+        if foreign_keys.len() + tuple_foreign_keys.len() > super::catalog::MAX_SQL_FOREIGN_KEYS {
             return Err(SqlError::Bounds(format!(
                 "FOREIGN KEY constraint count exceeds maximum ({})",
                 super::catalog::MAX_SQL_FOREIGN_KEYS
@@ -1358,31 +1387,46 @@ impl Parser<'_> {
             primary_key_columns,
             unique_constraints,
             foreign_keys,
+            tuple_foreign_keys,
             checks,
         })
     }
 
+    fn parse_fk_columns(&mut self, label: &str) -> Result<Vec<(String, usize)>, SqlError> {
+        self.expect_kind(&TokenKind::LParen, "'('")?;
+        let mut columns: Vec<(String, usize)> = Vec::new();
+        loop {
+            let (name, offset) = self.expect_ident(label)?;
+            if columns.iter().any(|(column, _)| *column == name) {
+                return Err(SqlError::Syntax {
+                    offset,
+                    message: format!("duplicate foreign key column '{name}'"),
+                });
+            }
+            columns.push((name, offset));
+            if columns.len() > MAX_SQL_INDEX_COLUMNS {
+                return Err(SqlError::Bounds(format!(
+                    "FOREIGN KEY has more than {MAX_SQL_INDEX_COLUMNS} columns"
+                )));
+            }
+            if !matches!(self.peek().kind, TokenKind::Comma) {
+                break;
+            }
+            self.advance();
+        }
+        self.expect_kind(&TokenKind::RParen, "')'")?;
+        Ok(columns)
+    }
+
     fn parse_references_tail(&mut self) -> Result<ParsedReferences, SqlError> {
         let (ref_table, _) = self.expect_ident("referenced table name")?;
-        let ref_column = if matches!(self.peek().kind, TokenKind::LParen) {
-            self.advance();
-            if matches!(self.peek().kind, TokenKind::RParen) {
-                return Err(SqlError::Syntax {
-                    offset: self.peek().offset,
-                    message: "REFERENCES column list cannot be empty".into(),
-                });
-            }
-            let (col, _) = self.expect_ident("referenced column name")?;
-            if matches!(self.peek().kind, TokenKind::Comma) {
-                return Err(SqlError::Unsupported {
-                    feature: "composite FOREIGN KEY constraint".into(),
-                    offset: Some(self.peek().offset),
-                });
-            }
-            self.expect_kind(&TokenKind::RParen, "')'")?;
-            Some(col)
+        let ref_columns = if matches!(self.peek().kind, TokenKind::LParen) {
+            self.parse_fk_columns("referenced column name")?
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect()
         } else {
-            None
+            Vec::new()
         };
 
         let mut on_delete = None;
@@ -1464,7 +1508,7 @@ impl Parser<'_> {
 
         Ok(ParsedReferences {
             ref_table,
-            ref_column,
+            ref_columns,
             on_delete,
             on_update,
         })

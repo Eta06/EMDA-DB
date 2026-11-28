@@ -2031,6 +2031,8 @@ fn load_table_defs(
                 indexes: Vec::new(),
                 foreign_keys: Vec::new(),
                 referenced_by: Vec::new(),
+                tuple_foreign_keys: Vec::new(),
+                tuple_referenced_by: Vec::new(),
                 checks: Vec::new(),
             }));
         } else if let Some(prev) = statement.tables[..index]

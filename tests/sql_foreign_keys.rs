@@ -45,6 +45,82 @@ fn text(s: &str) -> SqlValue {
 }
 
 #[test]
+fn composite_foreign_keys_verify_full_tuples_and_protect_cascaded_parents() {
+    for_both(|db, backend| {
+        let sqlite = rusqlite::Connection::open_in_memory().unwrap();
+        sqlite.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+        let both = |sql: &str| {
+            db.execute(sql, &[])
+                .unwrap_or_else(|error| panic!("{backend}: {sql}: {error}"));
+            sqlite.execute(sql, []).unwrap();
+        };
+        for sql in [
+            "CREATE TABLE root (id INTEGER PRIMARY KEY)",
+            "CREATE TABLE parent (a INTEGER, b TEXT, code INTEGER, tag TEXT, PRIMARY KEY(a,b), FOREIGN KEY (a) REFERENCES root(id) ON DELETE CASCADE ON UPDATE CASCADE)",
+            "CREATE UNIQUE INDEX target ON parent (code, tag)",
+            "CREATE TABLE child (id INTEGER PRIMARY KEY, a INTEGER, b TEXT, FOREIGN KEY (a,b) REFERENCES parent ON DELETE RESTRICT)",
+            "CREATE INDEX child_tuple ON child(a,b)",
+            "CREATE TABLE alternate (id INTEGER PRIMARY KEY, code INTEGER, tag TEXT, FOREIGN KEY (code,tag) REFERENCES parent(code,tag))",
+            "INSERT INTO root VALUES (1), (2)",
+            "INSERT INTO parent VALUES (1,'x',10,'t'), (2,'y',20,'u')",
+            "INSERT INTO child VALUES (7,1,'x'), (8,NULL,'missing'), (9,999,NULL)",
+            "INSERT INTO alternate VALUES (1,20,'u')",
+        ] {
+            both(sql);
+        }
+        for sql in [
+            "INSERT INTO child VALUES (10,1,'y')",
+            "INSERT INTO alternate VALUES (2,20,'t')",
+            "UPDATE child SET a = 2 WHERE id = 7",
+            "UPDATE parent SET b = 'z' WHERE a = 1",
+            "DELETE FROM parent WHERE a = 1",
+            "DELETE FROM root WHERE id = 1",
+            "UPDATE root SET id = 3 WHERE id = 1",
+            "UPDATE parent SET tag = 't' WHERE a = 2",
+            "DROP TABLE parent",
+        ] {
+            assert!(
+                matches!(db.execute(sql, &[]), Err(SqlError::Constraint(_))),
+                "{backend}: {sql}"
+            );
+            assert!(sqlite.execute(sql, []).is_err(), "{sql}");
+        }
+        assert!(matches!(
+            db.execute("DROP INDEX target ON parent", &[]),
+            Err(SqlError::Constraint(_))
+        ));
+        assert!(matches!(
+            db.execute("ALTER TABLE child DROP COLUMN b", &[]),
+            Err(SqlError::Constraint(_))
+        ));
+        assert_eq!(
+            rows(db, "SELECT id FROM root ORDER BY id", &[]),
+            vec![vec![int(1)], vec![int(2)]]
+        );
+        assert_eq!(
+            rows(db, "SELECT a, b FROM parent ORDER BY a, b", &[]),
+            vec![vec![int(1), text("x")], vec![int(2), text("y")]]
+        );
+
+        db.transaction(|tx| {
+            tx.execute("INSERT INTO root VALUES (3)", &[])?;
+            tx.execute("INSERT INTO parent VALUES (3,'z',30,'v')", &[])?;
+            tx.execute("INSERT INTO child VALUES (10,3,'z')", &[])?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            rows(db, "SELECT a, b FROM child WHERE id = 10", &[]),
+            vec![vec![int(3), text("z")]]
+        );
+        db.execute("DROP TABLE child", &[]).unwrap();
+        db.execute("DROP TABLE alternate", &[]).unwrap();
+        db.execute("DROP INDEX target ON parent", &[]).unwrap();
+        db.execute("DROP TABLE parent", &[]).unwrap();
+    });
+}
+
+#[test]
 fn ddl_syntax_target_validation_and_errors() {
     for_both(|db, backend| {
         db.execute(
@@ -217,7 +293,7 @@ fn ddl_syntax_target_validation_and_errors() {
         for sql in [
             "CREATE TABLE u3 (id INT PRIMARY KEY, p INT REFERENCES parents(id) ON DELETE SET DEFAULT)",
             "CREATE TABLE u6 (id INT PRIMARY KEY, p INT REFERENCES parents(id) ON UPDATE SET DEFAULT)",
-            "CREATE TABLE u7 (id INT PRIMARY KEY, a INT, b INT, FOREIGN KEY (a, b) REFERENCES parents(a, b))",
+            "CREATE TABLE u7 (id INT PRIMARY KEY, a INT, b INT, FOREIGN KEY (a, b) REFERENCES parents(a, b) ON DELETE CASCADE)",
             "CREATE TABLE u8 (id INT PRIMARY KEY, a INT REFERENCES parents(a, b))",
             "CREATE TABLE u9 (id INT PRIMARY KEY, p INT REFERENCES parents(id) MATCH FULL)",
             "CREATE TABLE u10 (id INT PRIMARY KEY, p INT REFERENCES parents(id) DEFERRABLE)",

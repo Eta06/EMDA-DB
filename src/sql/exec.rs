@@ -497,6 +497,7 @@ fn exec_create_table(
         parent_def.validate()?;
         catalog::save_table_def(tx, &parent_key, &parent_def)?;
     }
+    super::tuple_foreign_key::attach(tx, &stmt.name, &stmt.tuple_foreign_keys, &cache.tables)?;
     Ok(SqlOutcome::TableCreated)
 }
 
