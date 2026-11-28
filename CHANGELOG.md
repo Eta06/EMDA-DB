@@ -4,6 +4,16 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add a Rust remote client with hybrid TLS and scoped self-hosted API keys.
+  A scoped key is limited to its allowed KV prefixes and document
+  collections and its configured role.
+
+- Support opt-in idle closure of a self-hosted project's two stores. An
+  authenticated and authorized request can reopen them under a shared wake
+  limit. Store handles remain open for active requests, and reopening a
+  damaged store fails closed. Add a Linux systemd deployment for separate
+  project service accounts and CPU, memory and task caps.
+
 - Add the feature-gated self-hosted TLS server for SQL, documents and key-value
   requests. It has project-scoped credentials and roles, separate project
   stores, request and connection admission, log quotas, and hybrid TLS 1.3 key

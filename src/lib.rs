@@ -22,6 +22,8 @@ mod publication_outcome;
 mod record;
 mod recovered_view;
 mod recovery;
+#[cfg(feature = "remote-client")]
+pub mod remote;
 pub mod retained_base_v2;
 pub mod retained_candidate;
 mod snapshot_reaper;

@@ -48,6 +48,34 @@ impl Server {
         })
     }
 
+    fn start_idle_reaper(self: &Arc<Self>) -> io::Result<()> {
+        let Some(shortest) = self
+            .projects
+            .values()
+            .filter_map(Project::idle_timeout)
+            .min()
+        else {
+            return Ok(());
+        };
+        let interval = (shortest / 2).min(Duration::from_secs(1));
+        let server = Arc::downgrade(self);
+        std::thread::Builder::new()
+            .name("emda-idle".into())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(interval);
+                    let Some(server) = server.upgrade() else {
+                        break;
+                    };
+                    let now = Instant::now();
+                    for project in server.projects.values() {
+                        project.reap_idle(now);
+                    }
+                }
+            })?;
+        Ok(())
+    }
+
     fn accept(self: &Arc<Self>, socket: TcpStream) {
         let Some(permit) = self.connections.enter() else {
             return;
@@ -136,10 +164,14 @@ fn read_config(path: &Path) -> Result<Config, Box<dyn std::error::Error>> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 
-fn run(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn run(path: &Path, single_project: bool) -> Result<(), Box<dyn std::error::Error>> {
     let config = read_config(path)?;
+    if single_project && config.projects.len() != 1 {
+        return Err("--single-project requires exactly one configured project".into());
+    }
     let server = Arc::new(Server::open(&config)?);
     let listener = TcpListener::bind(config.bind)?;
+    server.start_idle_reaper()?;
     println!("READY {}", listener.local_addr()?);
     io::stdout().flush()?;
     for incoming in listener.incoming() {
@@ -154,11 +186,15 @@ fn run(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    let [config] = args.as_slice() else {
-        eprintln!("usage: emda-server <config.json>");
-        return ExitCode::FAILURE;
+    let (config, single_project) = match args.as_slice() {
+        [flag, config] if flag == "--single-project" => (config, true),
+        [config] => (config, false),
+        _ => {
+            eprintln!("usage: emda-server [--single-project] <config.json>");
+            return ExitCode::FAILURE;
+        }
     };
-    match run(Path::new(config)) {
+    match run(Path::new(config), single_project) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("emda-server startup or listener failure: {error}");

@@ -1,14 +1,23 @@
 # Project scale-to-zero: design goals
 
-Scale-to-zero is planned. An inactive database can release its worker's CPU and RAM back to a shared pool while its durable data and backups remain available for recovery. Authorized work starts the worker again. The router, control plane, identity services, monitoring, and storage retain their own resource costs.
+The [self-hosted server](SELF_HOSTED_SERVER.md#project-sleep-and-wake) supports
+opt-in idle closure of a project's SQL and document/KV stores. It releases
+the handles, memory held by the stores and exclusive locks after active
+operations finish. Authorized work wakes the project under a global limit
+on simultaneous opens. The shared listener and identity state remain active.
+
+In Harbor, an inactive database should be able to release its dedicated
+worker's CPU and RAM while durable data and backups remain available. The
+router, control plane, identity services, monitoring and storage retain
+their own resource costs.
 
 ## Operator and plan controls
 
 - Eligible paid Harbor plans should allow owners to disable automatic suspension per database and keep its worker active. Define plan defaults and idle-timeout ranges when the plans are designed.
-- Self-hosted operators should configure automatic suspension, idle timeouts, and always-on behavior themselves. Hosted plan policy applies to Harbor. Embedded applications control their own open and close lifecycle.
+- Self-hosted operators can choose an idle timeout or an always-on policy per project. Hosted plan policy applies to Harbor. Embedded applications control their own open and close lifecycle.
 - Apply the lifecycle policy independently from persistence and resource quotas. A RAM-only database cannot preserve data through worker shutdown without writing a durable copy.
 
-## Proposed lifecycle
+## Managed worker lifecycle
 
 1. **Active:** The worker accepts operations subject to project authorization and resource limits.
 2. **Draining:** After a configured inactivity period, stop admitting new work to the current worker while checking for active operations, transactions, snapshots, and work that requires the worker to remain available. A concurrent request must be handled without losing it: either cancel the drain safely or trigger a subsequent wake.

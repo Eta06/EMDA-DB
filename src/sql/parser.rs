@@ -25,6 +25,12 @@ impl PartialEq for SqlStatement {
 }
 
 impl SqlStatement {
+    /// Parses a statement with the supplied bounds without accessing a database.
+    pub fn parse_with_limits(sql: &str, limits: &SqlLimits) -> Result<Self, SqlError> {
+        limits.validate()?;
+        parse_statement(sql, limits)
+    }
+
     /// Returns the number of `?` positional parameters expected when executing.
     pub fn param_count(&self) -> usize {
         self.param_count

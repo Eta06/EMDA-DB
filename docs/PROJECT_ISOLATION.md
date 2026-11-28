@@ -23,6 +23,17 @@ Differentiate the developer/owner of a project from its end users. Verify identi
 
 Any future support for developer-supplied executable code needs a separate sandbox and build/run threat model. Declarative records or queries must not gain arbitrary filesystem, network, or host-code access.
 
+## Credential lifecycle
+
+Self-hosted credentials belong to one project and carry their own expiry,
+role and optional dataset scope. Operators control them in configuration.
+For Harbor, keep human membership and service identities separate from their
+keys. Bind each grant to the tenant, project, role and dataset scope. Define
+delegation, issuance, rotation and revocation with an audit record, and
+verify that a project owner cannot grant access in another tenant. Managed
+users, service-account key management and data policies for SQL tables and
+rows remain future work.
+
 ## Deployment boundaries
 
 - **Shared self-hosted process.** Credentials, operations and store handles
@@ -31,7 +42,7 @@ Any future support for developer-supplied executable code needs a separate sandb
   mismatches at project storage paths. An in-process compromise or a
   privileged local actor can affect all projects in that process.
 - **OS-enforced separation.** Run one server instance per project under a
-  separate unprivileged service account, with only its own data, TLS key and
+  separate unprivileged service account. The [Linux systemd deployment](SELF_HOSTED_SERVER.md#linux-isolation-with-systemd) assigns distinct dynamic users and cgroup limits. Expose only each instance's own data, TLS key and
   credentials mounted. On Linux, constrain the process and its descendants
   with cgroup v2 CPU, memory, I/O and process limits, and enforce storage
   quotas on the project volume for logs, metadata and temporary files. Use
@@ -40,7 +51,8 @@ Any future support for developer-supplied executable code needs a separate sandb
   a VM can reduce reliance on a shared kernel.
 - **Managed lifecycle.** Run a separate control plane for authentication,
   routing, quotas and ownership. A dormant project should consume storage
-  without a running database worker. A wake operation needs a single
+  without a running database worker. The self-hosted server can already
+  release idle embedded stores within its shared process. A managed wake needs a single
   authenticated owner with fencing, per-project and global concurrency caps,
   and queue bounds. Shutdown must stop admitting writes, drain active
   transactions or preserve their uncertain outcome, then release ownership.

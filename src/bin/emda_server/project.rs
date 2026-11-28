@@ -4,6 +4,7 @@ use database_engine::{
     DocumentDatabase, DocumentTransaction, DocumentTransactionMode, SqlDatabase, SqlError,
     SqlLimits, Store, TransactionFailure, is_transaction_conflict,
 };
+use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -14,7 +15,7 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 
 #[derive(Deserialize)]
@@ -28,7 +29,13 @@ pub struct Config {
     pub require_hybrid_kex: bool,
     pub max_connections: usize,
     pub timeout_ms: u64,
+    #[serde(default = "default_concurrent_wakes")]
+    max_concurrent_wakes: usize,
     pub projects: Vec<ProjectConfig>,
+}
+
+fn default_concurrent_wakes() -> usize {
+    2
 }
 
 fn require_hybrid_kex_by_default() -> bool {
@@ -40,6 +47,7 @@ fn require_hybrid_kex_by_default() -> bool {
 pub struct ProjectConfig {
     id: String,
     max_in_flight: usize,
+    idle_timeout_ms: Option<u64>,
     data_log_bytes: u64,
     sql_log_bytes: u64,
     max_live_keys_per_store: usize,
@@ -53,6 +61,77 @@ struct CredentialConfig {
     token_sha256: String,
     expires_unix_seconds: u64,
     role: Role,
+    #[serde(default, deserialize_with = "deserialize_scope")]
+    scope: Option<CredentialScope>,
+}
+
+fn deserialize_scope<'de, D>(deserializer: D) -> Result<Option<CredentialScope>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    CredentialScope::deserialize(deserializer).map(Some)
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CredentialScope {
+    #[serde(default)]
+    kv_prefixes: HashMap<String, DatasetAccess>,
+    #[serde(default)]
+    document_collections: HashMap<String, DatasetAccess>,
+}
+
+impl CredentialScope {
+    fn validate(&self) -> io::Result<()> {
+        if self.kv_prefixes.len() > 64
+            || self.document_collections.len() > 64
+            || self
+                .kv_prefixes
+                .keys()
+                .any(|prefix| !(1..=1023).contains(&prefix.len()))
+            || self
+                .document_collections
+                .keys()
+                .any(|name| !(1..=128).contains(&name.len()))
+        {
+            return Err(config_error("invalid credential scope"));
+        }
+        Ok(())
+    }
+
+    fn allows(&self, operation: &Operation, required: Role) -> bool {
+        let access = match operation {
+            Operation::KvGet { key }
+            | Operation::KvPut { key, .. }
+            | Operation::KvDelete { key } => self
+                .kv_prefixes
+                .iter()
+                .filter(|(prefix, _)| key.starts_with(prefix.as_str()))
+                .max_by_key(|(prefix, _)| prefix.len())
+                .map(|(_, access)| access),
+            Operation::DocumentGet { collection, .. }
+            | Operation::DocumentInsert { collection, .. }
+            | Operation::DocumentReplace { collection, .. }
+            | Operation::DocumentDelete { collection, .. } => {
+                self.document_collections.get(collection)
+            }
+            Operation::DocumentCreate { .. } | Operation::Sql { .. } => None,
+        };
+        match access {
+            Some(DatasetAccess::Read) => required == Role::Read,
+            Some(DatasetAccess::Write) => required <= Role::Write,
+            Some(DatasetAccess::WriteOnly) => required == Role::Write,
+            None => false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DatasetAccess {
+    Read,
+    Write,
+    WriteOnly,
 }
 
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -67,19 +146,121 @@ struct Credential {
     digest: [u8; 32],
     expires_unix_seconds: u64,
     role: Role,
+    scope: Option<CredentialScope>,
 }
 
 pub struct Project {
-    data: Store,
-    sql: Store,
+    storage: ProjectStorage,
     credentials: HashMap<String, Credential>,
     admission: Arc<Admission>,
+}
+
+struct ProjectStorage {
+    directory: PathBuf,
+    data_log_bytes: u64,
+    sql_log_bytes: u64,
+    max_live_keys: usize,
+    idle_timeout: Option<Duration>,
+    waking: Arc<Admission>,
+    state: Mutex<StorageState>,
+}
+
+struct ProjectStores {
+    data: Store,
+    sql: Store,
+}
+
+struct StorageState {
+    stores: Option<Arc<ProjectStores>>,
+    last_use: Instant,
+    retry_at: Option<Instant>,
+}
+
+struct StoreLease<'a> {
+    stores: Arc<ProjectStores>,
+    state: &'a Mutex<StorageState>,
+}
+
+impl Drop for StoreLease<'_> {
+    fn drop(&mut self) {
+        self.state.lock().last_use = Instant::now();
+    }
+}
+
+impl ProjectStorage {
+    fn open_stores(&self) -> io::Result<Arc<ProjectStores>> {
+        // Revalidate on every wake. Project files are never supplied by a request.
+        ensure_private_directory(&self.directory)?;
+        Ok(Arc::new(ProjectStores {
+            data: open_project_store(
+                &self.directory.join("data"),
+                self.data_log_bytes,
+                self.max_live_keys,
+            )?,
+            sql: open_project_store(
+                &self.directory.join("sql"),
+                self.sql_log_bytes,
+                self.max_live_keys,
+            )?,
+        }))
+    }
+
+    fn lease(&self, deadline: Instant) -> Result<StoreLease<'_>, Failure> {
+        if Instant::now() >= deadline {
+            return Err(Failure::Timeout);
+        }
+        let mut state = self.state.try_lock().ok_or(Failure::Busy)?;
+        if state.stores.is_none() {
+            if state.retry_at.is_some_and(|time| Instant::now() < time) {
+                return Err(Failure::Unavailable);
+            }
+            let _wake = self.waking.enter().ok_or(Failure::Busy)?;
+            match self.open_stores() {
+                Ok(stores) => {
+                    state.stores = Some(stores);
+                    state.retry_at = None;
+                    state.last_use = Instant::now();
+                }
+                Err(_) => {
+                    state.retry_at = Some(Instant::now() + Duration::from_secs(1));
+                    return Err(Failure::Unavailable);
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(Failure::Timeout);
+        }
+        Ok(StoreLease {
+            stores: Arc::clone(state.stores.as_ref().expect("stores are open")),
+            state: &self.state,
+        })
+    }
+
+    fn reap_idle(&self, now: Instant) {
+        let Some(idle_timeout) = self.idle_timeout else {
+            return;
+        };
+        let Some(mut state) = self.state.try_lock() else {
+            return;
+        };
+        if now.saturating_duration_since(state.last_use) >= idle_timeout
+            && state
+                .stores
+                .as_ref()
+                .is_some_and(|stores| Arc::strong_count(stores) == 1)
+        {
+            // Drop the stores under the lifecycle lock before another wake can
+            // attempt to acquire either store's exclusive filesystem lock.
+            drop(state.stores.take());
+        }
+    }
 }
 
 impl Config {
     pub fn open_projects(&self) -> io::Result<HashMap<String, Project>> {
         if !(1..=128).contains(&self.max_connections)
             || !(100..=60_000).contains(&self.timeout_ms)
+            || !(1..=128).contains(&self.max_concurrent_wakes)
             || !(1..=128).contains(&self.projects.len())
         {
             return Err(config_error("invalid server limits"));
@@ -93,6 +274,9 @@ impl Config {
             validate_id(&spec.id)?;
             if !project_ids.insert(&spec.id)
                 || !(1..=self.max_connections).contains(&spec.max_in_flight)
+                || spec
+                    .idle_timeout_ms
+                    .is_some_and(|ms| !(100..=86_400_000).contains(&ms))
                 || !(1..=64).contains(&spec.credentials.len())
                 || spec.data_log_bytes < 4096
                 || spec.sql_log_bytes < 4096
@@ -107,6 +291,9 @@ impl Config {
             let mut credentials = HashMap::new();
             for credential in &spec.credentials {
                 validate_id(&credential.id)?;
+                if let Some(scope) = &credential.scope {
+                    scope.validate()?;
+                }
                 let digest = decode_secret(&credential.token_sha256).ok_or_else(|| {
                     config_error("credential digest must be 64 lowercase hex digits")
                 })?;
@@ -124,30 +311,43 @@ impl Config {
                         digest,
                         expires_unix_seconds: credential.expires_unix_seconds,
                         role: credential.role,
+                        scope: credential.scope.clone(),
                     },
                 );
             }
             settings.push((spec, credentials));
         }
         let mut opened = HashMap::new();
+        let waking = Arc::new(Admission::new(self.max_concurrent_wakes));
         for (spec, credentials) in settings {
             let directory = self.data_root.join(&spec.id);
             create_private_directory(&directory)?;
-            let data = open_project_store(
-                &directory.join("data"),
-                spec.data_log_bytes,
-                spec.max_live_keys_per_store,
-            )?;
-            let sql = open_project_store(
-                &directory.join("sql"),
-                spec.sql_log_bytes,
-                spec.max_live_keys_per_store,
-            )?;
+            for name in ["data", "sql"] {
+                let path = directory.join(name);
+                create_private_directory(&path)?;
+                validate_project_store(&path)?;
+            }
+            let mut storage = ProjectStorage {
+                directory,
+                data_log_bytes: spec.data_log_bytes,
+                sql_log_bytes: spec.sql_log_bytes,
+                max_live_keys: spec.max_live_keys_per_store,
+                idle_timeout: spec.idle_timeout_ms.map(Duration::from_millis),
+                waking: Arc::clone(&waking),
+                state: Mutex::new(StorageState {
+                    stores: None,
+                    last_use: Instant::now(),
+                    retry_at: None,
+                }),
+            };
+            if storage.idle_timeout.is_none() {
+                let stores = storage.open_stores()?;
+                storage.state.get_mut().stores = Some(stores);
+            }
             opened.insert(
                 spec.id.clone(),
                 Project {
-                    data,
-                    sql,
+                    storage,
                     credentials,
                     admission: Arc::new(Admission::new(spec.max_in_flight)),
                 },
@@ -158,9 +358,24 @@ impl Config {
 }
 
 fn open_project_store(path: &Path, log_bytes: u64, live_keys: usize) -> io::Result<Store> {
-    create_private_directory(path)?;
+    validate_project_store(path)?;
+    Store::open_with_resource_limits(
+        path,
+        Some(log_bytes),
+        Some(live_keys),
+        Some(8 * 1024 * 1024),
+    )
+}
+
+fn validate_project_store(path: &Path) -> io::Result<()> {
+    ensure_private_directory(path)?;
+    let mut has_lock = false;
+    let mut has_records = false;
     for entry in fs::read_dir(path)? {
-        let info = fs::symlink_metadata(entry?.path())?;
+        let entry = entry?;
+        has_lock |= entry.file_name() == "store.lock";
+        has_records |= entry.file_name() == "records.log";
+        let info = fs::symlink_metadata(entry.path())?;
         if !info.is_file() || info.nlink() != 1 || info.uid() != rustix::process::geteuid().as_raw()
         {
             return Err(config_error(
@@ -168,12 +383,12 @@ fn open_project_store(path: &Path, log_bytes: u64, live_keys: usize) -> io::Resu
             ));
         }
     }
-    Store::open_with_resource_limits(
-        path,
-        Some(log_bytes),
-        Some(live_keys),
-        Some(8 * 1024 * 1024),
-    )
+    if has_lock && !has_records {
+        return Err(config_error(
+            "initialized project store lost its records log",
+        ));
+    }
+    Ok(())
 }
 
 fn create_private_directory(path: &Path) -> io::Result<()> {
@@ -260,25 +475,48 @@ impl Drop for Permit {
 }
 
 impl Project {
+    pub fn idle_timeout(&self) -> Option<Duration> {
+        self.storage.idle_timeout
+    }
+
+    pub fn reap_idle(&self, now: Instant) {
+        self.storage.reap_idle(now);
+    }
+
     pub fn execute(&self, request: Request, deadline: Instant) -> Result<Value, Failure> {
-        let role = self.authenticate(&request.credential, &request.token)?;
+        let credential = self.authenticate(&request.credential, &request.token)?;
+        let role = credential.role;
         let _permit = self.admission.enter().ok_or(Failure::Busy)?;
         if Instant::now() >= deadline {
             return Err(Failure::Timeout);
         }
         if let Operation::Sql { statement, params } = request.operation {
+            if credential.scope.is_some() {
+                return Err(Failure::Forbidden);
+            }
             return self.sql(&statement, params, role, deadline);
         }
 
         let required = match &request.operation {
             Operation::KvGet { .. } | Operation::DocumentGet { .. } => Role::Read,
             Operation::DocumentCreate { .. } => Role::Admin,
-            _ => Role::Write,
+            Operation::KvPut { .. }
+            | Operation::KvDelete { .. }
+            | Operation::DocumentInsert { .. }
+            | Operation::DocumentReplace { .. }
+            | Operation::DocumentDelete { .. } => Role::Write,
+            Operation::Sql { .. } => unreachable!("SQL authorizes its parsed statement"),
         };
-        if role < required {
+        if role < required
+            || credential
+                .scope
+                .as_ref()
+                .is_some_and(|scope| !scope.allows(&request.operation, required))
+        {
             return Err(Failure::Forbidden);
         }
-        let db = DocumentDatabase::new(&self.data);
+        let lease = self.storage.lease(deadline)?;
+        let db = DocumentDatabase::new(&lease.stores.data);
         db.transaction_detailed(
             DocumentTransactionMode::ReadSet,
             Some(deadline),
@@ -288,7 +526,7 @@ impl Project {
         .map_err(transaction_failure)
     }
 
-    fn authenticate(&self, id: &str, token: &str) -> Result<Role, Failure> {
+    fn authenticate(&self, id: &str, token: &str) -> Result<&Credential, Failure> {
         let token = decode_secret(token).ok_or(Failure::Unauthorized)?;
         let actual: [u8; 32] = Sha256::digest(token).into();
         let credential = self.credentials.get(id).ok_or(Failure::Unauthorized)?;
@@ -299,7 +537,7 @@ impl Project {
         if !bool::from(credential.digest.ct_eq(&actual)) || now >= credential.expires_unix_seconds {
             return Err(Failure::Unauthorized);
         }
-        Ok(credential.role)
+        Ok(credential)
     }
 
     fn sql(
@@ -323,9 +561,8 @@ impl Project {
             max_text_bytes: 4096,
             ..SqlLimits::default()
         };
-        let db = SqlDatabase::with_limits(DocumentDatabase::new(&self.sql), limits)
+        let statement = database_engine::SqlStatement::parse_with_limits(statement, &limits)
             .map_err(sql_failure)?;
-        let statement = db.prepare(statement).map_err(sql_failure)?;
         let required = match statement.kind() {
             SqlStatementKind::Query => Role::Read,
             SqlStatementKind::DataMutation => Role::Write,
@@ -338,6 +575,9 @@ impl Project {
             .into_iter()
             .map(protocol::sql_value)
             .collect::<Result<Vec<_>, _>>()?;
+        let lease = self.storage.lease(deadline)?;
+        let db = SqlDatabase::with_limits(DocumentDatabase::new(&lease.stores.sql), limits)
+            .map_err(sql_failure)?;
         let result = db
             .transaction_until(deadline, |tx| tx.execute_prepared(&statement, &params))
             .map_err(sql_failure)?;
@@ -460,11 +700,13 @@ mod tests {
             id: "client".into(),
             token_sha256: protocol::hex(&Sha256::digest([secret; 32])),
             role: Role::Read,
+            scope: None,
             expires_unix_seconds: u64::MAX,
         };
         let project = |id: &str, secret| ProjectConfig {
             id: id.into(),
             max_in_flight: 1,
+            idle_timeout_ms: None,
             data_log_bytes: 4096,
             sql_log_bytes: 4096,
             max_live_keys_per_store: 128,
@@ -477,6 +719,7 @@ mod tests {
             tls_key: PathBuf::new(),
             require_hybrid_kex: true,
             max_connections: 2,
+            max_concurrent_wakes: 1,
             timeout_ms: 1000,
             projects: vec![project("alpha", 1), project("beta", 2)],
         };
@@ -503,5 +746,51 @@ mod tests {
             projects["alpha"].execute(request("alpha", 1), deadline),
             Ok(Value::Null)
         );
+    }
+
+    #[test]
+    fn wake_admission_and_leases_bound_lifecycle_transitions() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        for name in ["data", "sql"] {
+            create_private_directory(&directory.path().join(name)).unwrap();
+        }
+        let storage = ProjectStorage {
+            directory: directory.path().to_owned(),
+            data_log_bytes: 4096,
+            sql_log_bytes: 4096,
+            max_live_keys: 32,
+            idle_timeout: Some(Duration::from_millis(100)),
+            waking: Arc::new(Admission::new(1)),
+            state: Mutex::new(StorageState {
+                stores: None,
+                last_use: Instant::now(),
+                retry_at: None,
+            }),
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let occupied = storage.waking.enter().unwrap();
+        assert!(matches!(storage.lease(deadline), Err(Failure::Busy)));
+        assert!(!directory.path().join("data/store.lock").exists());
+        drop(occupied);
+        let transitioning = storage.state.lock();
+        assert!(matches!(storage.lease(deadline), Err(Failure::Busy)));
+        drop(transitioning);
+        let lease = storage.lease(deadline).unwrap();
+        let concurrent = storage.lease(deadline).unwrap();
+        assert!(Arc::ptr_eq(&lease.stores, &concurrent.stores));
+        storage.reap_idle(Instant::now() + Duration::from_secs(1));
+        assert!(storage.state.lock().stores.is_some());
+        drop(lease);
+        drop(concurrent);
+        storage.reap_idle(Instant::now());
+        assert!(storage.state.lock().stores.is_some());
+        storage.reap_idle(Instant::now() + Duration::from_secs(1));
+        assert!(storage.state.lock().stores.is_none());
+        assert!(matches!(
+            storage.lease(Instant::now()),
+            Err(Failure::Timeout)
+        ));
+        assert!(storage.state.lock().stores.is_none());
     }
 }

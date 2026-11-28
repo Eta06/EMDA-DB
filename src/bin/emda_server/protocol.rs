@@ -3,8 +3,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::io::{self, Read, Write};
 
-pub const MAX_FRAME: usize = 256 * 1024;
-pub const VERSION: u16 = 1;
+pub use database_engine::remote::{MAX_FRAME_BYTES as MAX_FRAME, PROTOCOL_VERSION as VERSION};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,6 +64,7 @@ pub enum Failure {
     Unauthorized,
     Forbidden,
     Busy,
+    Unavailable,
     Limit,
     Timeout,
     Conflict,
@@ -82,6 +82,7 @@ impl Failure {
             Self::Unauthorized => "unauthorized",
             Self::Forbidden => "forbidden",
             Self::Busy => "busy",
+            Self::Unavailable => "unavailable",
             Self::Limit => "limit",
             Self::Timeout => "timeout",
             Self::Conflict => "conflict",

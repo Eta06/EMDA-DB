@@ -15,7 +15,8 @@ Run the server as an unprivileged account. Its provisioning paths and their
 parents must be controlled by the operator. Use a PEM certificate chain valid
 for the server DNS name and a matching PEM key. Store the private key where only
 the service account and trusted administrators can read it. The server prints
-`READY address:port` after opening every project and binding successfully.
+`READY address:port` after checking project storage paths, opening always-on
+projects and binding successfully.
 
 Generate a separate random 32-byte secret for each credential. Give the client
 the 64-character lowercase hexadecimal encoding of the secret and store the
@@ -32,10 +33,12 @@ the server with the changed configuration.
   "require_hybrid_kex": true,
   "timeout_ms": 5000,
   "max_connections": 32,
+  "max_concurrent_wakes": 2,
   "projects": [
     {
       "id": "example",
       "max_in_flight": 4,
+      "idle_timeout_ms": 30000,
       "data_log_bytes": 4000000000,
       "sql_log_bytes": 1000000000,
       "max_live_keys_per_store": 16384,
@@ -57,6 +60,73 @@ paths. Project and credential IDs accept 1–48 lowercase ASCII letters, digits
 and hyphens. A secret digest may be used only once in a server configuration.
 Each configured project has separate `data/` and `sql/` stores, owned by the
 server account and under private directories.
+
+## Scoped API credentials
+
+Each credential has its own identity, role and expiry. Omit `scope` for
+access to all datasets in the project at the specified role. Use a scope for
+applications and automation that only need particular keys or collections.
+
+```json
+{
+  "id": "public-site",
+  "token_sha256": "<64 lowercase hex digits>",
+  "expires_unix_seconds": 1900000000,
+  "role": "write",
+  "scope": {
+    "kv_prefixes": {"public/": "read", "ingest/": "write_only", "ingest/audit/": "read"},
+    "document_collections": {"catalog": "read", "events": "write"}
+  }
+}
+```
+
+An explicit scope must be an object. Both maps inside it default to empty.
+Prefixes match original
+UTF-8 key bytes, and the longest matching prefix sets the KV permission.
+Collection names match exactly. A `write` grant includes reading, and
+`write_only` permits mutations and denies read requests. Mutation results
+can still reveal whether a key or document existed. The key's role caps every grant, so a `read` key cannot write. Scoped keys can operate
+on rows within allowed datasets. Creating collections and using SQL require
+project-wide credentials. Self-hosted
+operators issue, rotate and revoke credentials by updating the server
+configuration and restarting it. End-user account lifecycle and online
+key management are planned for Harbor.
+
+## Rust client
+
+Enable the `remote-client` feature and use `database_engine::remote::Client`.
+Provide a trusted CA bundle and the server name from its certificate. The
+client verifies the certificate and requires hybrid TLS with the same
+parameters as the default server. It supports KV, documents and parameterized
+SQL. It preserves signed 64-bit SQL integers and performs no automatic retries.
+Use the SDK error category to distinguish a connection failure before sending
+a request from an uncertain response after sending began.
+
+```rust
+use database_engine::SqlValue;
+use database_engine::remote::{Client, ClientOptions, Operation};
+use std::time::Duration;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::with_ca_pem(
+        ClientOptions {
+            address: "127.0.0.1:7443".parse()?,
+            server_name: "localhost".into(),
+            project: "example".into(),
+            credential: "deploy".into(),
+            token: std::env::var("EMDA_API_TOKEN")?,
+            timeout: Duration::from_secs(5),
+        },
+        "ca.pem",
+    )?;
+    let rows = client.request(&Operation::sql(
+        "SELECT name FROM users WHERE id = ?",
+        &[SqlValue::Integer(1)],
+    )?)?;
+    println!("{rows}");
+    Ok(())
+}
+```
 
 ## TLS and request protocol
 
@@ -121,3 +191,75 @@ operation ID before repeating the write.
   connection pool. Provision independent processes and service accounts for
   OS-enforced access separation. See the [deployment
   boundaries](PROJECT_ISOLATION.md#deployment-boundaries).
+
+## Project sleep and wake
+
+Set `idle_timeout_ms` to 100–86,400,000 for a project to start with its
+stores closed and close them again after inactivity. Omit it or set it
+to `null` for an always-on project. The idle clock starts at the completion
+of the last operation. Active operations hold both store handles until
+their transaction result is known. The shared listener, credential table
+and idle monitor stay available while project stores are closed.
+
+The server authenticates and authorizes an operation before it can wake a
+project. One operation opens and recovers both stores under exclusive locks,
+using the same limits configured for warm operation. At most
+`max_concurrent_wakes` cold opens run across the server (between 1 and 128,
+default 2). A request encountering a concurrent state transition or a full
+wake budget receives `busy` without executing. Failed filesystem or
+recovery opens return `unavailable` and delay the next attempt for one
+second. The store returns the same error when an initialized project's
+records log has gone missing. No request is retried by the server. The
+regular connection deadline applies before and after opening, and a
+filesystem operation in progress can outlive it.
+
+Sleeping releases engine handles, locks and in-memory store state in the
+shared process. Dedicated worker shutdown, fencing across hosts and measured
+cold-start and memory targets remain managed-service work.
+
+## Linux isolation with systemd
+
+Use the [systemd template](../deploy/systemd/emda-server@.service) for one
+project per service process. It invokes `--single-project`, which rejects
+configurations with multiple projects. Instances receive separate dynamic users,
+private state directories, private temporary and device namespaces, restricted
+filesystem writes and process, memory and CPU limits.
+
+Choose lowercase instance IDs up to 26 bytes and reserve the corresponding
+`emda-<instance>` account names for systemd. Install the binary as
+`/usr/local/bin/emda-server` and the unit as
+`/etc/systemd/system/emda-server@.service`. Use a distinct unprivileged
+port and one project entry per instance. For an instance named `example`,
+provide `server.json`, `tls-cert.pem` and `tls-key.pem` as root-owned files
+in `/etc/emda/projects/example/`. Configure the following values in
+`server.json` in addition to the project limits above.
+
+```json
+{
+  "bind": "127.0.0.1:7443",
+  "data_root": "stores",
+  "tls_cert": "/run/credentials/emda-server@example.service/tls-cert.pem",
+  "tls_key": "/run/credentials/emda-server@example.service/tls-key.pem"
+}
+```
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now emda-server@example.service
+```
+
+The template allows one CPU, uses a 384 MiB memory pressure threshold and
+512 MiB hard ceiling, and allows 48 tasks. Keep the connection cap under the
+task limit with headroom for the listener, idle monitor and engine threads.
+Set host-specific limits in a systemd drop-in. The engine's own log quotas
+still apply. For a hard physical state-directory quota, use a quota-enabled
+project volume or `StateDirectoryQuota=` on systemd 258+ with filesystem
+project quotas enabled. A service can start on a filesystem that cannot
+enforce that directive, so verify quota enforcement on the actual deployment.
+[systemd filesystem quota settings](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#StateDirectoryQuota=)
+
+The [Linux isolation test](../scripts/tests/systemd_project_isolation.sh)
+starts two temporary instances, checks both directions of file access,
+checks cgroup limits and runs authenticated requests over TLS. Run it only
+on a disposable systemd host with passwordless sudo. The unit stays running
+with its listener even if the project's engine stores sleep.

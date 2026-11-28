@@ -425,3 +425,358 @@ fn stalled_tls_request_releases_the_global_connection_slot() {
         json!({"ok": true, "result": null})
     );
 }
+
+fn wait_for_store_release(path: &Path) {
+    use fs2::FileExt;
+    let lock = fs::File::open(path).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if lock.try_lock_exclusive().is_ok() {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "idle store lock was not released"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn only_authorized_operations_wake_projects_and_idle_stores_reopen() {
+    use fs2::FileExt;
+
+    let fixture = Fixture::new();
+    let root = fixture.dir.path();
+    let path = root.join("server.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config["projects"][0]["idle_timeout_ms"] = 500.into();
+    config["projects"][1]["idle_timeout_ms"] = Value::Null;
+    fs::write(&path, config.to_string()).unwrap();
+
+    let server = fixture.start();
+    let alpha_lock = root.join("projects/alpha/data/store.lock");
+    let beta_lock = root.join("projects/beta/data/store.lock");
+    let get = json!({"op":"kv_get","key":"durable"});
+    let put = json!({"op":"kv_put","key":"durable","value_hex":"abcd"});
+
+    assert!(!alpha_lock.exists());
+    assert!(beta_lock.exists());
+    assert_eq!(
+        fixture.send(&server, "alpha", "admin", OTHER, get.clone()),
+        error("unauthorized")
+    );
+    assert_eq!(
+        fixture.send(&server, "alpha", "reader", READER, put.clone()),
+        error("forbidden")
+    );
+    assert_eq!(
+        fixture.send(
+            &server,
+            "alpha",
+            "reader",
+            READER,
+            json!({"op":"sql","statement":"CREATE TABLE protected (id INT PRIMARY KEY)"})
+        ),
+        error("forbidden")
+    );
+    assert!(!alpha_lock.exists());
+
+    assert_eq!(
+        fixture.send(&server, "alpha", "admin", ADMIN, put)["ok"],
+        true
+    );
+    assert_eq!(
+        fixture.send(
+            &server,
+            "alpha",
+            "admin",
+            ADMIN,
+            json!({"op":"sql","statement":"CREATE TABLE numbers (id INT PRIMARY KEY)"})
+        )["ok"],
+        true
+    );
+    assert_eq!(
+        fixture.send(
+            &server,
+            "alpha",
+            "admin",
+            ADMIN,
+            json!({"op":"sql","statement":"INSERT INTO numbers VALUES (99)"})
+        )["ok"],
+        true
+    );
+    wait_for_store_release(&alpha_lock);
+    assert!(
+        fs::File::open(beta_lock)
+            .unwrap()
+            .try_lock_exclusive()
+            .is_err()
+    );
+
+    assert_eq!(
+        fixture.send(&server, "alpha", "admin", ADMIN, get.clone())["result"],
+        "abcd"
+    );
+    assert_eq!(
+        fixture.send(
+            &server,
+            "alpha",
+            "admin",
+            ADMIN,
+            json!({"op":"sql","statement":"SELECT id FROM numbers"})
+        )["result"]["rows"],
+        json!([[99]])
+    );
+    wait_for_store_release(&alpha_lock);
+
+    fs::remove_file(root.join("projects/alpha/data/records.log")).unwrap();
+    assert_eq!(
+        fixture.send(&server, "alpha", "admin", ADMIN, get.clone()),
+        error("unavailable")
+    );
+    assert!(!root.join("projects/alpha/data/records.log").exists());
+    assert!(
+        fixture.send(&server, "beta", "admin", OTHER, get)["ok"]
+            .as_bool()
+            .unwrap()
+    );
+}
+
+#[test]
+fn single_project_mode_rejects_multi_project_configuration_before_opening_stores() {
+    let fixture = Fixture::new();
+    let root = fixture.dir.path();
+    let result = Command::new(env!("CARGO_BIN_EXE_emda-server"))
+        .arg("--single-project")
+        .arg(root.join("server.json"))
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("requires exactly one configured project")
+    );
+    assert!(!root.join("projects/alpha").exists());
+}
+
+#[test]
+fn rust_client_verifies_the_peer_and_round_trips_all_data_models() {
+    use database_engine::remote::{Client, ClientOptions, Error, Operation};
+    use database_engine::{CollectionSchema, SqlValue};
+
+    let fixture = Fixture::new();
+    let server = fixture.start();
+    let opts = |name: &str, token: &str| ClientOptions {
+        address: server.addr,
+        server_name: name.into(),
+        project: "alpha".into(),
+        credential: "admin".into(),
+        token: token.into(),
+        timeout: Duration::from_secs(3),
+    };
+    let ca = fixture.dir.path().join("cert.pem");
+    let client = Client::with_ca_pem(opts("localhost", ADMIN), &ca).unwrap();
+    let get = Operation::KvGet { key: "binary" };
+    client
+        .request(&Operation::kv_put("binary", &[0, 255]).unwrap())
+        .unwrap();
+    assert_eq!(client.request(&get).unwrap(), "00ff");
+
+    let schema = CollectionSchema::default();
+    client
+        .request(&Operation::DocumentCreate {
+            collection: "people",
+            schema: &schema,
+        })
+        .unwrap();
+    let document = json!({"name": "Emir"});
+    client
+        .request(&Operation::DocumentInsert {
+            collection: "people",
+            id: "1",
+            document: &document,
+        })
+        .unwrap();
+    assert_eq!(
+        client
+            .request(&Operation::DocumentGet {
+                collection: "people",
+                id: "1"
+            })
+            .unwrap(),
+        document
+    );
+
+    let sql = |text, params: &[SqlValue]| {
+        client
+            .request(&Operation::sql(text, params).unwrap())
+            .unwrap()
+    };
+    sql("CREATE TABLE numbers (id INTEGER PRIMARY KEY)", &[]);
+    sql(
+        "INSERT INTO numbers VALUES (?)",
+        &[SqlValue::Integer(i64::MAX)],
+    );
+    assert_eq!(
+        sql("SELECT id FROM numbers", &[])["rows"],
+        json!([[i64::MAX]])
+    );
+
+    let wrong_dns = Client::with_ca_pem(opts("wrong.example", ADMIN), &ca).unwrap();
+    assert!(matches!(wrong_dns.request(&get), Err(Error::Connect(_))));
+    let wrong_token = Client::with_ca_pem(opts("localhost", OTHER), &ca).unwrap();
+    assert!(
+        matches!(wrong_token.request(&get), Err(Error::Server(code)) if code == "unauthorized")
+    );
+    let too_large = json!({"name": "x".repeat(256 * 1024)});
+    assert!(matches!(
+        client.request(&Operation::DocumentReplace {
+            collection: "people",
+            id: "1",
+            document: &too_large
+        }),
+        Err(Error::Limit)
+    ));
+}
+
+#[test]
+fn api_key_scope_applies_distinct_permissions_to_each_dataset() {
+    let fixture = Fixture::new();
+    let path = fixture.dir.path().join("server.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let alpha = &mut config["projects"][0]["credentials"];
+    for (name, token, role) in [
+        ("scoped-read", READER, "read"),
+        ("scoped-write", WRITER, "write"),
+    ] {
+        let mut grant = credential(name, token, role, u64::MAX);
+        grant["scope"] = json!({
+            "kv_prefixes": {"public/":"read", "metrics/":"write", "metrics/audit/":"read", "ingest/":"write_only"},
+            "document_collections": {"public":"read", "metrics":"write"}
+        });
+        let list = alpha.as_array_mut().unwrap();
+        let original = list
+            .iter()
+            .position(|prior| prior["token_sha256"] == grant["token_sha256"])
+            .unwrap();
+        list[original] = grant;
+    }
+    fs::write(&path, config.to_string()).unwrap();
+    let server = fixture.start();
+    let call =
+        |credential, token, operation| fixture.send(&server, "alpha", credential, token, operation);
+    let public_put = json!({"op":"kv_put", "key":"public/a", "value_hex":"11"});
+    assert_eq!(call("admin", ADMIN, public_put.clone())["ok"], true);
+    assert_eq!(call("scoped-write", WRITER, public_put), error("forbidden"));
+    assert_eq!(
+        call(
+            "scoped-write",
+            WRITER,
+            json!({"op":"kv_get", "key":"public/a"})
+        )["result"],
+        "11"
+    );
+    let metrics_put = json!({"op":"kv_put", "key":"metrics/a", "value_hex":"22"});
+    assert_eq!(
+        call("scoped-read", READER, metrics_put.clone()),
+        error("forbidden")
+    );
+    assert_eq!(call("scoped-write", WRITER, metrics_put)["ok"], true);
+    assert_eq!(
+        call(
+            "scoped-read",
+            READER,
+            json!({"op":"kv_get", "key":"metrics/a"})
+        )["result"],
+        "22"
+    );
+    assert_eq!(
+        call(
+            "scoped-write",
+            WRITER,
+            json!({"op":"kv_put", "key":"metrics/audit/a", "value_hex":"33"})
+        ),
+        error("forbidden")
+    );
+    assert_eq!(
+        call(
+            "scoped-write",
+            WRITER,
+            json!({"op":"kv_put", "key":"ingest/a", "value_hex":"44"})
+        )["ok"],
+        true
+    );
+    assert_eq!(
+        call(
+            "scoped-write",
+            WRITER,
+            json!({"op":"kv_get", "key":"ingest/a"})
+        ),
+        error("forbidden")
+    );
+    for key in ["public", "Public/a", "publicity/a", "private/a"] {
+        assert_eq!(
+            call("scoped-read", READER, json!({"op":"kv_get", "key":key})),
+            error("forbidden")
+        );
+        assert_eq!(
+            call("scoped-write", WRITER, json!({"op":"kv_delete", "key":key})),
+            error("forbidden")
+        );
+    }
+    for collection in ["public", "metrics"] {
+        assert_eq!(
+            call(
+                "admin",
+                ADMIN,
+                json!({"op":"document_create", "collection":collection, "schema":{"fields":[]}})
+            )["ok"],
+            true
+        );
+        let insert =
+            json!({"op":"document_insert", "collection":collection, "id":"a", "document":{"x":10}});
+        assert_eq!(
+            call("scoped-write", WRITER, insert.clone())["ok"],
+            collection == "metrics"
+        );
+        if collection == "public" {
+            assert_eq!(call("admin", ADMIN, insert)["ok"], true);
+        }
+        assert_eq!(
+            call(
+                "scoped-write",
+                WRITER,
+                json!({"op":"document_get", "collection":collection, "id":"a"})
+            )["result"],
+            json!({"x":10})
+        );
+    }
+    assert_eq!(
+        call(
+            "scoped-read",
+            READER,
+            json!({"op":"document_get", "collection":"private", "id":"a"})
+        ),
+        error("forbidden")
+    );
+    assert_eq!(
+        call(
+            "scoped-write",
+            WRITER,
+            json!({"op":"sql", "statement":"SELECT * FROM private"})
+        ),
+        error("forbidden")
+    );
+}
+
+#[test]
+fn a_null_credential_scope_fails_closed_at_startup() {
+    let fixture = Fixture::new();
+    let path = fixture.dir.path().join("server.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config["projects"][0]["credentials"][0]["scope"] = Value::Null;
+    fs::write(&path, config.to_string()).unwrap();
+    let result = launch(&path).wait_with_output().unwrap();
+    assert!(!result.status.success());
+    assert!(!fixture.dir.path().join("projects/alpha").exists());
+}
