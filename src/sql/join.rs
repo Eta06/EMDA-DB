@@ -13,6 +13,7 @@ use super::catalog::{self, CachedTable, IndexState, TableDef};
 use super::exec::{self, SqlCache};
 use super::lexer::{Token, TokenKind};
 use super::parser::{AggregateKind, CompareOp, LimitValue, SqlStatement};
+use super::plan::AccessPlan;
 
 #[path = "join_aggregate.rs"]
 mod aggregate;
@@ -3902,12 +3903,51 @@ pub(crate) fn explain(
             };
             format!("{kind}; ON checked on every candidate")
         };
+        let estimate = match access {
+            Access::Point(_) => "candidate rows: at most 1 per lookup".to_owned(),
+            Access::Index {
+                name, column, key, ..
+            } => {
+                let value = match key {
+                    BExpr::Literal(value) => Some(value),
+                    BExpr::Param(param) => Some(&params[*param]),
+                    _ => None,
+                };
+                if let Some(value) = value {
+                    let access = if let Some(value) =
+                        index_value_ref(ValRef::from_sql(value), def.columns[*column].col_type)
+                    {
+                        let index_idx = def
+                            .indexes
+                            .iter()
+                            .position(|index| index.name == *name)
+                            .expect("planned index belongs to table");
+                        AccessPlan::Index {
+                            index_idx,
+                            equal: vec![value],
+                            lower: None,
+                            upper: None,
+                            unique_equality: def.indexes[index_idx].unique
+                                && def.indexes[index_idx].columns.len() == 1,
+                            preserves_pk_asc: false,
+                            satisfies_order_by: false,
+                        }
+                    } else {
+                        AccessPlan::Empty
+                    };
+                    exec::explain_access_count(tx, def, &access, limits)?
+                } else {
+                    "candidate rows: depends on the preceding row's index key".to_owned()
+                }
+            }
+            Access::Hash { .. } | Access::Loop => exec::explain_table_count(tx, def, limits)?,
+        };
         let step = if index == 0 { "scan" } else { "join" };
         rows.push(vec![
             text(step.into()),
             text(format!("{} ({})", def.name, plan.aliases[index])),
             text(description),
-            text(detail),
+            text(format!("{detail}; {estimate}")),
         ]);
     }
     let order = if plan.sorted {

@@ -17,8 +17,8 @@ use super::value::{
 };
 use crate::document::flat::{FlatDocument, FlatScalar};
 use crate::document::{
-    DocumentDatabase, DocumentTransaction, DocumentTransactionMode, IndexBound, IndexValue,
-    StoredDocument,
+    DocumentDatabase, DocumentTransaction, DocumentTransactionMode, IndexBound, IndexQuery,
+    IndexValue, StoredDocument,
 };
 use crate::{MAX_SCAN_ENTRIES, TransactionFailure};
 use parking_lot::RwLock;
@@ -28,6 +28,7 @@ use std::collections::hash_map::RandomState;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::io;
+use std::ops::Bound;
 use std::ops::ControlFlow;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -6267,11 +6268,93 @@ fn describe_access(access: &AccessPlan, table: &TableDef) -> String {
     }
 }
 
+const EXPLAIN_COUNT_CAP: usize = 256;
+
+fn scan_estimate(count: usize, cap: usize) -> String {
+    if count > cap {
+        format!("candidate rows: at least {count} (count capped)")
+    } else {
+        format!("candidate rows: {count}")
+    }
+}
+
+pub(crate) fn explain_table_count(
+    tx: &DocumentTransaction<'_, '_>,
+    table: &TableDef,
+    limits: &SqlLimits,
+) -> Result<String, SqlError> {
+    let cap = EXPLAIN_COUNT_CAP.min(limits.max_visited_rows);
+    let count = tx
+        .count_documents(&table.name, cap)
+        .map_err(classify_io_error)?;
+    Ok(scan_estimate(count, cap))
+}
+
+pub(super) fn explain_access_count(
+    tx: &DocumentTransaction<'_, '_>,
+    table: &TableDef,
+    access: &AccessPlan,
+    limits: &SqlLimits,
+) -> Result<String, SqlError> {
+    let cap = EXPLAIN_COUNT_CAP.min(limits.max_visited_rows);
+    match access {
+        AccessPlan::Empty => Ok(scan_estimate(0, cap)),
+        AccessPlan::PkPoint { .. }
+        | AccessPlan::Index {
+            unique_equality: true,
+            ..
+        } => Ok("candidate rows: at most 1".into()),
+        AccessPlan::PkPoints { doc_ids } => {
+            Ok(format!("candidate rows: at most {}", doc_ids.len()))
+        }
+        AccessPlan::FullScan => explain_table_count(tx, table, limits),
+        AccessPlan::PkRange {
+            after_id, upper, ..
+        } => {
+            let upper = match upper {
+                UpperBound::Unbounded => Bound::Unbounded,
+                UpperBound::Included(id) => Bound::Included(id.as_str()),
+                UpperBound::Excluded(id) => Bound::Excluded(id.as_str()),
+            };
+            let count = tx
+                .count_document_range(&table.name, after_id.as_deref(), upper, cap)
+                .map_err(classify_io_error)?;
+            Ok(scan_estimate(count, cap))
+        }
+        AccessPlan::Index {
+            index_idx,
+            equal,
+            lower,
+            upper,
+            ..
+        } => {
+            let query = IndexQuery {
+                equal: equal.clone(),
+                lower: lower.clone(),
+                upper: upper.clone(),
+                after: None,
+                limit: 1,
+            };
+            let count = tx
+                .count_named_index_entries(
+                    &table.name,
+                    &table.indexes[*index_idx].name,
+                    &query,
+                    cap + 1,
+                )
+                .map_err(classify_io_error)?;
+            Ok(scan_estimate(count, cap))
+        }
+    }
+}
+
 pub(crate) fn explain_select_plan(
+    tx: &DocumentTransaction<'_, '_>,
     table: &TableDef,
     plan: &SelectPlan,
     stmt: &SelectStmt,
     params: &[SqlValue],
+    limits: &SqlLimits,
 ) -> Result<Vec<Vec<SqlValue>>, SqlError> {
     let limit = resolve_limit_value(stmt.limit, params, "LIMIT")?;
     let _ = resolve_limit_value(stmt.offset, params, "OFFSET")?;
@@ -6307,11 +6390,12 @@ pub(crate) fn explain_select_plan(
                 (OrderStrategy::General, true) => "top OFFSET + LIMIT rows kept while reading",
                 (OrderStrategy::General, false) => "rows are sorted by ORDER BY",
             };
+            let estimate = explain_access_count(tx, table, &access, limits)?;
             Ok(vec![explain_row(
                 "scan",
                 &table.name,
                 access_text,
-                format!("{filter}; {order}"),
+                format!("{filter}; {order}; {estimate}"),
             )])
         }
         SelectPlan::Aggregate(aggregate) => {
@@ -6345,16 +6429,18 @@ pub(crate) fn explain_select_plan(
             } else {
                 describe_access(&access, table)
             };
+            let filter = if aggregate.filter.is_some() {
+                "WHERE checked on each row read"
+            } else {
+                "no WHERE"
+            };
+            let estimate = explain_access_count(tx, table, &access, limits)?;
             Ok(vec![
                 explain_row(
                     "scan",
                     &table.name,
                     access_text,
-                    if aggregate.filter.is_some() {
-                        "WHERE checked on each row read".into()
-                    } else {
-                        "no WHERE".into()
-                    },
+                    format!("{filter}; {estimate}"),
                 ),
                 explain_row(
                     "aggregate",
@@ -6406,10 +6492,12 @@ fn explain(
                 subquery::explain_subqueries(tx, &prepared, params, limits, cache, &mut rows)?;
             }
             rows.extend(explain_select_plan(
+                tx,
                 &cached_table.def,
                 &plan,
                 select,
                 params,
+                limits,
             )?);
             rows
         }

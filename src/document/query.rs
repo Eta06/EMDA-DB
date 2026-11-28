@@ -523,6 +523,21 @@ struct StoredPageOutcome {
 }
 
 impl DocumentTransaction<'_, '_> {
+    pub(crate) fn count_named_index_entries(
+        &self,
+        collection: &str,
+        name: &str,
+        query: &IndexQuery,
+        limit: usize,
+    ) -> io::Result<usize> {
+        let metadata = self.metadata(collection)?;
+        let definition = index_definition(&metadata, name)?;
+        let (count, _, finished) =
+            self.count_index_entries(collection, definition, query, limit, usize::MAX)?;
+        debug_assert!(finished, "index count has no scan cap");
+        Ok(count)
+    }
+
     /// Reads a page from a specific index. Partial indexes return only rows that
     /// satisfy their stored partial filter. Missing indexed fields are omitted.
     /// Index ordering is null, boolean, signed integer, then UTF-8 string bytes.

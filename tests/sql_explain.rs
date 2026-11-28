@@ -235,3 +235,61 @@ fn explain_errors_params_and_transactions() {
         SqlValue::Text("index t_k: equality on 1 column(s)".into())
     );
 }
+
+#[test]
+fn explain_counts_candidates_with_snapshot_visibility_and_a_cap() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("log");
+    let checkpoint = dir.path().join("checkpoint");
+    let store = Store::open(&log).unwrap();
+    let db = SqlDatabase::new(DocumentDatabase::new(&store));
+    setup(&db);
+    check_candidate_estimates(&db);
+    let digest = store.checkpoint_to(&checkpoint).unwrap();
+    drop(db);
+    drop(store);
+    let store = CheckpointStore::open(&log, &checkpoint, &digest).unwrap();
+    let db = SqlDatabase::new(DocumentDatabase::with_checkpoint_store(&store));
+    check_candidate_estimates(&db);
+}
+
+fn check_candidate_estimates(db: &SqlDatabase<'_>) {
+    for (sql, suffix) in [
+        ("SELECT * FROM t", "at least 257 (count capped)"),
+        ("SELECT * FROM t WHERE id > 4 AND id <= 9", "5"),
+        ("SELECT * FROM t WHERE id >= 297 AND id < 999", "3"),
+        ("SELECT * FROM t WHERE id > 299", "0"),
+        ("SELECT * FROM t WHERE id = 1 AND id = 2", "0"),
+        ("SELECT * FROM t WHERE k = 3", "30"),
+        (
+            "SELECT * FROM t WHERE k >= 8 AND k <= 9 AND v = 3 LIMIT 1",
+            "60",
+        ),
+        ("SELECT COUNT(*) FROM t WHERE k = 2", "30"),
+        ("SELECT * FROM t WHERE code = 'c7'", "at most 1"),
+    ] {
+        let plan = explain(db, sql, &[]);
+        assert!(
+            plan[0][3].ends_with(&format!("candidate rows: {suffix}")),
+            "{sql}: {plan:?}"
+        );
+    }
+
+    let result: Result<(), SqlError> = db.transaction(|tx| {
+        tx.execute("DELETE FROM t WHERE id = 3", &[])?;
+        tx.execute(
+            "INSERT INTO t VALUES (1001, 3, 'staged', 0), (1002, 3, 'other', 0)",
+            &[],
+        )?;
+        let SqlOutcome::Rows { rows, .. } =
+            tx.execute("EXPLAIN SELECT * FROM t WHERE k = 3", &[])?
+        else {
+            panic!("expected plan rows");
+        };
+        assert!(matches!(&rows[0][3], SqlValue::Text(s) if s.ends_with("candidate rows: 31")));
+        Err(SqlError::Bounds("roll back staged estimate fixture".into()))
+    });
+    assert!(
+        matches!(result, Err(SqlError::Bounds(ref s)) if s == "roll back staged estimate fixture")
+    );
+}

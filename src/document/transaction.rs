@@ -1197,13 +1197,47 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
     /// decoding it. Logical read limits are
     /// charged per counted key.
     pub fn count_documents(&self, collection: &str, max: usize) -> io::Result<usize> {
+        self.count_document_range(collection, None, std::ops::Bound::Unbounded, max)
+    }
+
+    pub(crate) fn count_document_range(
+        &self,
+        collection: &str,
+        after_id: Option<&str>,
+        upper: std::ops::Bound<&str>,
+        max: usize,
+    ) -> io::Result<usize> {
         self.metadata(collection)?;
         let prefix = key::collection(b'D', collection)?;
-        let end = key::end(&prefix);
+        let mut after = match after_id {
+            Some(id) => key::document(collection, id)?,
+            None => prefix.clone(),
+        };
+        let (upper_id, inclusive) = match upper {
+            std::ops::Bound::Unbounded => (None, false),
+            std::ops::Bound::Excluded(id) => (Some(id), false),
+            std::ops::Bound::Included(id) => (Some(id), true),
+        };
+        let end = if let Some(id) = upper_id {
+            // A longer bound sorts after its MAX_ID_BYTES prefix, and no
+            // stored ID can have additional bytes after that prefix.
+            let len = id.len().min(key::MAX_ID_BYTES);
+            let mut end = prefix;
+            end.extend_from_slice(&id.as_bytes()[..len]);
+            if inclusive || len < id.len() {
+                end.push(0);
+            }
+            end
+        } else {
+            key::end(&prefix)
+        };
+        if after >= end {
+            return Ok(0);
+        }
         if let BackendTransaction::Ordinary(tx) = &self.backend {
             self.charge_read(1, 0)?;
             let mut budget_error = None;
-            let count = tx.count_keys(Some(&prefix), Some(&end), max, |key| {
+            let count = tx.count_keys(Some(&after), Some(&end), max, |key| {
                 budget_error = self.charge_read(1, key.len()).err();
                 budget_error.is_none()
             })?;
@@ -1212,13 +1246,12 @@ impl<'a, 'store> DocumentTransaction<'a, 'store> {
         if let BackendTransaction::Checkpoint(tx) = &self.backend {
             self.charge_read(1, 0)?;
             let mut budget_error = None;
-            let count = tx.count_keys(Some(&prefix), Some(&end), max, |key| {
+            let count = tx.count_keys(Some(&after), Some(&end), max, |key| {
                 budget_error = self.charge_read(1, key.len()).err();
                 budget_error.is_none()
             })?;
             return budget_error.map_or(Ok(count), Err);
         }
-        let mut after = prefix;
         let mut count = 0_usize;
         loop {
             let page = self.scan_document_page(&after, &end, crate::MAX_SCAN_ENTRIES)?;

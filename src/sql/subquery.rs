@@ -1033,8 +1033,8 @@ pub(crate) fn explain_subqueries(
                 nested,
             } => {
                 explain_subqueries(tx, nested, params, limits, cache, out)?;
-                let mut inner_rows =
-                    exec::explain_select_plan(&cached_table.def, plan, stmt, params)?;
+                let inner_rows =
+                    exec::explain_select_plan(tx, &cached_table.def, plan, stmt, params, limits)?;
                 let table_name = cached_table.def.name.clone();
                 let access_desc = inner_rows
                     .first()
@@ -1054,13 +1054,20 @@ pub(crate) fn explain_subqueries(
                 } else {
                     ""
                 };
+                let detail = match &inner_rows[0][3] {
+                    SqlValue::Text(detail) => detail,
+                    _ => unreachable!("EXPLAIN scan detail is text"),
+                };
                 out.push(exec::explain_row(
                     "subquery",
                     &table_name,
                     access_desc,
-                    format!("{} ({}); {strategy}{extra}", sub.role.label(), sub.context),
+                    format!(
+                        "{} ({}); {strategy}{extra}; {detail}",
+                        sub.role.label(),
+                        sub.context
+                    ),
                 ));
-                let _ = &mut inner_rows;
             }
             PreparedBody::Join {
                 join,
