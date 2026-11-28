@@ -14,7 +14,7 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 
@@ -48,12 +48,73 @@ fn require_hybrid_kex_by_default() -> bool {
 pub struct ProjectConfig {
     id: String,
     max_in_flight: usize,
+    request_rate: Option<RequestRate>,
     idle_timeout_ms: Option<u64>,
     data_log_bytes: u64,
     sql_log_bytes: u64,
+    max_volume_bytes: Option<u64>,
     max_live_keys_per_store: usize,
     #[serde(default)]
     credentials: Vec<CredentialConfig>,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RequestRate {
+    requests_per_second: u32,
+    burst: u32,
+}
+
+impl RequestRate {
+    fn valid(self) -> bool {
+        (1..=100_000).contains(&self.requests_per_second) && (1..=100_000).contains(&self.burst)
+    }
+}
+
+struct RateLimiter {
+    policy: RequestRate,
+    balance: Mutex<RateBalance>,
+}
+
+struct RateBalance {
+    credit: u128,
+    updated: Instant,
+}
+
+impl RateLimiter {
+    // A request costs one billion credit units. Each elapsed nanosecond
+    // refills requests_per_second units, preserving fractional credit.
+    const REQUEST: u128 = 1_000_000_000;
+
+    fn new(policy: RequestRate, now: Instant) -> Self {
+        Self {
+            policy,
+            balance: Mutex::new(RateBalance {
+                credit: u128::from(policy.burst) * Self::REQUEST,
+                updated: now,
+            }),
+        }
+    }
+
+    fn admit(&self, now: Instant) -> bool {
+        let mut balance = self.balance.lock();
+        // Callers can arrive at this lock out of order. The clock never
+        // moves backwards when a caller sampled its timestamp earlier.
+        let now = now.max(balance.updated);
+        let refill = (now - balance.updated)
+            .as_nanos()
+            .saturating_mul(u128::from(self.policy.requests_per_second));
+        balance.credit = balance
+            .credit
+            .saturating_add(refill)
+            .min(u128::from(self.policy.burst) * Self::REQUEST);
+        balance.updated = now;
+        if balance.credit < Self::REQUEST {
+            return false;
+        }
+        balance.credit -= Self::REQUEST;
+        true
+    }
 }
 
 #[derive(Deserialize)]
@@ -123,7 +184,9 @@ impl CredentialScope {
             | Operation::DocumentDelete { collection, .. } => {
                 self.document_collections.get(collection)
             }
-            Operation::DocumentCreate { .. } | Operation::Sql { .. } => None,
+            Operation::DocumentCreate { .. } | Operation::Sql { .. } | Operation::ProjectStatus => {
+                None
+            }
         };
         Self::permits(access, required)
     }
@@ -187,6 +250,8 @@ pub struct Project {
     storage: ProjectStorage,
     credentials: Arc<RwLock<CredentialBook>>,
     admission: Arc<Admission>,
+    rate: Option<RateLimiter>,
+    counters: RequestCounters,
 }
 
 impl HostedProjects {
@@ -262,14 +327,70 @@ fn build_credentials(
     Ok(credentials)
 }
 
+#[derive(Default)]
+struct RequestCounters {
+    admitted: AtomicU64,
+    busy: AtomicU64,
+    rate_limited: AtomicU64,
+}
+
 struct ProjectStorage {
     directory: PathBuf,
     data_log_bytes: u64,
     sql_log_bytes: u64,
     max_live_keys: usize,
+    volume: Option<VolumeGuard>,
     idle_timeout: Option<Duration>,
     waking: Arc<Admission>,
     state: Mutex<StorageState>,
+}
+
+#[derive(Clone, Copy)]
+struct VolumeGuard {
+    device: u64,
+    max_bytes: u64,
+}
+
+impl VolumeGuard {
+    fn verify(self, directory: &Path) -> io::Result<()> {
+        for path in [
+            directory.to_owned(),
+            directory.join("data"),
+            directory.join("sql"),
+        ] {
+            ensure_private_directory(&path)?;
+            if fs::metadata(&path)?.dev() != self.device {
+                return Err(config_error(
+                    "project volume is missing or a store uses another device",
+                ));
+            }
+        }
+        verify_volume_capacity(directory, self.max_bytes)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn verify_volume_capacity(directory: &Path, max_bytes: u64) -> io::Result<()> {
+    // The Linux ext family shares this superblock magic.
+    const EXT_SUPER_MAGIC: u64 = 0xef53;
+    if rustix::fs::statfs(directory)?.f_type as u64 != EXT_SUPER_MAGIC {
+        return Err(config_error(
+            "a bounded project volume must be an ext filesystem",
+        ));
+    }
+    let stats = rustix::fs::statvfs(directory)?;
+    let total = u128::from(stats.f_blocks) * u128::from(stats.f_frsize);
+    if total == 0 || total > u128::from(max_bytes) {
+        return Err(config_error("project volume exceeds max_volume_bytes"));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn verify_volume_capacity(_directory: &Path, _max_bytes: u64) -> io::Result<()> {
+    Err(config_error(
+        "max_volume_bytes requires a Linux ext project volume",
+    ))
 }
 
 struct ProjectStores {
@@ -340,6 +461,9 @@ impl ProjectStorage {
         // Revalidate on every wake. Project files are never supplied by a request.
         ensure_private_directory(self.directory.parent().expect("project has a data root"))?;
         ensure_private_directory(&self.directory)?;
+        if let Some(volume) = self.volume {
+            volume.verify(&self.directory)?;
+        }
         let data = open_project_store(
             &self.directory.join("data"),
             self.data_log_bytes,
@@ -447,11 +571,13 @@ impl Config {
             validate_id(&spec.id)?;
             if !project_ids.insert(&spec.id)
                 || !(1..=self.max_connections).contains(&spec.max_in_flight)
+                || spec.request_rate.is_some_and(|rate| !rate.valid())
                 || spec
                     .idle_timeout_ms
                     .is_some_and(|ms| !(100..=86_400_000).contains(&ms))
                 || (self.credentials_file.is_some() && !spec.credentials.is_empty())
                 || (self.credentials_file.is_none() && spec.credentials.is_empty())
+                || spec.max_volume_bytes == Some(0)
                 || spec.data_log_bytes < 4096
                 || spec.sql_log_bytes < 4096
                 || spec
@@ -479,21 +605,16 @@ impl Config {
                 .collect::<io::Result<_>>()?
         };
         let credentials = Arc::new(RwLock::new(book));
+        let layouts = self.prepare_project_layouts()?;
         let mut opened = HashMap::new();
         let waking = Arc::new(Admission::new(self.max_concurrent_wakes));
-        for spec in &self.projects {
-            let directory = self.data_root.join(&spec.id);
-            create_private_directory(&directory)?;
-            for name in ["data", "sql"] {
-                let path = directory.join(name);
-                create_private_directory(&path)?;
-                validate_project_store(&path)?;
-            }
+        for (spec, directory, volume) in layouts {
             let mut storage = ProjectStorage {
                 directory,
                 data_log_bytes: spec.data_log_bytes,
                 sql_log_bytes: spec.sql_log_bytes,
                 max_live_keys: spec.max_live_keys_per_store,
+                volume,
                 idle_timeout: spec.idle_timeout_ms.map(Duration::from_millis),
                 waking: Arc::clone(&waking),
                 state: Mutex::new(StorageState {
@@ -512,6 +633,10 @@ impl Config {
                     storage,
                     credentials: Arc::clone(&credentials),
                     admission: Arc::new(Admission::new(spec.max_in_flight)),
+                    counters: RequestCounters::default(),
+                    rate: spec
+                        .request_rate
+                        .map(|rate| RateLimiter::new(rate, Instant::now())),
                 },
             );
         }
@@ -519,6 +644,58 @@ impl Config {
             projects: opened,
             credentials,
         })
+    }
+
+    fn prepare_project_layouts(
+        &self,
+    ) -> io::Result<Vec<(&ProjectConfig, PathBuf, Option<VolumeGuard>)>> {
+        let root_device = fs::metadata(&self.data_root)?.dev();
+        let mut volume_owners = HashMap::new();
+        let mut layouts = Vec::with_capacity(self.projects.len());
+        for spec in &self.projects {
+            let directory = self.data_root.join(&spec.id);
+            let volume = if let Some(max_bytes) = spec.max_volume_bytes {
+                ensure_private_directory(&directory)?;
+                let device = fs::metadata(&directory)?.dev();
+                if device == root_device || volume_owners.insert(device, spec.id.as_str()).is_some()
+                {
+                    return Err(config_error(
+                        "bounded projects require a dedicated filesystem",
+                    ));
+                }
+                verify_volume_capacity(&directory, max_bytes)?;
+                Some(VolumeGuard { device, max_bytes })
+            } else {
+                create_private_directory(&directory)?;
+                None
+            };
+            layouts.push((spec, directory, volume));
+        }
+
+        for (spec, directory, volume) in &layouts {
+            for path in [
+                directory.to_owned(),
+                directory.join("data"),
+                directory.join("sql"),
+            ] {
+                create_private_directory(&path)?;
+                if volume_owners
+                    .get(&fs::metadata(&path)?.dev())
+                    .is_some_and(|owner| *owner != spec.id.as_str())
+                {
+                    return Err(config_error(
+                        "project path shares another project's dedicated volume",
+                    ));
+                }
+                if path != *directory {
+                    validate_project_store(&path)?;
+                }
+            }
+            if let Some(volume) = volume {
+                volume.verify(directory)?;
+            }
+        }
+        Ok(layouts)
     }
 }
 
@@ -656,11 +833,29 @@ impl Project {
 
     pub fn execute(&self, request: Request, deadline: Instant) -> Result<Value, Failure> {
         let credential = self.authenticate(&request.credential, &request.token)?;
-        let role = credential.role;
-        let _permit = self.admission.enter().ok_or(Failure::Busy)?;
         if Instant::now() >= deadline {
             return Err(Failure::Timeout);
         }
+        let role = credential.role;
+        if matches!(request.operation, Operation::ProjectStatus) {
+            if role != Role::Admin || credential.scope.is_some() {
+                return Err(Failure::Forbidden);
+            }
+            return Ok(self.status());
+        }
+        let Some(_permit) = self.admission.enter() else {
+            self.counters.busy.fetch_add(1, Ordering::Relaxed);
+            return Err(Failure::Busy);
+        };
+        if self
+            .rate
+            .as_ref()
+            .is_some_and(|rate| !rate.admit(Instant::now()))
+        {
+            self.counters.rate_limited.fetch_add(1, Ordering::Relaxed);
+            return Err(Failure::RateLimited);
+        }
+        self.counters.admitted.fetch_add(1, Ordering::Relaxed);
         if let Operation::Sql { statement, params } = request.operation {
             return self.sql(&statement, params, &credential, deadline);
         }
@@ -673,7 +868,9 @@ impl Project {
             | Operation::DocumentInsert { .. }
             | Operation::DocumentReplace { .. }
             | Operation::DocumentDelete { .. } => Role::Write,
-            Operation::Sql { .. } => unreachable!("SQL authorizes its parsed statement"),
+            Operation::Sql { .. } | Operation::ProjectStatus => {
+                unreachable!("handled before data access")
+            }
         };
         if role < required
             || credential
@@ -692,6 +889,34 @@ impl Project {
             |tx| execute_data(tx, request.operation),
         )
         .map_err(transaction_failure)
+    }
+
+    fn status(&self) -> Value {
+        let storage = match self.storage.state.lock().lifecycle {
+            Lifecycle::Closed { .. } => "closed",
+            Lifecycle::Transitioning => "transitioning",
+            Lifecycle::Open(_) => "open",
+        };
+        let request_rate = self.rate.as_ref().map(|rate| {
+            json!({
+                "requests_per_second": rate.policy.requests_per_second,
+                "burst": rate.policy.burst,
+            })
+        });
+        json!({
+            "storage": storage,
+            "max_in_flight": self.admission.limit,
+            "in_flight": self.admission.in_flight.load(Ordering::Relaxed),
+            "request_rate": request_rate,
+            "data_log_bytes": self.storage.data_log_bytes,
+            "sql_log_bytes": self.storage.sql_log_bytes,
+            "max_volume_bytes": self.storage.volume.map(|volume| volume.max_bytes),
+            "requests": {
+                "admitted": self.counters.admitted.load(Ordering::Relaxed),
+                "busy": self.counters.busy.load(Ordering::Relaxed),
+                "rate_limited": self.counters.rate_limited.load(Ordering::Relaxed),
+            },
+        })
     }
 
     fn authenticate(&self, id: &str, token: &str) -> Result<Arc<Credential>, Failure> {
@@ -809,7 +1034,9 @@ fn execute_data(tx: &mut DocumentTransaction<'_, '_>, op: Operation) -> io::Resu
             Value::Null
         }
         Operation::DocumentDelete { collection, id } => json!(tx.delete(&collection, &id)?),
-        Operation::Sql { .. } => unreachable!("SQL uses a separate store"),
+        Operation::Sql { .. } | Operation::ProjectStatus => {
+            unreachable!("handled before data access")
+        }
     })
 }
 
@@ -879,6 +1106,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rate_budget_refills_without_rounding_and_caps_accumulated_credit() {
+        let now = Instant::now();
+        let limiter = RateLimiter::new(
+            RequestRate {
+                requests_per_second: 3,
+                burst: 2,
+            },
+            now,
+        );
+        assert!(limiter.admit(now));
+        assert!(limiter.admit(now));
+        assert!(!limiter.admit(now));
+        assert!(!limiter.admit(now + Duration::from_nanos(333_333_333)));
+        assert!(!limiter.admit(now));
+        assert!(limiter.admit(now + Duration::from_nanos(333_333_334)));
+        let later = now + Duration::from_secs(10);
+        assert!(limiter.admit(later));
+        assert!(limiter.admit(later));
+        assert!(!limiter.admit(later));
+    }
+
+    #[test]
     fn a_saturated_project_does_not_consume_another_projects_admission() {
         let directory = tempfile::tempdir().unwrap();
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -892,9 +1141,11 @@ mod tests {
         let project = |id: &str, secret| ProjectConfig {
             id: id.into(),
             max_in_flight: 1,
+            request_rate: None,
             idle_timeout_ms: None,
             data_log_bytes: 4096,
             sql_log_bytes: 4096,
+            max_volume_bytes: None,
             max_live_keys_per_store: 128,
             credentials: vec![credential(secret)],
         };
@@ -949,6 +1200,7 @@ mod tests {
             data_log_bytes: 4096,
             sql_log_bytes: 4096,
             max_live_keys: 32,
+            volume: None,
             idle_timeout: Some(Duration::from_millis(100)),
             waking: Arc::new(Admission::new(1)),
             state: Mutex::new(StorageState {

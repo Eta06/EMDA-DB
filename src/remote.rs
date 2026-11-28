@@ -22,6 +22,7 @@ pub const MAX_FRAME_BYTES: usize = 256 * 1024;
 #[derive(Serialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Operation<'a> {
+    ProjectStatus,
     KvGet {
         key: &'a str,
     },

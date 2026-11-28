@@ -1062,3 +1062,60 @@ fn credential_reloads_rotate_revoke_and_reject_invalid_snapshots_atomically() {
         "ab"
     );
 }
+
+#[test]
+fn a_project_rate_limit_preserves_other_projects_admission() {
+    let fixture = Fixture::new();
+    let path = fixture.dir.path().join("server.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    config["projects"][0]["request_rate"] = json!({"requests_per_second":1,"burst":1});
+    config["projects"][0]["idle_timeout_ms"] = 500.into();
+    fs::write(&path, config.to_string()).unwrap();
+    let server = fixture.start();
+    let status = json!({"op":"project_status"});
+    assert_eq!(
+        fixture.send(&server, "alpha", "reader", READER, status.clone()),
+        error("forbidden")
+    );
+    let initial = fixture.send(&server, "alpha", "admin", ADMIN, status.clone());
+    assert_eq!(initial["result"]["storage"], "closed");
+    assert!(
+        !fixture
+            .dir
+            .path()
+            .join("projects/alpha/data/store.lock")
+            .exists()
+    );
+    let get = json!({"op":"kv_get","key":"rate"});
+    assert_eq!(
+        fixture.send(&server, "alpha", "admin", OTHER, get.clone()),
+        error("unauthorized")
+    );
+    assert_eq!(
+        fixture.send(&server, "alpha", "admin", ADMIN, get.clone())["ok"],
+        true
+    );
+    let mut throttled = false;
+    for _ in 0..5 {
+        if fixture.send(&server, "alpha", "admin", ADMIN, get.clone()) == error("rate_limited") {
+            throttled = true;
+            break;
+        }
+    }
+    assert!(
+        throttled,
+        "no immediate request encountered the exhausted rate budget"
+    );
+    assert_eq!(
+        fixture.send(&server, "beta", "admin", OTHER, get)["ok"],
+        true
+    );
+    let alpha = fixture.send(&server, "alpha", "admin", ADMIN, status.clone());
+    assert_eq!(
+        alpha["result"]["request_rate"],
+        json!({"requests_per_second":1,"burst":1})
+    );
+    assert_eq!(alpha["result"]["requests"]["rate_limited"], 1);
+    let beta = fixture.send(&server, "beta", "admin", OTHER, status);
+    assert_eq!(beta["result"]["requests"]["rate_limited"], 0);
+}

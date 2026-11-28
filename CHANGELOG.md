@@ -4,6 +4,9 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Add per-project request rate limits, administrator resource status and
+  verified physical storage ceilings on dedicated Linux project volumes.
+
 - Allow self-hosted operators to replace the API key policy with `SIGHUP`.
   Validate and publish all project grants atomically, and keep the current
   policy when validation fails.

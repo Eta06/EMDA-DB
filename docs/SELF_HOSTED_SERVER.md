@@ -38,6 +38,7 @@ configuration or use a separate live credentials file.
     {
       "id": "example",
       "max_in_flight": 4,
+      "request_rate": {"requests_per_second": 100, "burst": 20},
       "idle_timeout_ms": 30000,
       "data_log_bytes": 4000000000,
       "sql_log_bytes": 1000000000,
@@ -190,6 +191,7 @@ A response is `{"ok":true,"result":...}` or `{"ok":false,"error":"..."}`.
 
 | Operation | Fields in addition to `op` | Minimum role |
 | --- | --- | --- |
+| `project_status` | none | project-wide `admin` |
 | `kv_get` | `key` | `read` |
 | `kv_put` | `key`, lowercase `value_hex` | `write` |
 | `kv_delete` | `key` | `write` |
@@ -221,6 +223,17 @@ operation ID before repeating the write.
   frames. Excess sockets close immediately. After authentication, a separate
   per-project in-flight cap returns `busy`. Requests have a deadline from
   acceptance and responses have a separate one-second write window.
+- Optional `request_rate` adds an independent token bucket per project.
+  Set `requests_per_second` and `burst` to integers from 1 to 100,000.
+  The burst is available initially, then each admitted authenticated request
+  consumes one token. An empty bucket returns `rate_limited` before storage
+  access. Unauthenticated requests do not consume project tokens.
+- `project_status` reports the project's store state, current concurrency,
+  configured rate and storage caps, and counters since process start. The
+  `busy` counter records per-project concurrency rejections. Counters are
+  sampled independently. Only a project-wide administrator can call it.
+  It uses the global TLS connection limit and does not consume project
+  tokens or wake the stores.
 - Engine deadlines are cooperative. I/O already in progress can outlive them.
   Each SQL statement is limited to 4,096 visited rows and 128 returned rows,
   among other bounds. A response exceeding the frame size returns `limit`.
@@ -228,11 +241,36 @@ operation ID before repeating the write.
   concurrent write reservations. The sum bounds the encoded logs. Witnesses,
   lock files, filesystem allocation, backups and host storage are separate.
   Overwriting or deleting a value also appends a record. Reclamation and
-  project-wide physical disk limits require separate management.
+  project-wide physical disk limits can use a dedicated Linux volume.
 - Projects in one server process share a UID, address space and global
   connection pool. Provision independent processes and service accounts for
   OS-enforced access separation. See the [deployment
   boundaries](PROJECT_ISOLATION.md#deployment-boundaries).
+
+## Dedicated project volumes on Linux
+
+For a hard physical storage boundary, provision a dedicated ext4 filesystem
+and mount it at `data_root/<project-id>` before starting the service. Give
+the server's operating-system account ownership of that directory and make
+it private. Set `max_volume_bytes` in that project's configuration, for
+example `5000000000` for a 5 GB ceiling. Size the device or partition on the
+host. The server checks its reported filesystem capacity at startup and
+on every cold wake.
+
+Both the SQL and document/KV stores must use the same dedicated filesystem.
+Startup rejects the shared data-root device, an oversized volume and a
+device shared with another project's storage paths. Keep the mounted device
+and its size stable while the service is running. The kernel enforces
+allocation on the mounted filesystem. The engine's encoded log ceilings
+still apply independently and can reject growth before physical exhaustion.
+
+A physical write failure can return `outcome_unknown` if the storage
+operation started. Reconcile before retrying a mutation. The
+[physical quota drill](../scripts/tests/physical_project_quota.sh) fills a
+disposable ext4 project volume using real requests, verifies writes still
+work in a neighboring project, and checks that starting without the
+required mount does not create a fallback log. The drill requires Linux
+loop mounts and passwordless sudo.
 
 ## Project sleep and wake
 

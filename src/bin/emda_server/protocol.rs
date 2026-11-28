@@ -18,6 +18,7 @@ pub struct Request {
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
+    ProjectStatus,
     KvGet {
         key: String,
     },
@@ -64,6 +65,7 @@ pub enum Failure {
     Unauthorized,
     Forbidden,
     Busy,
+    RateLimited,
     Unavailable,
     Limit,
     Timeout,
@@ -82,6 +84,7 @@ impl Failure {
             Self::Unauthorized => "unauthorized",
             Self::Forbidden => "forbidden",
             Self::Busy => "busy",
+            Self::RateLimited => "rate_limited",
             Self::Unavailable => "unavailable",
             Self::Limit => "limit",
             Self::Timeout => "timeout",
