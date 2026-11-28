@@ -101,6 +101,54 @@ fn query_sqlite(conn: &Connection, sql: &str, bool_cols: &[bool]) -> Vec<Vec<Sql
     out
 }
 
+#[test]
+fn correlated_exists_matches_sqlite_with_nulls_duplicates_and_residual_filters() {
+    for_both(|db, backend| {
+        let sqlite = Connection::open_in_memory().unwrap();
+        for sql in [
+            "CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER)",
+            "CREATE TABLE b (id INTEGER PRIMARY KEY, k INTEGER, active BOOLEAN)",
+            "CREATE INDEX b_k ON b(k)",
+            "INSERT INTO a VALUES (1, 10), (2, 20), (3, NULL), (4, 40)",
+            "INSERT INTO b VALUES (1, 10, TRUE), (2, 10, TRUE), (3, 20, FALSE), (4, NULL, TRUE)",
+        ] {
+            db.execute(sql, &[]).unwrap();
+            sqlite.execute(sql, []).unwrap();
+        }
+        for (sql, bools) in [
+            (
+                "SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b WHERE b.k = a.k AND b.active = TRUE) ORDER BY id",
+                [false, false],
+            ),
+            (
+                "SELECT id FROM a WHERE NOT EXISTS (SELECT * FROM b WHERE a.k = b.k AND b.active = TRUE LIMIT 1) ORDER BY id",
+                [false, false],
+            ),
+            (
+                "SELECT id, EXISTS (SELECT 1 FROM b WHERE a.k = b.k) AS hit FROM a ORDER BY id",
+                [false, true],
+            ),
+            (
+                "SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b WHERE b.k = a.k AND b.active = TRUE AND b.id < 0) ORDER BY id",
+                [false, false],
+            ),
+        ] {
+            let actual = rows(db.execute(sql, &[]).unwrap());
+            assert_eq!(
+                actual,
+                query_sqlite(&sqlite, sql, &bools),
+                "{backend}: {sql}"
+            );
+        }
+        db.transaction(|tx| {
+            tx.execute("INSERT INTO b VALUES (5, 40, TRUE)", &[])?;
+            let result = tx.execute("SELECT id FROM a WHERE EXISTS (SELECT 1 FROM b WHERE b.k = a.k AND b.active = TRUE) ORDER BY id", &[])?;
+            assert_eq!(rows(result), vec![vec![SqlValue::Integer(1)], vec![SqlValue::Integer(4)]]);
+            Ok(())
+        }).unwrap();
+    });
+}
+
 fn setup_basic_tables(db: &SqlDatabase<'_>) {
     db.execute(
         "CREATE TABLE outer_t (id INT PRIMARY KEY, k INT, r REAL, s TEXT, b BOOLEAN)",
@@ -799,7 +847,7 @@ fn bounds_nesting_and_correlated_errors() {
 
         for corr_sql in [
             "SELECT id FROM t_out WHERE EXISTS (SELECT 1 FROM t_in WHERE only_in = only_out)",
-            "SELECT id FROM t_out WHERE EXISTS (SELECT 1 FROM t_in WHERE t_in.only_in = t_out.only_out)",
+            "SELECT id FROM t_out WHERE EXISTS (SELECT 1 FROM t_in WHERE t_in.only_in > t_out.only_out)",
             "SELECT id FROM t_out WHERE EXISTS (SELECT 1 FROM t_mid WHERE EXISTS (SELECT 1 FROM t_in WHERE only_in = only_out))",
             "SELECT id FROM t_out WHERE k IN (SELECT only_out FROM t_in)",
             "SELECT id FROM t_out WHERE id IN (SELECT id FROM t_in GROUP BY only_out)",

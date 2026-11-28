@@ -46,6 +46,76 @@ fn ints(db: &SqlDatabase<'_>, sql: &str) -> Vec<Option<i64>> {
 }
 
 #[test]
+fn update_actions_move_keys_and_rollback_on_constraint_failure() {
+    for_both(SqlLimits::default(), |db, backend| {
+        let sqlite = rusqlite::Connection::open_in_memory().unwrap();
+        sqlite.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+        for sql in [
+            "CREATE TABLE p (id INTEGER PRIMARY KEY, code TEXT UNIQUE)",
+            "CREATE TABLE c (id INTEGER PRIMARY KEY REFERENCES p(id) ON UPDATE CASCADE, code TEXT REFERENCES p(code) ON UPDATE SET NULL)",
+            "CREATE TABLE g (id INTEGER PRIMARY KEY, cid INTEGER REFERENCES c(id) ON UPDATE CASCADE CHECK (cid < 10))",
+            "CREATE INDEX g_cid ON g(cid)",
+            "CREATE TABLE n (id INTEGER PRIMARY KEY, parent INTEGER REFERENCES n(id) ON UPDATE CASCADE)",
+            "CREATE TABLE mid (id INTEGER PRIMARY KEY, code TEXT UNIQUE REFERENCES p(code) ON DELETE SET NULL)",
+            "CREATE TABLE leaf (id INTEGER PRIMARY KEY, code TEXT REFERENCES mid(code) ON UPDATE SET NULL)",
+            "INSERT INTO p VALUES (1, 'one'), (2, 'two'), (9, 'nine')",
+            "INSERT INTO c VALUES (1, 'one'), (2, 'two')",
+            "INSERT INTO g VALUES (20, 1), (21, 2)",
+            "INSERT INTO n VALUES (1, 1), (2, 1)",
+            "INSERT INTO mid VALUES (1, 'two')",
+            "INSERT INTO leaf VALUES (1, 'two')",
+            "UPDATE p SET id = 7, code = 'seven' WHERE id = 1",
+            "UPDATE n SET id = 3 WHERE id = 1",
+            "DELETE FROM g WHERE id = 21",
+            "DELETE FROM c WHERE id = 2",
+            "DELETE FROM p WHERE id = 2",
+        ] {
+            db.execute(sql, &[])
+                .unwrap_or_else(|error| panic!("{backend}: {sql}: {error}"));
+            sqlite.execute(sql, []).unwrap();
+        }
+        for sql in [
+            "UPDATE p SET id = 12 WHERE id = 7",
+            "UPDATE p SET id = 9 WHERE id = 7",
+            "UPDATE p SET id = NULL WHERE id = 7",
+        ] {
+            assert!(
+                matches!(db.execute(sql, &[]), Err(SqlError::Constraint(_))),
+                "{backend}: {sql}"
+            );
+            assert!(sqlite.execute(sql, []).is_err());
+        }
+        for sql in [
+            "SELECT id, code FROM p ORDER BY id",
+            "SELECT id, code FROM c ORDER BY id",
+            "SELECT id, cid FROM g WHERE cid = 7 ORDER BY id",
+            "SELECT id, parent FROM n ORDER BY id",
+            "SELECT id, code FROM mid ORDER BY id",
+            "SELECT id, code FROM leaf ORDER BY id",
+        ] {
+            let mut stmt = sqlite.prepare(sql).unwrap();
+            let expected = stmt
+                .query_map([], |row| {
+                    (0..2)
+                        .map(|i| {
+                            Ok(match row.get::<_, rusqlite::types::Value>(i)? {
+                                rusqlite::types::Value::Integer(n) => SqlValue::Integer(n),
+                                rusqlite::types::Value::Text(s) => SqlValue::Text(s),
+                                rusqlite::types::Value::Null => SqlValue::Null,
+                                other => panic!("unexpected SQLite result {other:?}"),
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(rows(db, sql), expected, "{backend}: {sql}");
+        }
+    });
+}
+
+#[test]
 fn cascades_and_set_null_follow_the_declared_actions() {
     for_both(SqlLimits::default(), |db, backend| {
         for sql in [

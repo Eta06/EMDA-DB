@@ -2,7 +2,10 @@
 use super::catalog::{self, CachedTable, TableDef};
 use super::exec::{self, BoundExpr, SelectPlan, SqlCache, SqlValueRef, StaticExprType};
 use super::join::JoinSelect;
-use super::parser::{SelectColumns, SelectExpr, SelectStmt, Subquery, SubqueryBody};
+use super::parser::{
+    CompareOp, Expr, LimitValue, SelectColumns, SelectExpr, SelectItem, SelectStmt, Subquery,
+    SubqueryBody,
+};
 use super::value::{
     MAX_SQL_SELECT_ROWS, MAX_SQL_TEXT_PK_BYTES, SqlError, SqlLimits, SqlOutcome, SqlType, SqlValue,
 };
@@ -13,6 +16,91 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 
 const TWO_POW_63: f64 = 9_223_372_036_854_775_808.0;
+
+/// Rewrites a correlated equality in EXISTS to a bounded membership probe.
+/// The caller converts an unknown membership result to false, as required
+/// when a NULL correlation key makes the inner predicate fail.
+pub(crate) fn decorrelate_exists(sub: &Subquery, outer: &TableDef) -> Option<Expr> {
+    let SubqueryBody::Select(select) = &sub.body else {
+        return None;
+    };
+    let projects_literals = match &select.columns {
+        SelectColumns::All => true,
+        SelectColumns::Items(items) => items
+            .iter()
+            .all(|item| matches!(item.expr, SelectExpr::Literal { .. })),
+    };
+    if select.table == outer.name
+        || !select.group_by.is_empty()
+        || select.having.is_some()
+        || !select.order_by.is_empty()
+        || select.offset.is_some()
+        || !matches!(select.limit, None | Some(LimitValue::Literal(1..)))
+        || !projects_literals
+    {
+        return None;
+    }
+    let mut predicates = match select.filter.as_ref()? {
+        Expr::And(items) => items.clone(),
+        predicate => vec![predicate.clone()],
+    };
+    let mut equality = None;
+    for (pos, predicate) in predicates.iter().enumerate() {
+        let Expr::Compare {
+            op: CompareOp::Eq,
+            left,
+            right,
+        } = predicate
+        else {
+            continue;
+        };
+        for (lhs, rhs) in [
+            (left.as_ref(), right.as_ref()),
+            (right.as_ref(), left.as_ref()),
+        ] {
+            let (
+                Expr::QualifiedColumn {
+                    table: lhs_table,
+                    column: lhs,
+                },
+                Expr::QualifiedColumn {
+                    table: rhs_table,
+                    column: rhs,
+                },
+            ) = (lhs, rhs)
+            else {
+                continue;
+            };
+            if lhs_table == &outer.name && rhs_table == &select.table {
+                if equality.is_some() {
+                    return None;
+                }
+                equality = Some((pos, lhs.clone(), rhs.clone()));
+                break;
+            }
+        }
+    }
+    let (pos, outer_column, inner_column) = equality?;
+    predicates.remove(pos);
+    let mut inner = (**select).clone();
+    inner.limit = None;
+    inner.columns = SelectColumns::Items(vec![SelectItem {
+        expr: SelectExpr::Column {
+            name: inner_column,
+            offset: sub.offset,
+        },
+        alias: None,
+    }]);
+    inner.filter = (!predicates.is_empty()).then_some(Expr::And(predicates));
+    Some(Expr::InSubquery {
+        expr: Box::new(Expr::Column(outer_column)),
+        subquery: Box::new(Subquery {
+            body: SubqueryBody::Select(Box::new(inner)),
+            ..sub.clone()
+        }),
+        negated: false,
+    })
+}
 
 thread_local! {
     static ACTIVE_VISIT_COUNT: Cell<Option<usize>> = const { Cell::new(None) };

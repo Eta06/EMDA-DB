@@ -106,7 +106,7 @@ table_item     := col_def
                 | CHECK "(" expr ")"
 col_def        := ident data_type (NOT NULL | PRIMARY KEY | UNIQUE | DEFAULT default_lit | CHECK "(" expr ")" | fk_ref)*
 default_lit    := ["-"] integer | ["-"] real | string | TRUE | FALSE | NULL
-fk_ref         := REFERENCES ident ["(" ident ")"] (ON DELETE (NO ACTION | RESTRICT | CASCADE | SET NULL) | ON UPDATE (NO ACTION | RESTRICT))*
+fk_ref         := REFERENCES ident ["(" ident ")"] (ON DELETE (NO ACTION | RESTRICT | CASCADE | SET NULL) | ON UPDATE (NO ACTION | RESTRICT | CASCADE | SET NULL))*
 data_type      := INTEGER | INT | BIGINT
                 | REAL | DOUBLE | FLOAT
                 | TEXT | VARCHAR | VARCHAR "(" positive_int ")"
@@ -165,7 +165,7 @@ Notes on specific constructs:
 - `LIMIT` and `OFFSET` values must be non-negative `INTEGER` literals or `?` parameters (`SqlError::Bounds` for negative `INTEGER` values; `SqlError::Type` for `NULL`, `REAL`, `TEXT`, or `BOOLEAN`; `SqlError::Syntax` for out-of-`i64`-range integer literals).
 - Aggregate and grouping queries follow standard SQL / PostgreSQL strictness: in any query with `GROUP BY`, `HAVING`, or an aggregate call in `SELECT` or `ORDER BY`, every non-aggregated column in `SELECT`, `HAVING`, or `ORDER BY` must appear in `GROUP BY` (rejected as `SqlError::Syntax`, with no SQLite-style "bare column" leniency). `HAVING` may reference grouping columns and aggregates only (not `SELECT` aliases); `ORDER BY` may reference grouping columns, select-item aliases (`AS alias`), or aggregate expressions (`COUNT(*)`, `SUM(col)`, etc.). Arithmetic expressions, nested aggregates, aggregates in `WHERE` or `GROUP BY`, `SUM`/`AVG`/`MIN`/`MAX` with `DISTINCT`, `GROUP BY` column positions/`ROLLUP`/`CUBE`/`GROUPING SETS`, `OVER`, and `FILTER` fail with `SqlError::Unsupported` (or `Syntax` for invalid forms such as `SUM(*)` or `COUNT(DISTINCT *)`).
 - Secondary indexes (`CREATE [UNIQUE] INDEX` and `UNIQUE` constraints) support `INTEGER`, `TEXT`/`VARCHAR(n)`, and `BOOLEAN` columns (1–4 columns per index, up to 16 indexes per table). `DROP INDEX [IF EXISTS] name ON table` drops an explicit secondary index cleanly, and refuses dropping an index that backs a table or column `UNIQUE` constraint with `SqlError::Constraint`. `REAL` columns in indexes/unique constraints, partial `CREATE INDEX ... WHERE ...`, `ASC`/`DESC` index ordering, `USING ...`, `DROP INDEX name` (without `ON table`), `DROP INDEX ... CONCURRENTLY`/`CASCADE`/`RESTRICT`, and `DROP TABLE` fail with `SqlError::Unsupported`.
-- Recognized SQL outside this grammar (`CROSS`/`NATURAL` joins, `JOIN ... USING`, comma joins, `SELECT DISTINCT`, `UNION`/`INTERSECT`/`EXCEPT`, scalar/non-aggregate function calls, derived tables or CTEs joined with tables, correlated subqueries, multi-column tuple `IN`, value-list `IN (...)`, `WITH RECURSIVE`, `DROP TABLE ... CASCADE`/`RESTRICT` or several tables, `ALTER TABLE` actions other than supported column migrations, `BEGIN`/`COMMIT`/`ROLLBACK`, `RETURNING`, `ON CONFLICT`, nonconstant `DEFAULT` expressions, `DEFAULT` on a `PRIMARY KEY` column, `DEFAULT VALUES`, `CHECK` with parameters or subqueries, composite `FOREIGN KEY`/`REFERENCES`, `ON UPDATE CASCADE`/`SET NULL`, `SET DEFAULT`, `MATCH`, `DEFERRABLE`, `CONSTRAINT` names, `BETWEEN`, `LIKE`, `CASE`, `CAST`, arithmetic operators, and qualified `table.column` or table aliases outside a join or subquery) fails with `SqlError::Unsupported` naming the feature.
+- Recognized SQL outside this grammar (`CROSS`/`NATURAL` joins, `JOIN ... USING`, comma joins, `SELECT DISTINCT`, `UNION`/`INTERSECT`/`EXCEPT`, scalar/non-aggregate function calls, correlation outside the supported EXISTS form, multi-column tuple `IN`, value-list `IN (...)`, `WITH RECURSIVE`, `DROP TABLE ... CASCADE`/`RESTRICT` or several tables, `ALTER TABLE` actions other than supported column migrations, `BEGIN`/`COMMIT`/`ROLLBACK`, `RETURNING`, `ON CONFLICT`, nonconstant `DEFAULT` expressions, `DEFAULT` on a `PRIMARY KEY` column, `DEFAULT VALUES`, `CHECK` with parameters or subqueries, composite `FOREIGN KEY`/`REFERENCES`, `SET DEFAULT`, `MATCH`, `DEFERRABLE`, `CONSTRAINT` names, `BETWEEN`, `LIKE`, `CASE`, `CAST`, arithmetic operators, and qualified `table.column` or table aliases outside a join or subquery) fails with `SqlError::Unsupported` naming the feature.
 
 ## Types, coercion, and NULL semantics
 
@@ -304,27 +304,28 @@ WHERE o.total > ? ORDER BY o.total DESC LIMIT 10
 
 ```text
 derived_select := [WITH cte ("," cte)*]
-                  SELECT join_item ("," join_item)* FROM source
+                  SELECT join_item ("," join_item)* FROM source (join_kind JOIN source ON expr)*
                   [WHERE expr] [GROUP BY col_ref ("," col_ref)*] [HAVING expr]
                   [ORDER BY join_order ("," join_order)*] [LIMIT limit_val [OFFSET limit_val]]
 cte            := ident AS "(" select ")"
-source         := "(" select ")" [AS] ident | cte_name [[AS] ident]
+source         := "(" select ")" [AS] ident | table_or_cte [[AS] ident]
 ```
 
-- A derived table `FROM (SELECT ...) [AS] name`, or a non-recursive CTE
-  named in `FROM`, is a source query: any supported single-table or join
-  `SELECT`. It runs first, inside the statement's transaction, and its rows,
-  at most `max_select_rows`, are materialized with its output column names.
-- The outer query reads only that source: `WHERE` in the join expression
-  grammar, its columns or `*`, or aggregates with `GROUP BY` and `HAVING`
-  as over joins, then `ORDER BY` on source columns or output aliases,
-  `OFFSET` and `LIMIT`. Outer parameters are allowed; parameters inside a
-  source query return `Unsupported`.
-- `WITH` declares at most 8 CTEs; the main query reads one of them, and
-  CTE bodies read tables, not other CTEs. `WITH RECURSIVE`, CTE column lists,
-  a `WITH` whose query reads a table directly, and joins between a derived
-  table or CTE and other tables return `Unsupported`.
-- `EXPLAIN` shows one `derived` step.
+- A derived table `(SELECT ...) [AS] name` or a non-recursive CTE can appear in
+  `FROM` or in a join chain. The source query runs inside the same transaction
+  and materializes at most `max_select_rows` rows. Each reference to the
+  same CTE in one join uses its materialized result.
+- Joined sources are bound by column name and static type, including empty
+  inputs. Unnamed or ambiguous projections should be aliased in the source
+  query. Joined sources with duplicate output names or outputs without a
+  static type return an error. Joins, grouping, sorting and pagination use
+  the same limits as queries over stored tables. Source queries have their
+  own visit bound and can nest within `max_expr_depth`.
+- `WITH` declares up to eight CTEs. CTE bodies read stored tables.
+  Parameters inside sources, dependencies among CTE bodies, `WITH RECURSIVE`
+  and CTE column lists remain open.
+- `EXPLAIN` labels materialized inputs and reports their row cap without
+  running the source.
 
 ## Subqueries
 
@@ -337,7 +338,12 @@ Bounded, **uncorrelated** subqueries are supported in `WHERE` (`SELECT`, `UPDATE
 - **Uncorrelated only**: Inner references to outer columns (qualified or unqualified, at any nesting depth) fail with `SqlError::Unsupported`.
 - **Semantics & typing**: `IN`/`NOT IN` matches SQL three-valued logic and SQLite semantics: `x IN (empty)` is `FALSE` even for `NULL` `x`; `x NOT IN (empty)` is `TRUE` even for `NULL` `x`; `x NOT IN (set containing NULL)` is never `TRUE` (`FALSE` if `x` matches a non-`NULL` member, `UNKNOWN` otherwise). `INTEGER` and `REAL` compare numerically with exact precision (for example `2` matches `2.0`, `-0.0` matches `0`, and `(1 << 53) + 1` stays distinct from `(1 << 53)` as `REAL`). Incompatible types are rejected with `SqlError::Type` even when the inner table is empty.
 - **Planner, isolation & bounds**: Outer PK/index access paths remain active for remaining `AND` conjuncts alongside subqueries, and non-negated `pk IN (subquery)` uses `AccessPlan::Empty` (empty set) or batched `PRIMARY KEY` lookups when at most 64 distinct candidate keys exist. Each subquery runs once inside the same `DocumentTransaction` (`ReadSet`), seeing staged writes in `SqlDatabase::transaction` and triggering `SqlError::Conflict` on commit if another writer modifies read inner data concurrently during a write statement or multi-statement transaction. Inner and outer scans share `SqlLimits::max_visited_rows`, and `IN` sets enforce `SqlLimits::max_subquery_values`, returning `SqlError::Bounds` rather than truncating.
-- **Not supported**: Correlated subqueries, derived tables in `FROM`, `IN (val1, val2, ...)` value lists, multi-column `(a, b) IN (...)`, and `WITH` CTEs or `UNION` inside subqueries return `SqlError::Unsupported`.
+- **Correlated equality in EXISTS**: `[NOT] EXISTS` can correlate one
+  equality between explicitly qualified columns of distinct stored tables.
+  The inner query projects constants or `*` and may apply residual predicates
+  and a positive literal `LIMIT`. EMDA materializes distinct inner keys once
+  under the existing subquery budget. A NULL correlation key does not match.
+- **Not supported**: Other correlated forms, derived tables in subquery `FROM`, `IN (val1, val2, ...)` value lists, multi-column `(a, b) IN (...)`, and `WITH` CTEs or `UNION` inside subqueries return `SqlError::Unsupported`.
 
 ## `CHECK` constraints
 
@@ -390,7 +396,7 @@ Bounded, **uncorrelated** subqueries are supported in `WHERE` (`SELECT`, `UPDATE
 ## Foreign keys
 
 - **Implemented syntax**:
-  - Column-level `REFERENCES parent [(col)] [ON DELETE (NO ACTION | RESTRICT | CASCADE | SET NULL)] [ON UPDATE (NO ACTION | RESTRICT)]` and table-level `FOREIGN KEY (col) REFERENCES parent [(col)] ...`, for single-column keys (up to 64 foreign keys per table), including self-referencing tables.
+  - Column-level `REFERENCES parent [(col)] [ON DELETE (NO ACTION | RESTRICT | CASCADE | SET NULL)] [ON UPDATE (NO ACTION | RESTRICT | CASCADE | SET NULL)]` and table-level `FOREIGN KEY (col) REFERENCES parent [(col)] ...`, for single-column keys (up to 64 foreign keys per table), including self-referencing tables.
   - Omitting `(col)` after `REFERENCES parent` defaults to `parent`'s `PRIMARY KEY` column.
 - **DDL validation and protection**:
   - `CREATE TABLE` checks that every referenced parent table and column exists (`NoSuchTable` / `NoSuchColumn`), that the referenced parent column is `parent`'s `PRIMARY KEY` or has a `Ready` single-column `UNIQUE` index (`Constraint`), and that the child and parent column base types match via `matches_base` (`INTEGER` with `INTEGER`/`INT`/`BIGINT`, `TEXT`/`VARCHAR(n)` with `TEXT`/`VARCHAR(n)`, `BOOLEAN`/`BOOL` with `BOOLEAN`/`BOOL`; mismatched types fail with `Type`).
@@ -410,14 +416,21 @@ Bounded, **uncorrelated** subqueries are supported in `WHERE` (`SELECT`, `UPDATE
   - Actions nest at most 16 levels (`Bounds` beyond), and the child rows they
     delete or change count against `max_mutation_rows`; rows read while
     finding them count against `max_visited_rows`. Child rows are found by
-    the child's primary key or by a bounded scan of the child table.
+    the child's primary key, an eligible secondary index, or a bounded scan.
+- **Referential actions on `UPDATE`**:
+  - A changed primary key moves the stored row and indexes atomically.
+    `CASCADE` propagates the new parent key, and `SET NULL` clears the child
+    key. Both actions check the child's constraints, share the bounded
+    cascade budget and roll back with the parent update on failure.
+  - `SET NULL` requires a nullable child column. `NO ACTION` and `RESTRICT`
+    verify remaining references before the statement commits.
 - **Enforcement and `NULL` semantics**:
   - Single-column `NULL` values in a child foreign-key column are always permitted without requiring a parent row.
   - `INSERT` and `UPDATE` of non-`NULL` child keys verify that a matching parent row exists at statement end inside the statement's transaction (observing earlier staged writes in `SqlTransaction`, forward references inside a multi-row `INSERT`, and self-references).
   - `DELETE` and `UPDATE` of referenced parent keys verify at statement end inside the statement's transaction that no remaining child row holds any deleted/removed parent key. If the child column is the child's `PRIMARY KEY` or is the leading column of a `Ready` index whose trailing columns are all `NOT NULL`, lookup uses the PK or index directly; otherwise it performs a bounded scan of the child table subject to `SqlLimits::max_visited_rows` (failing with `SqlError::Bounds` rather than silently skipping).
   - All foreign-key checks read through the active `ReadSet` transaction so concurrent conflicting parent/child modifications fail pre-commit with `SqlError::Conflict`.
 - **Not supported (`SqlError::Unsupported`)**:
-  - Composite (multi-column) `FOREIGN KEY` / `REFERENCES`, `ON UPDATE CASCADE` / `SET NULL`, `SET DEFAULT`, `MATCH` clauses, `DEFERRABLE` / `INITIALLY DEFERRED`, `CONSTRAINT` names, and `ALTER TABLE ... ADD COLUMN ... REFERENCES` / `ADD FOREIGN KEY`.
+  - Composite (multi-column) `FOREIGN KEY` / `REFERENCES`, `SET DEFAULT`, `MATCH` clauses, `DEFERRABLE` / `INITIALLY DEFERRED`, `CONSTRAINT` names, and `ALTER TABLE ... ADD COLUMN ... REFERENCES` / `ADD FOREIGN KEY`.
 
 ## Adding columns
 
@@ -531,4 +544,4 @@ Every DML statement (`INSERT`, `UPDATE`, `DELETE`, `SELECT`) and small DDL state
 ## Implemented vs planned
 
 - **Implemented**: `CREATE TABLE [IF NOT EXISTS]` (including column-level `UNIQUE`, table-level `UNIQUE (col, ...)`, and single-column `FOREIGN KEY` / `REFERENCES` constraints with `NO ACTION`/`RESTRICT` and self-references), `CREATE [UNIQUE] INDEX [IF NOT EXISTS]` (single-tx for small tables and bounded resumable online build for large populated tables), `DROP INDEX [IF EXISTS] name ON table`, `INSERT`, `SELECT` (`*`, column list, `COUNT(*)` / `COUNT(col)` / `COUNT(DISTINCT col)` / `SUM(col)` / `AVG(col)` / `MIN(col)` / `MAX(col)`, `AS` aliases, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY` with `ASC`/`DESC`/`NULLS FIRST`/`NULLS LAST` over columns/aliases/aggregates, `LIMIT`/`OFFSET`), `UPDATE`, `DELETE`, `SqlValue`/`SqlLimits`/`SqlError`/`SqlStatement` prepared reuse, `SqlDatabase::transaction` / `SqlDatabase::transaction_with_retry` / `SqlTransaction` multi-statement serializable transactions (with read-your-own-writes, transaction poisoning on caught statement errors, and conflict-only retries), per-`SqlDatabase` catalog/statement/plan caching, compiled index templates, 3VL expressions, exact numeric comparisons, ascending PK order guarantee and streaming `ORDER BY pk ASC`, index-order `ORDER BY ... LIMIT` streaming, first-entry `MIN(pk)`/`MIN(index_leading_col)` optimization, bounded `ORDER BY pk DESC` and top-K / full sort, bounded `GROUP BY` and `COUNT(DISTINCT)`, primary-key point (`=`) and range (`>`, `>=`, `<`, `<=`) access paths, single and compound secondary index equality/range access via `DocumentTransaction::query_index`, bounded full-collection scan fallback via `DocumentTransaction::scan_documents`, `ReadSet` optimistic concurrency, and row PK/document-ID integrity verification, and `INNER`/`LEFT [OUTER] JOIN` of up to eight tables (see [Joins](#joins)); bounded uncorrelated subqueries (`[NOT] IN (SELECT ...)`, `[NOT] EXISTS (SELECT ...)`, scalar `(SELECT ...)`, including single-table and `JOIN` subquery bodies, nesting up to depth 4, bounded `IN` set materialization, 3VL `NULL` semantics, PK point-lookup optimization on `pk IN (...)`, and single-tx `ReadSet` evaluation — see [Subqueries](#subqueries)); `DROP TABLE [IF EXISTS] name` (see [Dropping tables](#dropping-tables)); `ALTER TABLE name ADD [COLUMN]` (see [Adding columns](#adding-columns)); `EXPLAIN SELECT` (see [`EXPLAIN`](#explain)).
-- **Planned (later slices)**: correlated subqueries, derived tables and CTEs joined with tables, recursive CTEs, `IN (val1, ...)` value lists, `UNION`, composite foreign keys, `ON UPDATE` actions and `DEFERRABLE`, other schema changes (`DROP COLUMN`, `RENAME`, `ALTER COLUMN`, `DEFAULT`), and cost-based access-path selection. Textual session-state `BEGIN`/`COMMIT`/`ROLLBACK` remain intentionally unsupported in favor of the closure API.
+- **Planned (later slices)**: broader correlated subqueries, recursive CTEs, `IN (val1, ...)` value lists, `UNION`, composite primary and foreign keys, `DEFERRABLE` constraints, table rename, dependent column migrations, and `ALTER COLUMN`, and cost-based access-path selection. Textual session-state `BEGIN`/`COMMIT`/`ROLLBACK` remain intentionally unsupported in favor of the closure API.

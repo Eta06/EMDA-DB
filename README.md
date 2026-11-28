@@ -105,7 +105,7 @@ Progress on `main` on 2026-11-28, from [roadmap progress](docs/ROADMAP_PROGRESS.
 | 1 | Correctness and foundations | 99% |
 | 2 | Durable storage and core operations | 99% |
 | 3 | Document model and queries | 99% |
-| 4 | SQL | 81% |
+| 4 | SQL | 90% |
 | 5 | Secure service and project isolation | 10% |
 | 6 | Performance and scalability | 60% |
 | 7 | Replication and operations | 20% |

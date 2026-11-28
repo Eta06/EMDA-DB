@@ -9,7 +9,7 @@
 //! nested loop. The complete `ON` expression is evaluated on every candidate
 //! pair, so the access path never changes the result. The whole statement
 //! runs in one read-set document transaction.
-use super::catalog::{self, CachedTable, IndexState, TableDef};
+use super::catalog::{self, ColumnDef, IndexState, TableDef};
 use super::exec::{self, SqlCache};
 use super::lexer::{Token, TokenKind};
 use super::parser::{AggregateKind, CompareOp, LimitValue, SqlStatement};
@@ -92,7 +92,10 @@ impl PartialEq for JoinSelect {
 struct TableRef {
     name: String,
     alias: String,
+    query: Option<Arc<SqlStatement>>,
 }
+
+type CteSources = Vec<(String, Arc<SqlStatement>)>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum JoinKind {
@@ -170,8 +173,8 @@ pub(crate) fn is_join_select(tokens: &[Token]) -> bool {
         && tokens.iter().any(|token| keyword(token, "join"))
 }
 
-/// Parses a derived-table or CTE SELECT, returning it and its parameter count.
-pub(crate) fn parse_derived(
+/// Parses a join SELECT, returning the statement and its parameter count.
+pub(crate) fn parse(
     tokens: Vec<Token>,
     sql: &str,
     limits: &SqlLimits,
@@ -183,27 +186,7 @@ pub(crate) fn parse_derived(
         depth: 0,
         limits,
     };
-    let select = parser.derived_select(sql)?;
-    parser.eat(&TokenKind::Semicolon);
-    if !matches!(parser.peek().kind, TokenKind::Eof) {
-        return Err(parser.syntax("unexpected tokens after the statement"));
-    }
-    Ok((select, parser.params))
-}
-
-/// Parses a join SELECT, returning the statement and its parameter count.
-pub(crate) fn parse(
-    tokens: Vec<Token>,
-    limits: &SqlLimits,
-) -> Result<(JoinSelect, usize), SqlError> {
-    let mut parser = JoinParser {
-        tokens,
-        pos: 0,
-        params: 0,
-        depth: 0,
-        limits,
-    };
-    let statement = parser.select()?;
+    let statement = parser.select(sql)?;
     parser.eat(&TokenKind::Semicolon);
     if !matches!(parser.peek().kind, TokenKind::Eof) {
         return Err(parser.syntax("multiple statements or trailing tokens are not supported"));
@@ -309,7 +292,8 @@ impl JoinParser<'_> {
             if *quoted || !RESERVED.contains(&text.as_str()))
     }
 
-    fn select(&mut self) -> Result<JoinSelect, SqlError> {
+    fn select(&mut self, sql: &str) -> Result<JoinSelect, SqlError> {
+        let ctes = self.cte_sources(sql)?;
         self.expect_kw("select")?;
         if self.at_kw("distinct") || self.at_kw("all") {
             return Err(self.unsupported("SELECT DISTINCT or ALL in a join"));
@@ -322,7 +306,7 @@ impl JoinParser<'_> {
             }
         }
         self.expect_kw("from")?;
-        let mut tables = vec![self.table_ref()?];
+        let mut tables = vec![self.table_ref(sql, &ctes)?];
         let mut joins = Vec::new();
         // `a RIGHT JOIN b ON c` is `b LEFT JOIN a ON c` with `a`'s columns
         // first; it is accepted as the first join, where both tables are
@@ -360,7 +344,7 @@ impl JoinParser<'_> {
                 }
                 break;
             }
-            tables.push(self.table_ref()?);
+            tables.push(self.table_ref(sql, &ctes)?);
             if tables.len() > MAX_JOIN_TABLES {
                 return Err(SqlError::Bounds(format!(
                     "join has more than {MAX_JOIN_TABLES} tables"
@@ -425,6 +409,11 @@ impl JoinParser<'_> {
             items = expanded;
             tables.swap(0, 1);
         }
+        let source = if tables.len() == 1 {
+            tables[0].query.as_deref().cloned().map(Box::new)
+        } else {
+            None
+        };
         Ok(JoinSelect {
             items,
             tables,
@@ -435,7 +424,7 @@ impl JoinParser<'_> {
             offset,
             group_by,
             having,
-            source: None,
+            source,
             cached_plan: RwLock::new(None),
         })
     }
@@ -561,7 +550,17 @@ impl JoinParser<'_> {
         Ok(item)
     }
 
-    fn table_ref(&mut self) -> Result<TableRef, SqlError> {
+    fn table_ref(&mut self, sql: &str, ctes: &CteSources) -> Result<TableRef, SqlError> {
+        if matches!(self.peek().kind, TokenKind::LParen) {
+            let query = Arc::new(self.source_query(sql)?);
+            self.eat_kw("as");
+            let alias = self.ident("derived table alias")?;
+            return Ok(TableRef {
+                name: alias.clone(),
+                alias,
+                query: Some(query),
+            });
+        }
         let name = self.ident("table name")?;
         if matches!(self.peek().kind, TokenKind::LParen) {
             return Err(self.unsupported("table functions or subqueries"));
@@ -572,7 +571,11 @@ impl JoinParser<'_> {
         } else {
             name.clone()
         };
-        Ok(TableRef { name, alias })
+        let query = ctes
+            .iter()
+            .find(|(cte, _)| cte == &name)
+            .map(|(_, query)| Arc::clone(query));
+        Ok(TableRef { name, alias, query })
     }
 
     fn col_ref(&mut self) -> Result<ColRef, SqlError> {
@@ -1981,23 +1984,70 @@ struct JoinPlan {
     param_checks: Vec<ParamCheck>,
 }
 
-fn load_tables(
+fn load_table_defs(
     tx: &DocumentTransaction<'_, '_>,
     statement: &JoinSelect,
+    limits: &SqlLimits,
     cache: &SqlCache,
-) -> Result<Vec<Arc<CachedTable>>, SqlError> {
-    let mut cached: Vec<Arc<CachedTable>> = Vec::with_capacity(statement.tables.len());
+) -> Result<Vec<Arc<TableDef>>, SqlError> {
+    let mut defs: Vec<Arc<TableDef>> = Vec::with_capacity(statement.tables.len());
     for (index, table) in statement.tables.iter().enumerate() {
-        if let Some(prev) = statement.tables[..index]
+        if let Some(query) = &table.query {
+            let columns = exec::read_columns(tx, query, limits, cache)?;
+            let mut names = std::collections::HashSet::new();
+            if columns.iter().any(|col| !names.insert(col.name.as_str())) {
+                return Err(SqlError::Syntax {
+                    offset: 0,
+                    message: format!("derived table '{}' has duplicate column names", table.alias),
+                });
+            }
+            // Materialized sources share the binder's column representation
+            // but have no catalog record, stored row ID, or index.
+            defs.push(Arc::new(TableDef {
+                version: 0,
+                name: table.name.clone(),
+                columns,
+                primary_key_index: 0,
+                indexes: Vec::new(),
+                foreign_keys: Vec::new(),
+                referenced_by: Vec::new(),
+                checks: Vec::new(),
+            }));
+        } else if let Some(prev) = statement.tables[..index]
             .iter()
-            .position(|other| other.name == table.name)
+            .position(|other| other.query.is_none() && other.name == table.name)
         {
-            cached.push(Arc::clone(&cached[prev]));
+            defs.push(Arc::clone(&defs[prev]));
         } else {
-            cached.push(catalog::load_table_cached(tx, &table.name, cache.tables())?);
+            defs.push(Arc::clone(
+                &catalog::load_table_cached(tx, &table.name, cache.tables())?.def,
+            ));
         }
     }
-    Ok(cached)
+    Ok(defs)
+}
+
+pub(super) fn read_columns(
+    tx: &DocumentTransaction<'_, '_>,
+    statement: &JoinSelect,
+    limits: &SqlLimits,
+    cache: &SqlCache,
+) -> Result<Vec<ColumnDef>, SqlError> {
+    if aggregate::is_aggregate(statement) {
+        return aggregate::prepare(tx, statement, limits, cache)?.columns();
+    }
+    let plan = plan(tx, statement, &[], limits, cache)?;
+    Ok(plan
+        .projection
+        .iter()
+        .zip(&plan.names)
+        .map(|(slot, name)| ColumnDef {
+            name: name.clone(),
+            col_type: plan.defs[slot.table].columns[slot.column].col_type,
+            not_null: false,
+            default: None,
+        })
+        .collect())
 }
 
 fn plan(
@@ -2007,16 +2057,16 @@ fn plan(
     limits: &SqlLimits,
     cache: &SqlCache,
 ) -> Result<Arc<JoinPlan>, SqlError> {
-    let cached = load_tables(tx, statement, cache)?;
+    let defs = load_table_defs(tx, statement, limits, cache)?;
     {
         let guard = statement.cached_plan.read();
         if let Some(existing) = guard.as_ref() {
-            if existing.defs.len() == cached.len()
+            if existing.defs.len() == defs.len()
                 && existing
                     .defs
                     .iter()
-                    .zip(&cached)
-                    .all(|(a, b)| Arc::ptr_eq(a, &b.def))
+                    .zip(&defs)
+                    .all(|(a, b)| Arc::ptr_eq(a, b))
             {
                 if existing.projection.len() > limits.max_columns {
                     return Err(SqlError::Bounds(format!(
@@ -2032,7 +2082,6 @@ fn plan(
         }
     }
 
-    let defs: Vec<Arc<TableDef>> = cached.iter().map(|entry| Arc::clone(&entry.def)).collect();
     let aliases: Vec<String> = statement.tables.iter().map(|t| t.alias.clone()).collect();
     for (index, alias) in aliases.iter().enumerate() {
         if aliases[..index].contains(alias) {
@@ -2059,7 +2108,12 @@ fn plan(
             };
             conjuncts(binder.bind_predicate(&join.on, "ON")?)
         };
-        let access = choose_access(table, &defs[table], &on, join.kind.preserves_right());
+        let access = choose_access(
+            table,
+            &defs[table],
+            &on,
+            join.kind.preserves_right() || statement.tables[table].query.is_some(),
+        );
         steps.push(Step {
             kind: join.kind,
             on: on.into_iter().map(FastPred::compile).collect(),
@@ -2154,7 +2208,12 @@ fn plan(
         check.check(params)?;
     }
 
-    let first = choose_access(0, &defs[0], &early_exprs, false);
+    let first_is_stored = statement.tables[0].query.is_none();
+    let first = if first_is_stored {
+        choose_access(0, &defs[0], &early_exprs, false)
+    } else {
+        Access::Loop
+    };
     let early: Vec<FastPred> = early_exprs.into_iter().map(FastPred::compile).collect();
     let late: Vec<FastPred> = late_exprs.into_iter().map(FastPred::compile).collect();
     let mut all_steps_point_from = [false; MAX_JOIN_TABLES + 1];
@@ -2188,6 +2247,7 @@ fn plan(
     };
     let order_satisfied = order.is_empty()
         || (!preserves_right
+            && first_is_stored
             && first_pk_ordered
             && (matches!(order.as_slice(), [(slot, false, _)] if *slot == first_key)
                 || (all_steps_point_from[0]
@@ -3525,12 +3585,54 @@ fn run(
 
     let n_tables = join_plan.defs.len();
     let mut table_names = [""; MAX_JOIN_TABLES];
-    for (i, def) in join_plan.defs.iter().enumerate() {
-        table_names[i] = def.name.as_str();
+    let mut stored_count = 0;
+    let mut materialized: [Option<Arc<Vec<Vec<SqlValue>>>>; MAX_JOIN_TABLES] =
+        [const { None }; MAX_JOIN_TABLES];
+    for (index, table) in statement.tables.iter().enumerate() {
+        if let Some(query) = &table.query {
+            let prior = statement.tables[..index].iter().position(|other| {
+                other
+                    .query
+                    .as_ref()
+                    .is_some_and(|other| Arc::ptr_eq(query, other))
+            });
+            let rows = if let Some(prior) = prior {
+                Arc::clone(
+                    materialized[prior]
+                        .as_ref()
+                        .expect("earlier derived source"),
+                )
+            } else {
+                let SqlOutcome::Rows { rows, .. } = exec::run_read_in_tx(tx, query, limits, cache)?
+                else {
+                    unreachable!("a SELECT returns rows");
+                };
+                Arc::new(rows)
+            };
+            materialized[index] = Some(rows);
+        } else {
+            table_names[stored_count] = table.name.as_str();
+            stored_count += 1;
+        }
     }
-    let metas = tx
-        .load_stored_metadata_batch(&table_names[..n_tables])
+    let stored_metas = tx
+        .load_stored_metadata_batch(&table_names[..stored_count])
         .map_err(exec::classify_io_error)?;
+    let metas = if stored_count == n_tables {
+        stored_metas
+    } else {
+        let mut stored_metas = stored_metas.into_iter();
+        materialized[..n_tables]
+            .iter()
+            .map(|source| {
+                if source.is_some() {
+                    Arc::new(()) as Arc<dyn std::any::Any + Send + Sync>
+                } else {
+                    stored_metas.next().expect("one handle per stored table")
+                }
+            })
+            .collect()
+    };
 
     let mut arenas: [TableArena; MAX_JOIN_TABLES] = std::array::from_fn(|i| {
         TableArena::new(join_plan.defs.get(i).map_or(0, |d| d.columns.len()))
@@ -3547,6 +3649,33 @@ fn run(
         let table = index + 1;
         let def = &join_plan.defs[table];
         let needed = &join_plan.needed[table];
+        if let Some(rows) = &materialized[table] {
+            budget.visit(rows.len())?;
+            let arena = &mut arenas[table];
+            built[index] = match &step.access {
+                Access::Hash { column, .. } => {
+                    let mut hash = BuiltHash::new(def.columns[*column].col_type);
+                    for row in rows.iter() {
+                        let values: Vec<_> = row.iter().map(ValRef::from_sql).collect();
+                        let key = values[*column];
+                        if step.kind.preserves_right() || !matches!(key, ValRef::Null) {
+                            let index = arena.push_borrowed(&values, needed);
+                            hash.insert(key, index);
+                        }
+                    }
+                    Some(Built::Hash(hash))
+                }
+                Access::Loop => {
+                    for row in rows.iter() {
+                        let values: Vec<_> = row.iter().map(ValRef::from_sql).collect();
+                        arena.push_borrowed(&values, needed);
+                    }
+                    Some(Built::Loop(arena.len() as RowIdx))
+                }
+                _ => unreachable!("derived sources have no stored index"),
+            };
+            continue;
+        }
         built[index] = match &step.access {
             Access::Point(_) | Access::Index { .. } => None,
             Access::Hash { column, .. } => {
@@ -3681,8 +3810,29 @@ fn run(
     let needed0 = &join_plan.needed[0];
     let empty_comb = [NULL_ROW; MAX_JOIN_TABLES];
 
-    match &join_plan.first {
-        Access::Point(key_expr) => {
+    match (&materialized[0], &join_plan.first) {
+        (Some(rows), _) => {
+            for page in rows.chunks(256) {
+                let mut batch = Vec::new();
+                for row in page {
+                    executor.budget.visit(1)?;
+                    let values: Vec<_> = row.iter().map(ValRef::from_sql).collect();
+                    if passes_early(&join_plan.early, &values, params)? {
+                        let mut combined = empty_comb;
+                        combined[0] = executor.arenas[0].push_borrowed(&values, needed0);
+                        batch.push(combined);
+                    }
+                }
+                executor.process_table0_batch(batch)?;
+                if executor.sink.is_done() {
+                    break;
+                }
+                if executor.sink.can_clear_unshared_arena() {
+                    executor.arenas[0].clear();
+                }
+            }
+        }
+        (None, Access::Point(key_expr)) => {
             let pk_type = def0.columns[def0.primary_key_index].col_type;
             let val = eval_ref(key_expr, &empty_comb, &executor.arenas, params)?;
             if let Some(pk) = coerce_pk_key(val, pk_type) {
@@ -3708,9 +3858,12 @@ fn run(
                 }
             }
         }
-        Access::Index {
-            name, column, key, ..
-        } => {
+        (
+            None,
+            Access::Index {
+                name, column, key, ..
+            },
+        ) => {
             let val = eval_ref(key, &empty_comb, &executor.arenas, params)?;
             if let Some(index_val) = index_value_ref(val, def0.columns[*column].col_type) {
                 let mut cursor: Option<Vec<u8>> = None;
@@ -3770,7 +3923,7 @@ fn run(
                 }
             }
         }
-        Access::Hash { .. } | Access::Loop => {
+        (None, Access::Hash { .. } | Access::Loop) => {
             let mut after: Option<String> = None;
             let mut page_size = match executor.sink.remaining_wanted() {
                 Some(rem) if join_plan.early.is_empty() => rem.clamp(1, MAX_SCAN_ENTRIES),
@@ -3880,7 +4033,7 @@ pub(crate) fn explain(
         ]]);
     }
     if aggregate::is_aggregate(statement) {
-        let prepared = aggregate::prepare(tx, statement, cache)?;
+        let prepared = aggregate::prepare(tx, statement, limits, cache)?;
         let mut rows = explain(tx, &prepared.inner, params, limits, cache)?;
         rows.push(vec![
             SqlValue::Text("aggregate".into()),
@@ -3910,6 +4063,9 @@ pub(crate) fn explain(
                 format!("hash table on {} built once", column(*c))
             }
             Access::Loop if index > 0 => "nested loop over every row".to_owned(),
+            Access::Hash { .. } | Access::Loop if statement.tables[index].query.is_some() => {
+                "scan materialized source".to_owned()
+            }
             Access::Hash { .. } | Access::Loop => "full scan in primary-key order".to_owned(),
         };
         let detail = if index == 0 {
@@ -3926,44 +4082,51 @@ pub(crate) fn explain(
             };
             format!("{kind}; ON checked on every candidate")
         };
-        let estimate = match access {
-            Access::Point(_) => "candidate rows: at most 1 per lookup".to_owned(),
-            Access::Index {
-                name, column, key, ..
-            } => {
-                let value = match key {
-                    BExpr::Literal(value) => Some(value),
-                    BExpr::Param(param) => Some(&params[*param]),
-                    _ => None,
-                };
-                if let Some(value) = value {
-                    let access = if let Some(value) =
-                        index_value_ref(ValRef::from_sql(value), def.columns[*column].col_type)
-                    {
-                        let index_idx = def
-                            .indexes
-                            .iter()
-                            .position(|index| index.name == *name)
-                            .expect("planned index belongs to table");
-                        AccessPlan::Index {
-                            index_idx,
-                            equal: vec![value],
-                            lower: None,
-                            upper: None,
-                            unique_equality: def.indexes[index_idx].unique
-                                && def.indexes[index_idx].columns.len() == 1,
-                            preserves_pk_asc: false,
-                            satisfies_order_by: false,
-                        }
-                    } else {
-                        AccessPlan::Empty
+        let estimate = if statement.tables[index].query.is_some() {
+            format!(
+                "materialized source; candidate rows: at most {}",
+                limits.max_select_rows
+            )
+        } else {
+            match access {
+                Access::Point(_) => "candidate rows: at most 1 per lookup".to_owned(),
+                Access::Index {
+                    name, column, key, ..
+                } => {
+                    let value = match key {
+                        BExpr::Literal(value) => Some(value),
+                        BExpr::Param(param) => Some(&params[*param]),
+                        _ => None,
                     };
-                    exec::explain_access_count(tx, def, &access, limits)?
-                } else {
-                    "candidate rows: depends on the preceding row's index key".to_owned()
+                    if let Some(value) = value {
+                        let access = if let Some(value) =
+                            index_value_ref(ValRef::from_sql(value), def.columns[*column].col_type)
+                        {
+                            let index_idx = def
+                                .indexes
+                                .iter()
+                                .position(|index| index.name == *name)
+                                .expect("planned index belongs to table");
+                            AccessPlan::Index {
+                                index_idx,
+                                equal: vec![value],
+                                lower: None,
+                                upper: None,
+                                unique_equality: def.indexes[index_idx].unique
+                                    && def.indexes[index_idx].columns.len() == 1,
+                                preserves_pk_asc: false,
+                                satisfies_order_by: false,
+                            }
+                        } else {
+                            AccessPlan::Empty
+                        };
+                        exec::explain_access_count(tx, def, &access, limits)?
+                    } else {
+                        "candidate rows: depends on the preceding row's index key".to_owned()
+                    }
                 }
+                Access::Hash { .. } | Access::Loop => exec::explain_table_count(tx, def, limits)?,
             }
-            Access::Hash { .. } | Access::Loop => exec::explain_table_count(tx, def, limits)?,
         };
         let step = if index == 0 { "scan" } else { "join" };
         rows.push(vec![
@@ -3981,6 +4144,8 @@ pub(crate) fn explain(
         }
     } else if plan.steps.iter().any(|step| step.kind.preserves_right()) {
         "matched rows stream, then unmatched right rows are passed to later joins"
+    } else if statement.tables[0].query.is_some() {
+        "rows stream in the first source's result order"
     } else if statement.limit.is_some() {
         "rows stream in the first table's key order and reading stops at OFFSET + LIMIT"
     } else {

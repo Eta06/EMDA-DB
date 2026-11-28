@@ -314,11 +314,15 @@ fn crud_statements_types_aliases_coercions_and_prepare_reuse() {
                 ]],
             }
         );
-        assert!(matches!(
-            db.execute("UPDATE users SET id = 99 WHERE id = 10", &[])
-                .unwrap_err(),
-            SqlError::Unsupported { .. }
-        ));
+        for sql in [
+            "UPDATE users SET id = 99 WHERE id = 10",
+            "UPDATE users SET id = 10 WHERE id = 99",
+        ] {
+            assert_eq!(
+                db.execute(sql, &[]).unwrap(),
+                SqlOutcome::Updated { rows: 1 }
+            );
+        }
 
         // DELETE
         assert_eq!(
@@ -822,7 +826,6 @@ fn unsupported_sql_features_return_unsupported_naming_feature() {
     let db = SqlDatabase::new(DocumentDatabase::new(&store));
 
     let cases = [
-        "SELECT a.id FROM a FULL JOIN b ON a.id = b.id JOIN c ON c.id = a.id",
         "SELECT a.id FROM a CROSS JOIN b",
         "SELECT a.id FROM a JOIN b USING (id)",
         "SELECT * FROM a, b",
@@ -838,7 +841,6 @@ fn unsupported_sql_features_return_unsupported_naming_feature() {
         "SELECT COUNT(*) + 1 FROM a",
         "SELECT SUM(COUNT(*)) FROM a",
         "SELECT * FROM a WHERE COUNT(*) > 1",
-        "SELECT * FROM (SELECT * FROM a) AS d JOIN b ON b.id = d.id",
         "SELECT * FROM a WHERE (id, b) IN (SELECT id, b FROM b)",
         "SELECT * FROM a WHERE EXISTS (WITH c AS (SELECT id FROM b) SELECT * FROM c)",
         "CREATE INDEX idx ON a (id) WHERE id > 0",
@@ -846,17 +848,13 @@ fn unsupported_sql_features_return_unsupported_naming_feature() {
         "DROP TABLE a CASCADE",
         "DROP TABLE a, b",
         "DROP INDEX idx",
-        "ALTER TABLE a DROP COLUMN b",
         "ALTER TABLE a RENAME TO b",
         "BEGIN",
         "COMMIT",
         "ROLLBACK",
         "INSERT INTO a VALUES (1) RETURNING id",
         "INSERT INTO a VALUES (1) ON CONFLICT DO NOTHING",
-        "CREATE TABLE a (id INT PRIMARY KEY, x INT DEFAULT (0))",
         "CREATE TABLE a (id INT PRIMARY KEY, x INT, CONSTRAINT c CHECK (x > 0))",
-        "CREATE TABLE a (id INT PRIMARY KEY, p INT REFERENCES b(id) ON UPDATE CASCADE)",
-        "CREATE TABLE a (id INT PRIMARY KEY, p INT REFERENCES b(id) ON UPDATE SET NULL)",
         "CREATE TABLE a (id INT PRIMARY KEY, p INT REFERENCES b(id) MATCH FULL)",
         "CREATE TABLE a (id INT PRIMARY KEY, p INT REFERENCES b(id) DEFERRABLE)",
         "CREATE TABLE a (id INT PRIMARY KEY, FOREIGN KEY (id, p) REFERENCES b(id, p))",

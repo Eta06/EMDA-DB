@@ -189,6 +189,77 @@ pub(crate) fn run_read_in_tx(
     }
 }
 
+pub(super) fn read_columns(
+    tx: &DocumentTransaction<'_, '_>,
+    stmt: &SqlStatement,
+    limits: &SqlLimits,
+    cache: &SqlCache,
+) -> Result<Vec<ColumnDef>, SqlError> {
+    let (table, plan) = match &stmt.inner {
+        Statement::Select(select) => {
+            let table = catalog::load_table_cached(tx, &select.table, &cache.tables)?;
+            let plan = get_or_build_select_plan(stmt.stmt_id, select, &table, limits, cache)?;
+            (table, plan)
+        }
+        Statement::Join(join) => return super::join::read_columns(tx, join, limits, cache),
+        _ => {
+            return Err(SqlError::Unsupported {
+                feature: "a derived table or CTE that is not a SELECT".into(),
+                offset: None,
+            });
+        }
+    };
+    let expression_type = |expr: &BoundExpr| match expr {
+        BoundExpr::Literal(SqlValue::Integer(_)) => Some(SqlType::Integer),
+        BoundExpr::Literal(SqlValue::Real(_)) => Some(SqlType::Real),
+        BoundExpr::Literal(SqlValue::Text(_)) => Some(SqlType::Text { max_chars: None }),
+        BoundExpr::Literal(SqlValue::Boolean(_))
+        | BoundExpr::Exists(_)
+        | BoundExpr::InSubquery { .. }
+        | BoundExpr::Not(_) => Some(SqlType::Boolean),
+        _ => None,
+    };
+    let types: Vec<_> = match plan.as_ref() {
+        SelectPlan::Simple(simple) => simple
+            .outputs
+            .iter()
+            .map(|output| match output {
+                SimpleSelectOutput::Column { col_idx, .. } => {
+                    Some(table.def.columns[*col_idx].col_type)
+                }
+                SimpleSelectOutput::Expr(expr) => expression_type(expr),
+            })
+            .collect(),
+        SelectPlan::Aggregate(agg) => agg
+            .outputs
+            .iter()
+            .map(|output| match output {
+                BoundSelectOutput::GroupCol(pos) => {
+                    Some(table.def.columns[agg.group_cols[*pos]].col_type)
+                }
+                BoundSelectOutput::Aggregate(pos) => agg.aggregates[*pos].output_type(),
+                BoundSelectOutput::Expr(expr) => expression_type(expr),
+            })
+            .collect(),
+    };
+    plan.col_names()
+        .iter()
+        .zip(types)
+        .map(|(name, col_type)| {
+            let col_type = col_type.ok_or_else(|| SqlError::Unsupported {
+                feature: format!("joined derived column '{name}' without a static type"),
+                offset: None,
+            })?;
+            Ok(ColumnDef {
+                name: name.clone(),
+                col_type,
+                not_null: false,
+                default: None,
+            })
+        })
+        .collect()
+}
+
 fn execute_statement_in_validated_tx(
     tx: &mut DocumentTransaction<'_, '_>,
     stmt: &SqlStatement,
@@ -1573,15 +1644,7 @@ impl SelectPlan {
             return None;
         };
         let spec = &agg.aggregates[*idx];
-        let ty = match spec.kind {
-            AggregateKind::CountStar | AggregateKind::Count | AggregateKind::CountDistinct => {
-                SqlType::Integer
-            }
-            AggregateKind::Sum => spec.col_type?,
-            AggregateKind::Avg => SqlType::Real,
-            AggregateKind::Min | AggregateKind::Max => spec.col_type?,
-        };
-        Some(StaticExprType::Typed(ty))
+        spec.output_type().map(StaticExprType::Typed)
     }
 
     pub(crate) fn first_select_subquery_id(&self) -> Option<usize> {
@@ -1638,6 +1701,18 @@ pub(crate) struct BoundAggregate {
     pub(crate) kind: AggregateKind,
     pub(crate) col_idx: Option<usize>,
     pub(crate) col_type: Option<SqlType>,
+}
+
+impl BoundAggregate {
+    pub(super) fn output_type(self) -> Option<SqlType> {
+        match self.kind {
+            AggregateKind::CountStar | AggregateKind::Count | AggregateKind::CountDistinct => {
+                Some(SqlType::Integer)
+            }
+            AggregateKind::Avg => Some(SqlType::Real),
+            AggregateKind::Sum | AggregateKind::Min | AggregateKind::Max => self.col_type,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -2045,6 +2120,35 @@ fn bind_expr_static_with(
             literal_static_type(lit),
         )),
         Expr::Param(idx) => Ok((BoundExpr::Param(*idx), StaticExprType::Param(*idx))),
+        Expr::QualifiedColumn {
+            table: qualifier,
+            column,
+        } => {
+            if table.is_some_and(|table| table.name == *qualifier) {
+                return bind_expr_static_with(
+                    &Expr::Column(column.clone()),
+                    table,
+                    table_name,
+                    constraints,
+                    sub_ctx,
+                    agg_ctx,
+                );
+            }
+            if sub_ctx
+                .outer_scopes
+                .iter()
+                .any(|table| table.name == *qualifier)
+            {
+                return Err(SqlError::Unsupported {
+                    feature: format!("correlated subquery reference to '{qualifier}.{column}'"),
+                    offset: None,
+                });
+            }
+            Err(SqlError::NoSuchColumn {
+                table: qualifier.clone(),
+                column: column.clone(),
+            })
+        }
         Expr::Column(name) => {
             let Some(table) = table else {
                 if sub_ctx
@@ -2230,6 +2334,30 @@ fn bind_expr_static_with(
             ))
         }
         Expr::Exists(sub) => {
+            if let Some(membership) =
+                table.and_then(|table| subquery::decorrelate_exists(sub, table))
+            {
+                let (expr, ty) = bind_expr_static_with(
+                    &membership,
+                    table,
+                    table_name,
+                    constraints,
+                    sub_ctx,
+                    agg_ctx,
+                )?;
+                // Unlike IN, EXISTS returns false when the correlation key
+                // or matching inner values are NULL.
+                return Ok((
+                    BoundExpr::And(vec![
+                        BoundExpr::IsNull {
+                            expr: Box::new(expr.clone()),
+                            negated: true,
+                        },
+                        expr,
+                    ]),
+                    ty,
+                ));
+            }
             let sub_id = sub_ctx.slots.len();
             sub_ctx.slots.push(SubquerySlot {
                 role: SubqueryRole::Exists,
@@ -2387,13 +2515,14 @@ fn bind_select_expr_item(
             Ok(BoundExpr::ScalarSubquery(sub_id))
         }
         SelectExpr::Exists { subquery, negated } => {
-            let sub_id = sub_ctx.slots.len();
-            sub_ctx.slots.push(SubquerySlot {
-                role: SubqueryRole::Exists,
-                context: sub_ctx.context_label,
-                subquery: (**subquery).clone(),
-            });
-            let inner = BoundExpr::Exists(sub_id);
+            let (inner, _) = bind_expr_static_with(
+                &Expr::Exists(subquery.clone()),
+                Some(table),
+                &table.name,
+                constraints,
+                sub_ctx,
+                agg_ctx,
+            )?;
             Ok(if *negated {
                 BoundExpr::Not(Box::new(inner))
             } else {
@@ -4713,24 +4842,13 @@ fn get_or_build_update_plan(
         checks: &mut subquery_checks,
         context_label: "SET",
     };
-    for Assignment {
-        column,
-        offset,
-        value,
-    } in &stmt.assignments
-    {
+    for Assignment { column, value, .. } in &stmt.assignments {
         let idx = table
             .column_index(column)
             .ok_or_else(|| SqlError::NoSuchColumn {
                 table: table.name.clone(),
                 column: column.clone(),
             })?;
-        if idx == table.primary_key_index {
-            return Err(SqlError::Unsupported {
-                feature: "updating PRIMARY KEY column".into(),
-                offset: Some(*offset),
-            });
-        }
         let col = &table.columns[idx];
         let (bound, ty) = bind_expr_static_with(
             value,
@@ -4882,7 +5000,8 @@ fn exec_update(
         .iter()
         .map(|(col_idx, _)| *col_idx)
         .collect();
-    let mut fk_checks = super::foreign_key::PendingUpdateFkChecks::new(table, &assigned_cols)?;
+    let mut fk_checks = super::foreign_key::PendingUpdateFkChecks::new(table, &assigned_cols);
+    let assigns_pk = assigned_cols.contains(&table.primary_key_index);
     let mut matched = Vec::new();
     let visit_res = visit_matching_rows(
         tx,
@@ -4924,7 +5043,7 @@ fn exec_update(
                 }
             }
             enforce_checks(&plan.checks, table, &obj)?;
-            matched.push((doc_id, Value::Object(obj)));
+            matched.push((doc_id, obj));
             Ok(ControlFlow::Continue(()))
         },
     );
@@ -4935,12 +5054,45 @@ fn exec_update(
     }
 
     let updated = matched.len();
-    for (doc_id, doc) in matched {
-        tx.replace(&table.name, &doc_id, &doc, false)
-            .map_err(|err| map_write_constraint_error(err, &table.name))?;
+    let mut updated_ids = HashSet::new();
+    for (doc_id, obj) in matched {
+        let id = stage_updated_row(tx, table, doc_id, obj, assigns_pk)?;
+        if fk_checks.checks_children {
+            updated_ids.insert(id);
+        }
     }
-    fk_checks.verify(tx, table, limits, &cache.tables)?;
+    fk_checks.verify(tx, table, updated_ids, limits, &cache.tables)?;
     Ok(SqlOutcome::Updated { rows: updated })
+}
+
+pub(super) fn stage_updated_row(
+    tx: &mut DocumentTransaction<'_, '_>,
+    table: &TableDef,
+    old_doc_id: String,
+    row: Map<String, Value>,
+    assigns_pk: bool,
+) -> Result<String, SqlError> {
+    let on_error = |error| map_write_constraint_error(error, &table.name);
+    if assigns_pk {
+        let pk = &table.columns[table.primary_key_index];
+        let value = match decode_col_ref(&row, pk)? {
+            SqlValueRef::Integer(n) => InsertPk::Int(n),
+            SqlValueRef::Text(s) => InsertPk::Text(s.to_owned()),
+            _ => return Err(SqlError::Constraint("invalid PRIMARY KEY value".into())),
+        };
+        let mut integer = [0; 18];
+        let mut text = [0; 256];
+        let new_doc_id = encode_insert_pk_stack(&value, pk.col_type, &mut integer, &mut text)?;
+        if new_doc_id != old_doc_id {
+            tx.delete(&table.name, &old_doc_id).map_err(on_error)?;
+            tx.insert(&table.name, new_doc_id, &Value::Object(row))
+                .map_err(on_error)?;
+            return Ok(new_doc_id.to_owned());
+        }
+    }
+    tx.replace(&table.name, &old_doc_id, &Value::Object(row), false)
+        .map_err(on_error)?;
+    Ok(old_doc_id)
 }
 
 fn get_or_build_delete_plan(
@@ -5706,7 +5858,7 @@ fn column_default(
     }
 }
 
-fn sql_value_to_json(val: &SqlValue, col_name: &str) -> Result<Value, SqlError> {
+pub(super) fn sql_value_to_json(val: &SqlValue, col_name: &str) -> Result<Value, SqlError> {
     match val {
         SqlValue::Null => Ok(Value::Null),
         SqlValue::Integer(n) => Ok(Value::Number(Number::from(*n))),

@@ -8,13 +8,12 @@
 //! may not use parameters; the outer query may. A `WITH` query reads one of
 //! its CTEs, and CTE bodies read tables, not other CTEs.
 use super::aggregate::{self, Resolver};
-use super::{ColRef, JExpr, JoinParser, JoinSelect, OrderItem, SelectItem, TableRef, limit_value};
+use super::{ColRef, JExpr, JoinParser, JoinSelect, OrderItem, SelectItem, limit_value};
 use crate::document::DocumentTransaction;
 use crate::sql::exec::{SqlCache, SqlValueRef, compare_order_cell_ref};
 use crate::sql::lexer::{Token, TokenKind};
 use crate::sql::parser::{CompareOp, SqlStatement, parse_statement};
 use crate::sql::value::{SqlError, SqlLimits, SqlOutcome, SqlType, SqlValue};
-use parking_lot::RwLock;
 use std::cmp::Ordering;
 
 /// CTEs one `WITH` may declare.
@@ -49,14 +48,21 @@ pub(crate) fn is_derived_select(tokens: &[Token]) -> bool {
 
 impl JoinParser<'_> {
     /// `"(" select ")"` at the cursor, parsed from its own text.
-    fn source_query(&mut self, sql: &str) -> Result<SqlStatement, SqlError> {
+    pub(super) fn source_query(&mut self, sql: &str) -> Result<SqlStatement, SqlError> {
         let open = self.pos;
         self.expect(&TokenKind::LParen, "(")?;
         let mut depth = 1usize;
         let mut close = self.pos;
         while depth > 0 {
             match self.tokens.get(close).map(|t| &t.kind) {
-                Some(TokenKind::LParen) => depth += 1,
+                Some(TokenKind::LParen) => {
+                    depth += 1;
+                    if depth > self.limits.max_expr_depth {
+                        return Err(SqlError::Bounds(
+                            "derived source exceeds max_expr_depth".into(),
+                        ));
+                    }
+                }
                 Some(TokenKind::RParen) => depth -= 1,
                 Some(TokenKind::Eof) | None => return Err(self.syntax("unclosed '('")),
                 _ => {}
@@ -72,6 +78,12 @@ impl JoinParser<'_> {
             },
             other => other,
         })?;
+        if !matches!(
+            &statement.inner,
+            super::super::parser::Statement::Select(_) | super::super::parser::Statement::Join(_)
+        ) {
+            return Err(self.unsupported("a derived table or CTE that is not a SELECT"));
+        }
         if statement.param_count() > 0 {
             return Err(SqlError::Unsupported {
                 feature: "parameters inside a derived table or CTE".into(),
@@ -82,8 +94,8 @@ impl JoinParser<'_> {
         Ok(statement)
     }
 
-    pub(super) fn derived_select(&mut self, sql: &str) -> Result<JoinSelect, SqlError> {
-        let mut ctes: Vec<(String, SqlStatement)> = Vec::new();
+    pub(super) fn cte_sources(&mut self, sql: &str) -> Result<super::CteSources, SqlError> {
+        let mut ctes = super::CteSources::new();
         if self.eat_kw("with") {
             if self.at_kw("recursive") {
                 return Err(self.unsupported("WITH RECURSIVE"));
@@ -97,7 +109,7 @@ impl JoinParser<'_> {
                     return Err(self.unsupported("CTE column lists"));
                 }
                 self.expect_kw("as")?;
-                ctes.push((name, self.source_query(sql)?));
+                ctes.push((name, std::sync::Arc::new(self.source_query(sql)?)));
                 if ctes.len() > MAX_SQL_CTES {
                     return Err(SqlError::Bounds(format!(
                         "a WITH declares at most {MAX_SQL_CTES} CTEs"
@@ -108,87 +120,7 @@ impl JoinParser<'_> {
                 }
             }
         }
-        self.expect_kw("select")?;
-        let mut items = Vec::new();
-        loop {
-            items.push(self.select_item()?);
-            if !self.eat(&TokenKind::Comma) {
-                break;
-            }
-        }
-        self.expect_kw("from")?;
-        let (source, alias) = if matches!(self.peek().kind, TokenKind::LParen) {
-            let source = self.source_query(sql)?;
-            self.eat_kw("as");
-            (source, self.ident("derived table alias")?)
-        } else {
-            let name = self.ident("CTE name")?;
-            let index = ctes
-                .iter()
-                .position(|(cte, _)| *cte == name)
-                .ok_or_else(|| {
-                    self.unsupported("WITH reading a table that is not one of its CTEs")
-                })?;
-            let source = ctes.swap_remove(index).1;
-            let alias = if self.eat_kw("as") || self.at_plain_ident() {
-                self.ident("alias")?
-            } else {
-                name
-            };
-            (source, alias)
-        };
-        if self.at_kw("join")
-            || self.at_kw("inner")
-            || self.at_kw("left")
-            || self.at_kw("right")
-            || self.at_kw("full")
-        {
-            return Err(self.unsupported("joins with a derived table or CTE"));
-        }
-        let filter = if self.eat_kw("where") {
-            Some(self.expr()?)
-        } else {
-            None
-        };
-        let mut group_by = Vec::new();
-        if self.eat_kw("group") {
-            self.expect_kw("by")?;
-            loop {
-                group_by.push(self.col_ref()?);
-                if !self.eat(&TokenKind::Comma) {
-                    break;
-                }
-            }
-        }
-        let having = if self.eat_kw("having") {
-            Some(self.expr()?)
-        } else {
-            None
-        };
-        let order_by = self.order_by_clause()?;
-        let (mut limit, mut offset) = (None, None);
-        if self.eat_kw("limit") {
-            limit = Some(self.limit_value()?);
-            if self.eat_kw("offset") {
-                offset = Some(self.limit_value()?);
-            }
-        }
-        Ok(JoinSelect {
-            items,
-            tables: vec![TableRef {
-                name: alias.clone(),
-                alias,
-            }],
-            joins: Vec::new(),
-            filter,
-            order_by,
-            limit,
-            offset,
-            group_by,
-            having,
-            source: Some(Box::new(source)),
-            cached_plan: RwLock::new(None),
-        })
+        Ok(ctes)
     }
 }
 

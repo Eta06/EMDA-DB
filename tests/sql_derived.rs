@@ -82,6 +82,14 @@ fn derived_tables_and_ctes_match_sqlite() {
             "WITH a AS (SELECT id FROM emp WHERE id < 10), b AS (SELECT id FROM emp WHERE id > 50) SELECT COUNT(*) FROM b",
             "WITH t AS (SELECT dept, salary FROM emp) SELECT dept, MIN(salary) AS lo FROM t AS q GROUP BY dept HAVING MIN(salary) < 1100 ORDER BY lo, dept",
             "SELECT * FROM (SELECT name FROM emp ORDER BY name LIMIT 3) AS z",
+            "SELECT e.id, d.title FROM (SELECT id, dept FROM emp WHERE id < 10) e JOIN dept d ON d.id = e.dept ORDER BY e.id",
+            "SELECT d.id, e.id FROM dept d LEFT JOIN (SELECT id, dept FROM emp WHERE id < 2) e ON d.id = e.dept ORDER BY d.id, e.id",
+            "SELECT e.id, d.title FROM emp e LEFT JOIN (SELECT title FROM dept WHERE id < 0) d ON d.title = e.name WHERE e.id < 2 ORDER BY e.id",
+            "WITH a AS (SELECT id, dept FROM emp WHERE id < 5) SELECT x.id, y.id FROM a x FULL JOIN a y ON x.dept = y.dept ORDER BY x.id, y.id",
+            "WITH stat AS (SELECT dept, COUNT(*) AS n FROM emp GROUP BY dept) SELECT d.title, s.n FROM dept d JOIN stat s ON s.dept = d.id ORDER BY d.id",
+            "WITH a AS (SELECT id FROM emp) SELECT id FROM emp ORDER BY id LIMIT 1",
+            "SELECT d.id, COUNT(e.id) AS n FROM (SELECT id, dept FROM emp WHERE id < 2) e RIGHT JOIN dept d ON d.id = e.dept GROUP BY d.id ORDER BY d.id",
+            "SELECT d.id, e.n FROM dept d JOIN (SELECT x.id, COUNT(y.id) AS n FROM dept x LEFT JOIN emp y ON x.id = y.dept GROUP BY x.id) e ON d.id = e.id ORDER BY d.id",
         ] {
             let ours = rows(db, sql, &[]);
             let mut stmt = sqlite.prepare(sql).unwrap();
@@ -108,7 +116,6 @@ fn derived_tables_and_ctes_match_sqlite() {
         for sql in [
             "SELECT * FROM (SELECT id FROM emp WHERE id > ?) AS d",
             "WITH RECURSIVE r AS (SELECT id FROM emp) SELECT id FROM r",
-            "WITH a AS (SELECT id FROM emp) SELECT id FROM emp",
             "WITH a AS (SELECT id FROM emp) SELECT id FROM a JOIN dept ON dept.id = a.id",
             "SELECT * FROM (DELETE FROM emp) AS d",
         ] {
@@ -120,5 +127,13 @@ fn derived_tables_and_ctes_match_sqlite() {
         ));
         let plan = rows(db, "EXPLAIN SELECT id FROM (SELECT id FROM emp) AS d", &[]);
         assert_eq!(plan[0][0], SqlValue::Text("derived".into()), "{backend}");
+        let plan = rows(
+            db,
+            "EXPLAIN SELECT d.id FROM dept d JOIN (SELECT dept FROM emp) e ON e.dept = d.id",
+            &[],
+        );
+        assert!(
+            matches!(&plan[1][3], SqlValue::Text(detail) if detail.contains("materialized source"))
+        );
     });
 }

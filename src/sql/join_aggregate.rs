@@ -475,7 +475,7 @@ fn output_value(output: &Output, group: &Group) -> SqlValue {
 pub(super) struct Prepared {
     names: Vec<String>,
     aliases: Vec<String>,
-    tables: Vec<std::sync::Arc<catalog::CachedTable>>,
+    tables: Vec<std::sync::Arc<catalog::TableDef>>,
     bound: Bound,
     pub(super) inner: JoinSelect,
 }
@@ -485,7 +485,7 @@ impl Prepared {
         Resolver {
             names: self.names.clone(),
             aliases: self.aliases.clone(),
-            defs: self.tables.iter().map(|t| &*t.def).collect(),
+            defs: self.tables.iter().map(|t| t.as_ref()).collect(),
             rows: None,
         }
     }
@@ -498,17 +498,41 @@ impl Prepared {
             self.bound.aggs.len()
         )
     }
+
+    pub(super) fn columns(&self) -> Result<Vec<ColumnDef>, SqlError> {
+        self.bound
+            .outputs
+            .iter()
+            .zip(&self.bound.names)
+            .map(|(output, name)| {
+                let col_type = match output {
+                    Output::Agg(pos) => self.bound.aggs[*pos]
+                        .1
+                        .output_type()
+                        .expect("aggregate type was validated at bind time"),
+                    Output::Group(pos) => {
+                        let (table, col) = self.bound.needed[self.bound.group_cols[*pos]];
+                        self.tables[table].columns[col].col_type
+                    }
+                };
+                Ok(ColumnDef {
+                    name: name.clone(),
+                    col_type,
+                    not_null: false,
+                    default: None,
+                })
+            })
+            .collect()
+    }
 }
 
 pub(super) fn prepare(
     tx: &DocumentTransaction<'_, '_>,
     statement: &JoinSelect,
+    limits: &SqlLimits,
     cache: &SqlCache,
 ) -> Result<Prepared, SqlError> {
-    let mut tables = Vec::with_capacity(statement.tables.len());
-    for table in &statement.tables {
-        tables.push(catalog::load_table_cached(tx, &table.name, cache.tables())?);
-    }
+    let tables = super::load_table_defs(tx, statement, limits, cache)?;
     let mut prepared = Prepared {
         names: statement.tables.iter().map(|t| t.name.clone()).collect(),
         aliases: statement.tables.iter().map(|t| t.alias.clone()).collect(),
@@ -567,7 +591,7 @@ pub(super) fn run(
     limits: &SqlLimits,
     cache: &SqlCache,
 ) -> Result<SqlOutcome, SqlError> {
-    let prepared = prepare(tx, statement, cache)?;
+    let prepared = prepare(tx, statement, limits, cache)?;
     let (resolver, bound, inner) = (&prepared.resolver(), &prepared.bound, &prepared.inner);
     let inner_limits = SqlLimits {
         max_select_rows: limits.max_sort_rows,

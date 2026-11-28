@@ -6,7 +6,7 @@ use super::exec::classify_io_error;
 use super::parser::ForeignKeySpec;
 use super::value::{
     MAX_SQL_INDEX_TEXT_BYTES, MAX_SQL_TEXT_PK_BYTES, SqlError, SqlLimits, SqlType, SqlValue,
-    encode_i64_pk_bytes,
+    coerce_for_column, encode_i64_pk_bytes,
 };
 use crate::MAX_SCAN_ENTRIES;
 use crate::document::flat::FlatScalar;
@@ -115,6 +115,12 @@ pub(crate) fn prepare_create_table_foreign_keys(
         if spec.on_delete == ForeignKeyAction::SetNull && child_col.not_null {
             return Err(SqlError::Constraint(format!(
                 "ON DELETE SET NULL is not allowed on NOT NULL column '{child_name}.{}'",
+                child_col.name
+            )));
+        }
+        if spec.on_update == ForeignKeyAction::SetNull && child_col.not_null {
+            return Err(SqlError::Constraint(format!(
+                "ON UPDATE SET NULL is not allowed on NOT NULL column '{child_name}.{}'",
                 child_col.name
             )));
         }
@@ -569,22 +575,30 @@ fn apply_delete_actions(
                             limits.max_mutation_rows
                         )));
                     }
-                    let mut removed = PendingDeleteFkChecks::new(child_def)?;
                     if action == ForeignKeyAction::Cascade {
+                        let mut removed = PendingDeleteFkChecks::new(child_def)?;
                         for (doc_id, obj) in &rows {
+                            super::exec::verify_doc_pk_id(child_def, doc_id, obj)?;
                             tx.delete(&child_def.name, doc_id)
                                 .map_err(classify_io_error)?;
                             removed.record_row(child_def, obj)?;
                         }
+                        apply_delete_actions(
+                            tx,
+                            child_def,
+                            removed.deleted_by_col,
+                            limits,
+                            cache,
+                            budget,
+                            depth + 1,
+                        )?;
                     } else {
                         let checks = super::exec::bind_table_checks(child_def, limits)?;
                         let column = &child_def.columns[child_col_idx];
-                        // Only the cleared column's keys disappear from the child.
-                        removed
-                            .deleted_by_col
-                            .retain(|(idx, _)| *idx == child_col_idx);
+                        let mut changed = PendingUpdateFkChecks::new(child_def, &[child_col_idx]);
                         for (doc_id, mut obj) in rows {
-                            removed.record_row(child_def, &obj)?;
+                            super::exec::verify_doc_pk_id(child_def, &doc_id, &obj)?;
+                            changed.record_row(child_def, &obj, &[(column, SqlValue::Null)])?;
                             obj.remove(&column.name);
                             super::exec::enforce_checks(&checks, child_def, &obj)?;
                             tx.replace(&child_def.name, &doc_id, &Value::Object(obj), false)
@@ -592,17 +606,12 @@ fn apply_delete_actions(
                                     super::exec::map_write_constraint_error(error, &child_def.name)
                                 })?;
                         }
+                        // SET NULL updates a child row. Its dependents follow
+                        // ON UPDATE even though the original parent was deleted.
+                        let mut updates = UpdateActions::new(limits, cache, budget);
+                        updates.apply(tx, child_def, changed.parent_changes, depth + 1)?;
+                        updates.verify(tx)?;
                     }
-                    let child_def = child_def.clone();
-                    apply_delete_actions(
-                        tx,
-                        &child_def,
-                        removed.deleted_by_col,
-                        limits,
-                        cache,
-                        budget,
-                        depth + 1,
-                    )?;
                 }
             }
         }
@@ -668,6 +677,34 @@ fn collect_child_rows(
         }
         return Ok(rows);
     }
+    if let Some(index) = child_lookup_index(child, child_col_idx) {
+        for key in keys.to_vec() {
+            let Some(value) = fk_key_to_index_value(&key) else {
+                continue;
+            };
+            let mut query = IndexQuery {
+                equal: vec![value],
+                lower: None,
+                upper: None,
+                after: None,
+                limit: 1,
+            };
+            loop {
+                query.limit = (limits.max_visited_rows - budget.visited + 1).min(256);
+                let page = tx
+                    .query_index(&child.name, &index.name, &query)
+                    .map_err(classify_io_error)?;
+                for entry in page.documents {
+                    take(entry.id, entry.document, budget)?;
+                }
+                if page.next.is_none() {
+                    break;
+                }
+                query.after = page.next;
+            }
+        }
+        return Ok(rows);
+    }
     // Every matching row is needed, so read the whole table in bounded pages;
     // each row's column is compared with the keys.
     let mut after: Option<String> = None;
@@ -704,77 +741,55 @@ fn collect_child_rows(
     }
 }
 
-/// Tracks both child FK assignments and parent unique-key removals during `UPDATE`.
+type KeyChanges = Vec<(usize, HashMap<FkKey, Option<FkKey>>)>;
+
+/// Tracks child assignments and parent key replacements during an update.
 pub(crate) struct PendingUpdateFkChecks {
-    /// For each FK in `table.foreign_keys` whose column is assigned: `(fk_idx, FkKeySet of new values)`.
-    child_checks: Vec<(usize, FkKeySet)>,
-    /// For each referenced column of `table` that is assigned: `(col_idx, FkKeySet of removed old values)`.
-    parent_removed: Vec<(usize, FkKeySet)>,
+    pub(crate) checks_children: bool,
+    parent_changes: KeyChanges,
 }
 
 impl PendingUpdateFkChecks {
-    pub(crate) fn new(table: &TableDef, assigned_cols: &[usize]) -> Result<Self, SqlError> {
-        let mut child_checks = Vec::new();
-        for (fk_idx, fk) in table.foreign_keys.iter().enumerate() {
-            if assigned_cols.contains(&fk.column) {
-                child_checks.push((fk_idx, FkKeySet::new(table.columns[fk.column].col_type)?));
-            }
-        }
-
-        let mut parent_cols: Vec<usize> = table
+    pub(crate) fn new(table: &TableDef, assigned_cols: &[usize]) -> Self {
+        let checks_children = table
+            .foreign_keys
+            .iter()
+            .any(|fk| assigned_cols.contains(&fk.column));
+        let mut parents: Vec<usize> = table
             .referenced_by
             .iter()
             .filter_map(|r| table.column_index(&r.ref_column))
-            .filter(|col_idx| assigned_cols.contains(col_idx))
+            .filter(|col| assigned_cols.contains(col))
             .collect();
-        parent_cols.sort_unstable();
-        parent_cols.dedup();
-        let mut parent_removed = Vec::with_capacity(parent_cols.len());
-        for col_idx in parent_cols {
-            parent_removed.push((col_idx, FkKeySet::new(table.columns[col_idx].col_type)?));
+        parents.sort_unstable();
+        parents.dedup();
+        Self {
+            checks_children,
+            parent_changes: parents
+                .into_iter()
+                .map(|col| (col, HashMap::new()))
+                .collect(),
         }
-
-        Ok(Self {
-            child_checks,
-            parent_removed,
-        })
-    }
-
-    pub(crate) fn is_active(&self) -> bool {
-        !self.child_checks.is_empty() || !self.parent_removed.is_empty()
     }
 
     pub(crate) fn record_row(
         &mut self,
         table: &TableDef,
-        old_obj: &Map<String, Value>,
+        old: &Map<String, Value>,
         updates: &[(&catalog::ColumnDef, SqlValue)],
     ) -> Result<(), SqlError> {
-        if !self.is_active() {
-            return Ok(());
-        }
-        for (fk_idx, set) in &mut self.child_checks {
-            let col_idx = table.foreign_keys[*fk_idx].column;
-            let col_name = &table.columns[col_idx].name;
-            if let Some((_, new_val)) = updates.iter().find(|(col, _)| col.name == *col_name) {
-                if let Some(key) = sql_value_to_fk_key(new_val)? {
-                    set.insert(key)?;
-                }
-            }
-        }
-        for (col_idx, old_set) in &mut self.parent_removed {
-            let col = &table.columns[*col_idx];
-            let Some(old_key) = extract_json_fk_key(old_obj, col)? else {
+        for (col, changes) in &mut self.parent_changes {
+            let column = &table.columns[*col];
+            let Some(old_key) = extract_json_fk_key(old, column)? else {
                 continue;
             };
-            let new_key = updates
+            let (_, value) = updates
                 .iter()
-                .find(|(c, _)| c.name == col.name)
-                .map(|(_, v)| sql_value_to_fk_key(v))
-                .transpose()?
-                .flatten();
+                .find(|(c, _)| c.name == column.name)
+                .expect("parent changes only track assigned columns");
+            let new_key = sql_value_to_fk_key(value)?;
             if new_key.as_ref() != Some(&old_key) {
-                old_set.insert(old_key)?;
+                changes.insert(old_key, new_key);
             }
         }
         Ok(())
@@ -782,67 +797,207 @@ impl PendingUpdateFkChecks {
 
     pub(crate) fn verify(
         self,
-        tx: &DocumentTransaction<'_, '_>,
+        tx: &mut DocumentTransaction<'_, '_>,
         table: &TableDef,
+        changed_ids: HashSet<String>,
         limits: &SqlLimits,
         cache: &TableCache,
     ) -> Result<(), SqlError> {
-        if !self.is_active() {
-            return Ok(());
+        let mut budget = CascadeBudget::default();
+        let mut actions = UpdateActions::new(limits, cache, &mut budget);
+        if self.checks_children && !changed_ids.is_empty() {
+            actions.changed.insert(table.name.clone(), changed_ids);
         }
-        if !self.child_checks.is_empty() {
-            let mut parent_cache: HashMap<&str, Arc<CachedTable>> = HashMap::new();
-            for (fk_idx, keys) in &self.child_checks {
-                if keys.is_empty() {
-                    continue;
-                }
-                let fk = &table.foreign_keys[*fk_idx];
-                let child_col = &table.columns[fk.column];
-                verify_parent_keys_exist(
-                    tx,
-                    table,
-                    child_col,
-                    &fk.ref_table,
-                    &fk.ref_column,
-                    keys,
-                    cache,
-                    &mut parent_cache,
-                )?;
+        actions.apply(tx, table, self.parent_changes, 0)?;
+        actions.verify(tx)
+    }
+}
+
+struct UpdateActions<'a> {
+    limits: &'a SqlLimits,
+    cache: &'a TableCache,
+    budget: &'a mut CascadeBudget,
+    removed: HashMap<String, Vec<(usize, FkKeySet)>>,
+    changed: HashMap<String, HashSet<String>>,
+}
+
+impl<'a> UpdateActions<'a> {
+    fn new(limits: &'a SqlLimits, cache: &'a TableCache, budget: &'a mut CascadeBudget) -> Self {
+        Self {
+            limits,
+            cache,
+            budget,
+            removed: HashMap::new(),
+            changed: HashMap::new(),
+        }
+    }
+
+    fn apply(
+        &mut self,
+        tx: &mut DocumentTransaction<'_, '_>,
+        parent: &TableDef,
+        changes: KeyChanges,
+        depth: usize,
+    ) -> Result<(), SqlError> {
+        for (ref_col, changes) in changes {
+            if changes.is_empty() {
+                continue;
             }
+            let column = &parent.columns[ref_col];
+            let mut old_keys = FkKeySet::new(column.col_type)?;
+            for key in changes.keys() {
+                old_keys.insert(key.clone())?;
+            }
+            for backref in parent
+                .referenced_by
+                .iter()
+                .filter(|backref| backref.ref_column == column.name)
+            {
+                let (child, child_col) = load_child(tx, backref, self.cache)?;
+                let child = &child.def;
+                let action = child
+                    .foreign_keys
+                    .iter()
+                    .find(|fk| {
+                        fk.column == child_col
+                            && fk.ref_table == parent.name
+                            && fk.ref_column == column.name
+                    })
+                    .map_or(ForeignKeyAction::NoAction, |fk| fk.on_update);
+                if !matches!(
+                    action,
+                    ForeignKeyAction::Cascade | ForeignKeyAction::SetNull
+                ) {
+                    continue;
+                }
+                let rows =
+                    collect_child_rows(tx, child, child_col, &old_keys, self.limits, self.budget)?;
+                if rows.is_empty() {
+                    continue;
+                }
+                if depth >= MAX_FK_CASCADE_DEPTH {
+                    return Err(SqlError::Bounds(format!(
+                        "foreign key actions nest deeper than {MAX_FK_CASCADE_DEPTH} levels"
+                    )));
+                }
+                self.budget.changed += rows.len();
+                if self.budget.changed > self.limits.max_mutation_rows {
+                    return Err(SqlError::Bounds(format!(
+                        "foreign key actions change more than max_mutation_rows ({}) rows",
+                        self.limits.max_mutation_rows
+                    )));
+                }
+                let mut downstream = PendingUpdateFkChecks::new(child, &[child_col]);
+                let checks = super::exec::bind_table_checks(child, self.limits)?;
+                let child_column = &child.columns[child_col];
+                for (id, mut obj) in rows {
+                    super::exec::verify_doc_pk_id(child, &id, &obj)?;
+                    let previous = extract_json_fk_key(&obj, child_column)?
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "matching foreign key is missing",
+                            )
+                        })
+                        .map_err(classify_io_error)?;
+                    let value = match (action, changes.get(&previous)) {
+                        (ForeignKeyAction::Cascade, Some(Some(FkKey::Integer(n)))) => {
+                            SqlValue::Integer(*n)
+                        }
+                        (ForeignKeyAction::Cascade, Some(Some(FkKey::Text(s)))) => {
+                            SqlValue::Text(s.clone())
+                        }
+                        (ForeignKeyAction::Cascade, Some(Some(FkKey::Boolean(b)))) => {
+                            SqlValue::Boolean(*b)
+                        }
+                        (_, Some(_)) => SqlValue::Null,
+                        (_, None) => {
+                            return Err(classify_io_error(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "matching foreign key has no update",
+                            )));
+                        }
+                    };
+                    let value = coerce_for_column(
+                        &value,
+                        &child_column.name,
+                        child_column.col_type,
+                        child_column.not_null,
+                        false,
+                        self.limits.max_text_bytes,
+                    )?;
+                    let stored = super::exec::sql_value_to_json(&value, &child_column.name)?;
+                    downstream.record_row(child, &obj, &[(child_column, value)])?;
+                    if stored.is_null() {
+                        obj.remove(&child_column.name);
+                    } else {
+                        obj.insert(child_column.name.clone(), stored);
+                    }
+                    super::exec::enforce_checks(&checks, child, &obj)?;
+                    let id = super::exec::stage_updated_row(
+                        tx,
+                        child,
+                        id,
+                        obj,
+                        child_col == child.primary_key_index,
+                    )?;
+                    self.changed
+                        .entry(child.name.clone())
+                        .or_default()
+                        .insert(id);
+                }
+                self.apply(tx, child, downstream.parent_changes, depth + 1)?;
+            }
+            self.removed
+                .entry(parent.name.clone())
+                .or_default()
+                .push((ref_col, old_keys));
         }
-        if !self.parent_removed.is_empty() {
-            let mut child_cache: HashMap<String, Arc<CachedTable>> = HashMap::new();
-            let mut visited = 0usize;
-            for (ref_col_idx, old_keys) in &self.parent_removed {
-                if old_keys.is_empty() {
-                    continue;
+        Ok(())
+    }
+
+    fn verify(self, tx: &DocumentTransaction<'_, '_>) -> Result<(), SqlError> {
+        for (table, ids) in self.changed {
+            let table = catalog::load_table_cached(tx, &table, self.cache)?;
+            let mut docs = Vec::with_capacity(ids.len());
+            for id in ids {
+                if let Some(doc) = tx.get(&table.def.name, &id).map_err(classify_io_error)? {
+                    docs.push(doc);
                 }
-                // Filter out keys that still exist on another row in `table` after all updates.
-                let col_type = table.columns[*ref_col_idx].col_type;
-                let mut missing_keys = FkKeySet::new(col_type)?;
-                for key in old_keys.to_vec() {
-                    if !parent_has_key(tx, table, *ref_col_idx, &key)? {
-                        missing_keys.insert(key)?;
+            }
+            let refs: Vec<&Value> = docs.iter().collect();
+            check_inserted_docs(tx, &table.def, &refs, self.cache)?;
+        }
+        let mut child_cache = HashMap::new();
+        for (name, removed) in self.removed {
+            let parent = catalog::load_table_cached(tx, &name, self.cache)?;
+            let parent = &parent.def;
+            for (ref_col, keys) in removed {
+                let column = &parent.columns[ref_col];
+                let mut missing = FkKeySet::new(column.col_type)?;
+                for key in keys.to_vec() {
+                    if !parent_has_key(tx, parent, ref_col, &key)? {
+                        missing.insert(key)?;
                     }
                 }
-                if missing_keys.is_empty() {
+                if missing.is_empty() {
                     continue;
                 }
-                let ref_col_name = &table.columns[*ref_col_idx].name;
-                for fk_ref in &table.referenced_by {
-                    if fk_ref.ref_column != *ref_col_name {
-                        continue;
-                    }
+                for fk_ref in parent
+                    .referenced_by
+                    .iter()
+                    .filter(|fk_ref| fk_ref.ref_column == column.name)
+                {
                     ensure_no_child_references(
                         tx,
-                        table,
-                        ref_col_name,
+                        parent,
+                        &column.name,
                         fk_ref,
-                        &missing_keys,
-                        limits,
-                        cache,
+                        &missing,
+                        self.limits,
+                        self.cache,
                         &mut child_cache,
-                        &mut visited,
+                        &mut self.budget.visited,
                     )?;
                 }
             }
@@ -1049,22 +1204,7 @@ fn child_has_any_key(
         return Ok(false);
     }
 
-    // 2. Ready child index whose leading column is `child_col_idx` and all trailing
-    //    columns are NOT NULL (otherwise rows with NULL in a trailing column are omitted
-    //    from the document index and would be missed).
-    let usable_index = child
-        .indexes
-        .iter()
-        .filter(|idx| {
-            idx.state == IndexState::Ready
-                && idx.columns.first() == Some(&child_col_idx)
-                && idx.columns[1..]
-                    .iter()
-                    .all(|&trailing| child.columns[trailing].not_null)
-        })
-        .min_by_key(|idx| (idx.columns.len(), !idx.unique));
-
-    if let Some(idx_def) = usable_index {
+    if let Some(idx_def) = child_lookup_index(child, child_col_idx) {
         for key in keys.to_vec() {
             let Some(index_val) = fk_key_to_index_value(&key) else {
                 // Indexed columns never store strings > MAX_SQL_INDEX_TEXT_BYTES.
@@ -1092,6 +1232,21 @@ fn child_has_any_key(
 
     // 3. No usable index -> bounded scan subject to `limits.max_visited_rows`.
     scan_child_for_keys(tx, child, child_col_idx, keys, limits, visited)
+}
+
+/// Every matching non-NULL foreign key must appear in this index.
+fn child_lookup_index(child: &TableDef, child_col_idx: usize) -> Option<&IndexDef> {
+    child
+        .indexes
+        .iter()
+        .filter(|idx| {
+            idx.state == IndexState::Ready
+                && idx.columns.first() == Some(&child_col_idx)
+                && idx.columns[1..]
+                    .iter()
+                    .all(|&trailing| child.columns[trailing].not_null)
+        })
+        .min_by_key(|idx| (idx.columns.len(), !idx.unique))
 }
 
 fn scan_child_for_keys(
