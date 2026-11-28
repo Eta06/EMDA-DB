@@ -65,6 +65,22 @@ pub(super) enum Source {
     },
 }
 
+fn reads_unresolved_cte(statement: &SqlStatement, ctes: &[(String, Arc<Source>)]) -> bool {
+    let is_cte = |name: &str| ctes.iter().any(|(cte, _)| cte == name);
+    match &statement.inner {
+        Statement::Select(select) => is_cte(&select.table),
+        Statement::Join(join) => join
+            .tables
+            .iter()
+            .any(|table| match table.query.as_deref() {
+                None => is_cte(&table.name),
+                Some(Source::Select(source)) => reads_unresolved_cte(source, ctes),
+                _ => false,
+            }),
+        _ => false,
+    }
+}
+
 impl Source {
     pub(super) fn columns(
         &self,
@@ -396,6 +412,17 @@ impl JoinParser<'_> {
                 )));
             }
             if !self.eat(&TokenKind::Comma) {
+                for (idx, (_, source)) in ctes.iter().enumerate() {
+                    let (statement, visible) = match source.as_ref() {
+                        Source::Select(statement) => (statement.as_ref(), idx),
+                        Source::Recursive(source) => (&source.anchor, idx + 1),
+                        _ => continue,
+                    };
+                    if reads_unresolved_cte(statement, &ctes[..visible]) {
+                        return Err(self
+                            .unsupported("a dependent CTE definition or self-referencing anchor"));
+                    }
+                }
                 return Ok(ctes);
             }
         }

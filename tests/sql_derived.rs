@@ -119,6 +119,7 @@ fn derived_tables_and_ctes_match_sqlite() {
         );
         for sql in [
             "SELECT * FROM (SELECT id FROM emp WHERE id > ?) AS d",
+            "WITH dept AS (SELECT id FROM emp WHERE id < 2), nested AS (SELECT id FROM dept) SELECT id FROM nested",
             "WITH a AS (SELECT id FROM emp) SELECT id FROM a JOIN dept ON dept.id = a.id",
             "SELECT * FROM (DELETE FROM emp) AS d",
         ] {

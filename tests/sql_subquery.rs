@@ -149,6 +149,38 @@ fn correlated_exists_matches_sqlite_with_nulls_duplicates_and_residual_filters()
     });
 }
 
+#[test]
+fn validating_an_empty_join_subquery_does_not_read_its_tables() {
+    for_both(|db, backend| {
+        for sql in [
+            "CREATE TABLE u (id INTEGER PRIMARY KEY)",
+            "CREATE TABLE a (id INTEGER PRIMARY KEY, k INTEGER)",
+            "CREATE TABLE b (id INTEGER PRIMARY KEY, k INTEGER)",
+            "INSERT INTO u VALUES (1)",
+        ] {
+            db.execute(sql, &[]).unwrap();
+        }
+        let db = &*db;
+        db.transaction(|tx| {
+            let result = tx.execute(
+                "SELECT id FROM u WHERE EXISTS (SELECT b.id FROM a JOIN b ON a.k = b.k LIMIT 0)",
+                &[],
+            )?;
+            assert!(rows(result).is_empty());
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(|| db.execute("INSERT INTO b VALUES (2, 5)", &[]))
+                    .join()
+                    .unwrap()
+            })?;
+            Ok(())
+        })
+        .unwrap_or_else(|error| {
+            panic!("{backend}: needless joined-table read dependency: {error}")
+        });
+    });
+}
+
 fn setup_basic_tables(db: &SqlDatabase<'_>) {
     db.execute(
         "CREATE TABLE outer_t (id INT PRIMARY KEY, k INT, r REAL, s TEXT, b BOOLEAN)",

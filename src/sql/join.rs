@@ -4038,6 +4038,27 @@ pub(crate) fn explain(
     limits: &SqlLimits,
     cache: &SqlCache,
 ) -> Result<Vec<Vec<SqlValue>>, SqlError> {
+    describe_plan(tx, statement, params, limits, cache, true)
+}
+
+pub(crate) fn validate_subquery(
+    tx: &DocumentTransaction<'_, '_>,
+    statement: &JoinSelect,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    cache: &SqlCache,
+) -> Result<(), SqlError> {
+    describe_plan(tx, statement, params, limits, cache, false).map(|_| ())
+}
+
+fn describe_plan(
+    tx: &DocumentTransaction<'_, '_>,
+    statement: &JoinSelect,
+    params: &[SqlValue],
+    limits: &SqlLimits,
+    cache: &SqlCache,
+    estimate: bool,
+) -> Result<Vec<Vec<SqlValue>>, SqlError> {
     if let Some(source) = &statement.source {
         let kind = match &source.inner {
             super::parser::Statement::Join(_) => "join",
@@ -4054,7 +4075,7 @@ pub(crate) fn explain(
     }
     if aggregate::is_aggregate(statement) {
         let prepared = aggregate::prepare(tx, statement, limits, cache)?;
-        let mut rows = explain(tx, &prepared.inner, params, limits, cache)?;
+        let mut rows = describe_plan(tx, &prepared.inner, params, limits, cache, estimate)?;
         rows.push(vec![
             SqlValue::Text("aggregate".into()),
             SqlValue::Text(String::new()),
@@ -4102,7 +4123,9 @@ pub(crate) fn explain(
             };
             format!("{kind}; ON checked on every candidate")
         };
-        let estimate = if let Some(source) = &statement.tables[index].query {
+        let estimate = if !estimate {
+            String::new()
+        } else if let Some(source) = &statement.tables[index].query {
             let description = if matches!(source.as_ref(), derived::Source::Recursive(_)) {
                 "recursive materialized source"
             } else {

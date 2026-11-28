@@ -661,7 +661,7 @@ fn bind_one_subquery(
                 .flat_map(|t| t.columns.iter().map(|c| c.name.clone()))
                 .collect();
             let sub_params = &params[*param_start..*param_start + *param_count];
-            super::join::explain(tx, join, sub_params, limits, cache).map_err(|err| {
+            super::join::validate_subquery(tx, join, sub_params, limits, cache).map_err(|err| {
                 map_join_correlated_error(err, &outer_tables, &outer_cols, slot.subquery.offset)
             })?;
             Ok(PreparedSubquery {
