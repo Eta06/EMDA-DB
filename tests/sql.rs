@@ -859,7 +859,6 @@ fn unsupported_sql_features_return_unsupported_naming_feature() {
         "CREATE TABLE a (id INT PRIMARY KEY, p INT REFERENCES b(id) DEFERRABLE)",
         "CREATE TABLE a (id INT PRIMARY KEY, FOREIGN KEY (id, p) REFERENCES b(id, p))",
         "CREATE TABLE a (id INT PRIMARY KEY, r REAL UNIQUE)",
-        "CREATE TABLE a (a INT, b INT, PRIMARY KEY (a, b))",
         "SELECT DISTINCT id FROM a",
         "SELECT id FROM a UNION SELECT id FROM b",
         "SELECT * FROM a WHERE id IN (1, 2)",
@@ -877,6 +876,107 @@ fn unsupported_sql_features_return_unsupported_naming_feature() {
             "expected Unsupported for {sql:?}, got {err:?}"
         );
     }
+}
+
+#[test]
+fn composite_primary_keys_use_ordered_tuple_ids_and_preserve_atomicity() {
+    for_both_sql(|mut db| {
+        let sqlite = rusqlite::Connection::open_in_memory().unwrap();
+        for sql in [
+            "CREATE TABLE tenant (note TEXT, org TEXT, seq INTEGER, alias TEXT UNIQUE, PRIMARY KEY (org, seq))",
+            "INSERT INTO tenant VALUES ('first', '', -1, 'empty'), ('second', 'a', 1, 'a1'), ('third', 'a', -5, 'a2'), ('fourth', 'aa', 1, 'aa1'), ('fifth', 'é', 1, 'e1')",
+            "CREATE INDEX tenant_seq ON tenant (seq)",
+            "CREATE TABLE bin (id INTEGER PRIMARY KEY, org TEXT)",
+            "INSERT INTO bin VALUES (1, 'a'), (2, 'aa')",
+        ] {
+            db.execute(sql, &[]).unwrap();
+            sqlite.execute(sql, []).unwrap();
+        }
+        for stmt in [
+            "INSERT INTO tenant VALUES (NULL, 'a', 1, 'dup')",
+            "INSERT INTO tenant (org, alias) VALUES ('miss', 'x')",
+            "UPDATE tenant SET seq = 1 WHERE org = 'a' AND seq = -5",
+        ] {
+            assert!(
+                matches!(db.execute(stmt, &[]), Err(SqlError::Constraint(_))),
+                "{stmt}"
+            );
+        }
+        assert!(matches!(
+            db.execute(
+                "INSERT INTO tenant (org, seq) VALUES (?, 1)",
+                &[SqlValue::Text("x".repeat(124))]
+            ),
+            Err(SqlError::Bounds(_))
+        ));
+        let point = "SELECT org, seq FROM tenant WHERE seq = ? AND org = ?";
+        let params = [SqlValue::Integer(-5), SqlValue::Text("a".into())];
+        let SqlOutcome::Rows { rows, .. } =
+            db.execute(&format!("EXPLAIN {point}"), &params).unwrap()
+        else {
+            panic!("expected EXPLAIN");
+        };
+        assert_eq!(rows[0][2], SqlValue::Text("primary-key lookup".into()));
+        db.set_limits(SqlLimits {
+            max_visited_rows: 1,
+            ..*db.limits()
+        })
+        .unwrap();
+        assert!(db.execute(point, &params).is_ok());
+        db.set_limits(SqlLimits::default()).unwrap();
+        let SqlOutcome::Rows { rows, .. } = db
+            .execute("EXPLAIN SELECT seq FROM tenant WHERE org = 'a'", &[])
+            .unwrap()
+        else {
+            panic!("expected EXPLAIN");
+        };
+        assert_eq!(rows[0][2], SqlValue::Text("primary-key range".into()));
+        for sql in [
+            "UPDATE tenant SET org = 'ab', seq = -10 WHERE org = 'a' AND seq = -5",
+            "ALTER TABLE tenant DROP COLUMN note",
+            "DELETE FROM tenant WHERE org = '' AND seq = -1",
+        ] {
+            db.execute(sql, &[]).unwrap();
+            sqlite.execute(sql, []).unwrap();
+        }
+        assert!(matches!(
+            db.execute("ALTER TABLE tenant DROP COLUMN seq", &[]),
+            Err(SqlError::Constraint(_))
+        ));
+        assert!(matches!(
+            db.execute(
+                "CREATE TABLE bad (id INTEGER PRIMARY KEY, org TEXT REFERENCES tenant(org))",
+                &[]
+            ),
+            Err(SqlError::Constraint(_))
+        ));
+        db.execute(
+            "CREATE TABLE link (id INTEGER PRIMARY KEY, alias TEXT REFERENCES tenant(alias))",
+            &[],
+        )
+        .unwrap();
+        for sql in [
+            "SELECT org, seq FROM tenant ORDER BY org, seq",
+            "SELECT org, seq FROM tenant WHERE seq = 1 ORDER BY org, seq",
+            "SELECT tenant.org, tenant.seq FROM bin JOIN tenant ON tenant.org = bin.org ORDER BY tenant.org, tenant.seq",
+        ] {
+            let SqlOutcome::Rows { rows, .. } = db.execute(sql, &[]).unwrap() else {
+                panic!()
+            };
+            let mut stmt = sqlite.prepare(sql).unwrap();
+            let expected = stmt
+                .query_map([], |row| {
+                    Ok(vec![
+                        SqlValue::Text(row.get(0)?),
+                        SqlValue::Integer(row.get(1)?),
+                    ])
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(rows, expected, "{sql}");
+        }
+    });
 }
 
 #[test]

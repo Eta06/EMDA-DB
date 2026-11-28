@@ -435,7 +435,7 @@ pub(crate) fn alter_in_tx(
                 table: updated.name.clone(),
                 column: column.clone(),
             })?;
-        if index == updated.primary_key_index
+        if updated.primary_key_columns().any(|key| index == key)
             || updated
                 .indexes
                 .iter()
@@ -463,6 +463,10 @@ pub(crate) fn alter_in_tx(
             updated.columns.remove(index);
             let shift = |stored: &mut usize| *stored -= usize::from(*stored > index);
             shift(&mut updated.primary_key_index);
+            updated
+                .additional_primary_key_columns
+                .iter_mut()
+                .for_each(shift);
             for def in &mut updated.indexes {
                 def.columns.iter_mut().for_each(shift);
             }

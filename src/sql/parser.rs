@@ -60,7 +60,7 @@ pub(crate) struct CreateTableStmt {
     pub(crate) if_not_exists: bool,
     pub(crate) name: String,
     pub(crate) columns: Vec<ColumnSpec>,
-    pub(crate) primary_key_index: usize,
+    pub(crate) primary_key_columns: Vec<usize>,
     pub(crate) unique_constraints: Vec<Vec<usize>>,
     pub(crate) foreign_keys: Vec<ForeignKeySpec>,
     /// `CHECK` expressions, column- and table-level, as written.
@@ -1018,7 +1018,7 @@ impl Parser<'_> {
         let mut columns = Vec::new();
         let mut seen_cols = HashSet::new();
         let mut pk_col_index: Option<usize> = None;
-        let mut table_pk_name: Option<(String, usize)> = None;
+        let mut table_pk_names = Vec::new();
         let mut col_uniques: Vec<usize> = Vec::new();
         let mut table_uniques: Vec<Vec<(String, usize)>> = Vec::new();
         let mut col_fks: Vec<(usize, ParsedReferences)> = Vec::new();
@@ -1037,20 +1037,31 @@ impl Parser<'_> {
                 self.advance();
                 self.expect_kw("key")?;
                 self.expect_kind(&TokenKind::LParen, "'('")?;
-                let (pk_name, pk_offset) = self.expect_ident("primary key column")?;
-                if matches!(self.peek().kind, TokenKind::Comma) {
-                    return Err(SqlError::Unsupported {
-                        feature: "composite PRIMARY KEY".into(),
-                        offset: Some(self.peek().offset),
-                    });
-                }
-                self.expect_kind(&TokenKind::RParen, "')'")?;
-                if table_pk_name.is_some() || pk_col_index.is_some() {
+                if !table_pk_names.is_empty() || pk_col_index.is_some() {
                     return Err(SqlError::Constraint(
                         "table cannot declare multiple PRIMARY KEY constraints".into(),
                     ));
                 }
-                table_pk_name = Some((pk_name, pk_offset));
+                loop {
+                    let key = self.expect_ident("primary key column")?;
+                    if table_pk_names.iter().any(|(name, _)| *name == key.0) {
+                        return Err(SqlError::Constraint(format!(
+                            "PRIMARY KEY repeats column '{}'",
+                            key.0
+                        )));
+                    }
+                    table_pk_names.push(key);
+                    if table_pk_names.len() > MAX_SQL_INDEX_COLUMNS {
+                        return Err(SqlError::Bounds(format!(
+                            "PRIMARY KEY has more than {MAX_SQL_INDEX_COLUMNS} columns"
+                        )));
+                    }
+                    if !matches!(self.peek().kind, TokenKind::Comma) {
+                        break;
+                    }
+                    self.advance();
+                }
+                self.expect_kind(&TokenKind::RParen, "')'")?;
             } else if self.eat_kw("unique") {
                 self.expect_kind(&TokenKind::LParen, "'('")?;
                 if matches!(self.peek().kind, TokenKind::RParen) {
@@ -1154,7 +1165,7 @@ impl Parser<'_> {
                         not_null = true;
                     } else if self.eat_kw("primary") {
                         self.expect_kw("key")?;
-                        if is_pk || pk_col_index.is_some() || table_pk_name.is_some() {
+                        if is_pk || pk_col_index.is_some() || !table_pk_names.is_empty() {
                             return Err(SqlError::Constraint(
                                 "table cannot declare multiple PRIMARY KEY constraints".into(),
                             ));
@@ -1225,33 +1236,41 @@ impl Parser<'_> {
             });
         }
 
-        if let Some((pk_name, pk_offset)) = table_pk_name {
-            let idx = columns
-                .iter()
-                .position(|c| c.name == pk_name)
-                .ok_or_else(|| SqlError::Syntax {
-                    offset: pk_offset,
-                    message: format!("PRIMARY KEY column '{pk_name}' is not declared in table"),
-                })?;
-            columns[idx].not_null = true;
-            pk_col_index = Some(idx);
+        let mut primary_key_columns = Vec::new();
+        if let Some(index) = pk_col_index {
+            primary_key_columns.push(index);
         }
-
-        let primary_key_index = pk_col_index.ok_or_else(|| {
-            SqlError::Constraint("CREATE TABLE requires exactly one PRIMARY KEY column".into())
-        })?;
-        let pk_type = columns[primary_key_index].col_type;
-        if !matches!(pk_type, SqlType::Integer | SqlType::Text { .. }) {
-            return Err(SqlError::Type(format!(
-                "PRIMARY KEY column '{}' must be INTEGER or TEXT, got {}",
-                columns[primary_key_index].name,
-                pk_type.display_name()
-            )));
+        for (name, offset) in table_pk_names {
+            let idx =
+                columns
+                    .iter()
+                    .position(|c| c.name == name)
+                    .ok_or_else(|| SqlError::Syntax {
+                        offset,
+                        message: format!("PRIMARY KEY column '{name}' is not declared in table"),
+                    })?;
+            columns[idx].not_null = true;
+            primary_key_columns.push(idx);
+        }
+        if primary_key_columns.is_empty() {
+            return Err(SqlError::Constraint(
+                "CREATE TABLE requires a PRIMARY KEY".into(),
+            ));
+        }
+        for &index in &primary_key_columns {
+            let column = &columns[index];
+            if !matches!(column.col_type, SqlType::Integer | SqlType::Text { .. }) {
+                return Err(SqlError::Type(format!(
+                    "PRIMARY KEY column '{}' must be INTEGER or TEXT, got {}",
+                    column.name,
+                    column.col_type.display_name()
+                )));
+            }
         }
 
         let mut unique_constraints: Vec<Vec<usize>> = Vec::new();
         for col_idx in col_uniques {
-            if col_idx != primary_key_index {
+            if primary_key_columns.as_slice() != [col_idx] {
                 let single = vec![col_idx];
                 if !unique_constraints.contains(&single) {
                     unique_constraints.push(single);
@@ -1271,7 +1290,7 @@ impl Parser<'_> {
                 indices.push(idx);
             }
             // The primary key is already unique; skip it and repeats.
-            let is_primary_key = indices.len() == 1 && indices[0] == primary_key_index;
+            let is_primary_key = indices == primary_key_columns;
             if !(is_primary_key || unique_constraints.contains(&indices)) {
                 unique_constraints.push(indices);
             }
@@ -1336,7 +1355,7 @@ impl Parser<'_> {
             if_not_exists,
             name,
             columns,
-            primary_key_index,
+            primary_key_columns,
             unique_constraints,
             foreign_keys,
             checks,

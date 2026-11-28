@@ -1,6 +1,6 @@
 //! Primary-key and secondary-index access path planning for SQL `SELECT`, `UPDATE`, and `DELETE`.
 use super::catalog::{IndexDef, IndexState, TableDef};
-use super::exec::{BoundExpr, BoundOrderBy};
+use super::exec::{self, BoundExpr, BoundOrderBy, SqlValueRef};
 use super::parser::CompareOp;
 use super::value::{
     MAX_SQL_INDEX_TEXT_BYTES, MAX_SQL_TEXT_PK_BYTES, SqlType, SqlValue, encode_i64_pk,
@@ -184,6 +184,9 @@ pub(crate) fn compile_select_access(
     let Some(expr) = filter else {
         return CompiledSelectAccess::Static(plan_access(None, table, order_by, has_limit, &[]));
     };
+    if !table.has_scalar_pk() && expr_is_dynamic(expr) {
+        return CompiledSelectAccess::Dynamic;
+    }
     if expr_is_dynamic(expr) {
         if expr_has_only_params(expr) {
             // Fall through to compiled index template matching below.
@@ -734,7 +737,7 @@ pub(crate) fn plan_access(
                             if proven_null[*col_idx] {
                                 return AccessPlan::Empty;
                             }
-                            if *col_idx == pk_idx {
+                            if table.has_scalar_pk() && *col_idx == pk_idx {
                                 let pk_type = table.columns[pk_idx].col_type;
                                 if let Some(doc_ids) =
                                     super::subquery::plan_in_pk_candidates(set, pk_type)
@@ -786,7 +789,7 @@ pub(crate) fn plan_access(
                     }
                     if !tighten_col_bound(
                         &mut bounds[col_idx],
-                        col_idx == table.primary_key_index,
+                        table.has_scalar_pk() && col_idx == pk_idx,
                         op,
                         val,
                     ) {
@@ -798,8 +801,12 @@ pub(crate) fn plan_access(
         }
     }
 
-    let pk_plan = build_pk_plan(&bounds[pk_idx], table.columns[pk_idx].col_type);
-    if matches!(pk_plan, AccessPlan::PkPoint { .. }) {
+    let pk_plan = if table.has_scalar_pk() {
+        build_pk_plan(&bounds[pk_idx], table.columns[pk_idx].col_type)
+    } else {
+        build_compound_pk_plan(table, &bounds)
+    };
+    if matches!(pk_plan, AccessPlan::Empty | AccessPlan::PkPoint { .. }) {
         return pk_plan;
     }
 
@@ -903,6 +910,41 @@ pub(crate) fn plan_access(
             }
             AccessPlan::FullScan
         }
+    }
+}
+
+fn build_compound_pk_plan(table: &TableDef, bounds: &[ColBounds]) -> AccessPlan {
+    let mut id = String::from("c:");
+    let mut complete = true;
+    for col in table.primary_key_columns() {
+        let value = match &bounds[col] {
+            ColBounds::Int { lo, hi, .. } if lo == hi => SqlValueRef::Integer(*lo),
+            ColBounds::Text {
+                has_eq: Some(text), ..
+            } => SqlValueRef::Text(text),
+            _ => {
+                complete = false;
+                break;
+            }
+        };
+        if exec::append_compound_key(&mut id, value).is_err() {
+            return AccessPlan::Empty;
+        }
+    }
+    if complete {
+        return AccessPlan::PkPoint { doc_id: id };
+    }
+    if id == "c:" {
+        return AccessPlan::FullScan;
+    }
+    if id.len() >= 256 {
+        return AccessPlan::Empty;
+    }
+    let upper = UpperBound::Excluded(format!("{id}~"));
+    AccessPlan::PkRange {
+        after_id: Some(id),
+        upper,
+        max_exact_rows: None,
     }
 }
 

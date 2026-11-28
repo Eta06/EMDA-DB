@@ -1269,7 +1269,7 @@ fn choose_access(table: usize, def: &TableDef, on: &[BExpr], preserve_build: boo
             for (own, other) in [(left, right), (right, left)] {
                 if let BExpr::Column(slot) = own.as_ref() {
                     if slot.table == table && other.max_table().is_none_or(|max| max < table) {
-                        let is_pk = slot.column == def.primary_key_index;
+                        let is_pk = def.has_scalar_pk() && slot.column == def.primary_key_index;
                         if best.is_none_or(|(_, best_pk, _)| is_pk && !best_pk) {
                             best = Some((index, is_pk, slot.column));
                         }
@@ -1873,7 +1873,19 @@ fn decode_borrowed_members<'a, M: Member<'a>>(
             })?,
         };
     }
-    if !pk_val_matches_id(out[def.primary_key_index], id) {
+    let matches = if def.has_scalar_pk() {
+        pk_val_matches_id(out[def.primary_key_index], id)
+    } else {
+        let compound = exec::compound_row_id(def, |index| {
+            Ok(match out[index] {
+                ValRef::Integer(n) => exec::SqlValueRef::Integer(n),
+                ValRef::Text(s) => exec::SqlValueRef::Text(s),
+                _ => exec::SqlValueRef::Null,
+            })
+        });
+        compound.is_ok_and(|compound| compound == id)
+    };
+    if !matches {
         return Err(corrupt(format!(
             "row ID does not match its primary key in table '{}'",
             def.name
@@ -2015,6 +2027,7 @@ fn load_table_defs(
                 name: table.name.clone(),
                 columns,
                 primary_key_index: 0,
+                additional_primary_key_columns: Vec::new(),
                 indexes: Vec::new(),
                 foreign_keys: Vec::new(),
                 referenced_by: Vec::new(),
@@ -2255,6 +2268,7 @@ fn plan(
     let order_satisfied = order.is_empty()
         || (!preserves_right
             && first_is_stored
+            && defs[0].has_scalar_pk()
             && first_pk_ordered
             && (matches!(order.as_slice(), [(slot, false, _)] if *slot == first_key)
                 || (all_steps_point_from[0]

@@ -128,6 +128,8 @@ pub(crate) struct TableDef {
     pub(crate) columns: Vec<ColumnDef>,
     pub(crate) primary_key_index: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) additional_primary_key_columns: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) indexes: Vec<IndexDef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) foreign_keys: Vec<ForeignKeyDef>,
@@ -155,6 +157,7 @@ impl TableDef {
             name,
             columns,
             primary_key_index,
+            Vec::new(),
             indexes,
             Vec::new(),
             Vec::new(),
@@ -165,6 +168,7 @@ impl TableDef {
         name: String,
         columns: Vec<ColumnDef>,
         primary_key_index: usize,
+        additional_primary_key_columns: Vec<usize>,
         indexes: Vec<IndexDef>,
         foreign_keys: Vec<ForeignKeyDef>,
         referenced_by: Vec<ForeignKeyRef>,
@@ -174,6 +178,7 @@ impl TableDef {
             name,
             columns,
             primary_key_index,
+            additional_primary_key_columns,
             indexes,
             foreign_keys,
             referenced_by,
@@ -181,6 +186,15 @@ impl TableDef {
         };
         def.validate()?;
         Ok(def)
+    }
+
+    pub(crate) fn has_scalar_pk(&self) -> bool {
+        self.additional_primary_key_columns.is_empty()
+    }
+
+    pub(crate) fn primary_key_columns(&self) -> impl Iterator<Item = usize> + '_ {
+        std::iter::once(self.primary_key_index)
+            .chain(self.additional_primary_key_columns.iter().copied())
     }
 
     pub(crate) fn validate(&self) -> Result<(), SqlError> {
@@ -225,17 +239,22 @@ impl TableDef {
                 )));
             }
         }
-        let pk = self.columns.get(self.primary_key_index).ok_or_else(|| {
-            SqlError::Io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid primary key index in SQL catalog entry",
-            ))
-        })?;
-        if !pk.not_null || !matches!(pk.col_type, SqlType::Integer | SqlType::Text { .. }) {
-            return Err(SqlError::Io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid primary key column in SQL catalog entry",
-            )));
+        for (position, index) in self.primary_key_columns().enumerate() {
+            if position >= MAX_SQL_INDEX_COLUMNS
+                || self
+                    .primary_key_columns()
+                    .take(position)
+                    .any(|previous| previous == index)
+                || self.columns.get(index).is_none_or(|col| {
+                    !col.not_null
+                        || !matches!(col.col_type, SqlType::Integer | SqlType::Text { .. })
+                })
+            {
+                return Err(SqlError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid primary key columns in SQL catalog entry",
+                )));
+            }
         }
         if self.indexes.len() > MAX_SQL_INDEXES_PER_TABLE {
             return Err(SqlError::Bounds(format!(

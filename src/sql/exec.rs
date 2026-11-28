@@ -448,7 +448,7 @@ fn exec_create_table(
             name: col.name.clone(),
             col_type: col.col_type,
             not_null: col.not_null,
-            default: column_default(col, idx == stmt.primary_key_index, limits)?,
+            default: column_default(col, stmt.primary_key_columns.contains(&idx), limits)?,
         });
     }
     let indexes: Vec<IndexDef> = stmt
@@ -473,7 +473,7 @@ fn exec_create_table(
         tx,
         &stmt.name,
         &columns,
-        stmt.primary_key_index,
+        (stmt.primary_key_columns.len() == 1).then_some(stmt.primary_key_columns[0]),
         &indexes,
         &stmt.foreign_keys,
         &cache.tables,
@@ -481,7 +481,8 @@ fn exec_create_table(
     let mut def = TableDef::with_foreign_keys(
         stmt.name.clone(),
         columns,
-        stmt.primary_key_index,
+        stmt.primary_key_columns[0],
+        stmt.primary_key_columns[1..].to_vec(),
         indexes,
         prepared_fks.foreign_keys,
         prepared_fks.self_referenced_by,
@@ -1042,7 +1043,7 @@ fn get_or_build_insert_plan(
             }
             for (idx, col) in table.columns.iter().enumerate() {
                 if !indices.contains(&idx) && col.not_null && col.default.is_none() {
-                    if idx == table.primary_key_index {
+                    if table.primary_key_columns().any(|key| key == idx) {
                         return Err(SqlError::Constraint(format!(
                             "PRIMARY KEY column '{}' cannot be omitted",
                             col.name
@@ -1299,7 +1300,7 @@ fn exec_insert(
     let pk_type = table.columns[pk_idx].col_type;
     let mut sub_budget = SubqueryBudget::new(limits);
 
-    if stmt.rows.len() == 1 {
+    if stmt.rows.len() == 1 && table.has_scalar_pk() {
         let tuple = &stmt.rows[0];
         if tuple.len() != plan.target_indices.len() {
             return Err(SqlError::Syntax {
@@ -1394,28 +1395,14 @@ fn exec_insert(
                 obj.insert(col.name.clone(), json_val);
             }
         }
-        let pk = pk_val
-            .ok_or_else(|| SqlError::Constraint("PRIMARY KEY value cannot be NULL".into()))?;
-        let doc_id = match (pk_type, &pk) {
-            (SqlType::Integer, InsertPk::Int(n)) => {
-                let mut buf = [0u8; 18];
-                encode_i64_pk_bytes(*n, &mut buf);
-                String::from_utf8(buf.to_vec()).expect("ASCII hex PK")
-            }
-            (SqlType::Text { .. }, InsertPk::Text(s)) => {
-                if s.len() > MAX_SQL_TEXT_PK_BYTES {
-                    return Err(SqlError::Bounds(format!(
-                        "TEXT primary key of {} bytes exceeds the {MAX_SQL_TEXT_PK_BYTES}-byte limit (256-byte document ID cap)",
-                        s.len()
-                    )));
-                }
-                format!("t:{s}")
-            }
-            _ => {
-                return Err(SqlError::Constraint(
-                    "PRIMARY KEY value cannot be NULL".into(),
-                ));
-            }
+        let doc_id = if table.has_scalar_pk() {
+            let pk = pk_val
+                .ok_or_else(|| SqlError::Constraint("PRIMARY KEY value cannot be NULL".into()))?;
+            let mut integer = [0; 18];
+            let mut text = [0; 256];
+            encode_insert_pk_stack(&pk, pk_type, &mut integer, &mut text)?.to_owned()
+        } else {
+            compound_row_id(table, |index| decode_col_ref(&obj, &table.columns[index]))?
         };
         if !seen_pks.insert(doc_id.clone()) {
             return Err(SqlError::Constraint(format!(
@@ -2865,13 +2852,14 @@ fn build_simple_select_plan(
         Vec::new()
     };
 
-    let pk_first = matches!(
-        order_specs.first(),
-        Some(SimpleOrderSpec {
-            target: SimpleOrderTarget::Column(col_idx),
-            ..
-        }) if *col_idx == table.primary_key_index
-    );
+    let pk_first = table.has_scalar_pk()
+        && matches!(
+            order_specs.first(),
+            Some(SimpleOrderSpec {
+                target: SimpleOrderTarget::Column(col_idx),
+                ..
+            }) if *col_idx == table.primary_key_index
+        );
     let order_strategy = if order_specs.is_empty() || (pk_first && !order_specs[0].desc) {
         OrderStrategy::PkAsc
     } else if pk_first && order_specs[0].desc {
@@ -2879,9 +2867,12 @@ fn build_simple_select_plan(
     } else {
         OrderStrategy::General
     };
-    let simple_pk_eq = filter
-        .as_ref()
-        .and_then(|f| detect_simple_pk_eq(&f.expr, table.primary_key_index));
+    let simple_pk_eq = filter.as_ref().and_then(|f| {
+        table
+            .has_scalar_pk()
+            .then(|| detect_simple_pk_eq(&f.expr, table.primary_key_index))
+            .flatten()
+    });
     let compiled_access = plan::compile_select_access(
         filter.as_ref().map(|f| &f.expr),
         table,
@@ -2890,7 +2881,9 @@ fn build_simple_select_plan(
     );
 
     let mut wanted_columns = vec![false; table.columns.len()];
-    wanted_columns[table.primary_key_index] = true;
+    for key in table.primary_key_columns() {
+        wanted_columns[key] = true;
+    }
     for output in &outputs {
         match output {
             SimpleSelectOutput::Column { col_idx, .. } => wanted_columns[*col_idx] = true,
@@ -4359,7 +4352,7 @@ fn exec_aggregate_select_into(
     let mut stream_cap: Option<usize> = None;
     if !force_full_scan {
         if let Some(min_col_idx) = plan.ungrouped_min_col {
-            if min_col_idx == table.primary_key_index {
+            if table.has_scalar_pk() && min_col_idx == table.primary_key_index {
                 let pk_ordered = matches!(
                     access,
                     AccessPlan::PkPoint { .. }
@@ -5005,7 +4998,9 @@ fn exec_update(
         .map(|(col_idx, _)| *col_idx)
         .collect();
     let mut fk_checks = super::foreign_key::PendingUpdateFkChecks::new(table, &assigned_cols);
-    let assigns_pk = assigned_cols.contains(&table.primary_key_index);
+    let assigns_pk = table
+        .primary_key_columns()
+        .any(|key| assigned_cols.contains(&key));
     let mut matched = Vec::new();
     let visit_res = visit_matching_rows(
         tx,
@@ -5078,20 +5073,24 @@ pub(super) fn stage_updated_row(
 ) -> Result<String, SqlError> {
     let on_error = |error| map_write_constraint_error(error, &table.name);
     if assigns_pk {
-        let pk = &table.columns[table.primary_key_index];
-        let value = match decode_col_ref(&row, pk)? {
-            SqlValueRef::Integer(n) => InsertPk::Int(n),
-            SqlValueRef::Text(s) => InsertPk::Text(s.to_owned()),
-            _ => return Err(SqlError::Constraint("invalid PRIMARY KEY value".into())),
+        let new_doc_id = if table.has_scalar_pk() {
+            let pk = &table.columns[table.primary_key_index];
+            let value = match decode_col_ref(&row, pk)? {
+                SqlValueRef::Integer(n) => InsertPk::Int(n),
+                SqlValueRef::Text(s) => InsertPk::Text(s.to_owned()),
+                _ => return Err(SqlError::Constraint("invalid PRIMARY KEY value".into())),
+            };
+            let mut integer = [0; 18];
+            let mut text = [0; 256];
+            encode_insert_pk_stack(&value, pk.col_type, &mut integer, &mut text)?.to_owned()
+        } else {
+            compound_row_id(table, |index| decode_col_ref(&row, &table.columns[index]))?
         };
-        let mut integer = [0; 18];
-        let mut text = [0; 256];
-        let new_doc_id = encode_insert_pk_stack(&value, pk.col_type, &mut integer, &mut text)?;
         if new_doc_id != old_doc_id {
             tx.delete(&table.name, &old_doc_id).map_err(on_error)?;
-            tx.insert(&table.name, new_doc_id, &Value::Object(row))
+            tx.insert(&table.name, &new_doc_id, &Value::Object(row))
                 .map_err(on_error)?;
-            return Ok(new_doc_id.to_owned());
+            return Ok(new_doc_id);
         }
     }
     tx.replace(&table.name, &old_doc_id, &Value::Object(row), false)
@@ -5517,8 +5516,9 @@ fn visit_index_rows_ref(
             }
             match stored {
                 Ok(doc) => {
-                    let pk_col = &table.columns[table.primary_key_index];
-                    let verified_pk = verify_pk_value(table, id, decode_flat_col(doc, pk_col)?)?;
+                    let verified_pk = verify_row_key(table, id, |index| {
+                        decode_flat_col(doc, &table.columns[index])
+                    })?;
                     if eval_where_flat(filter, table, doc, params)? {
                         if let Some(cap) = stream_cap.get() {
                             stream_cap.set(Some(cap.saturating_sub(1)));
@@ -5685,8 +5685,9 @@ fn scan_row(
     let decoded = DocumentTransaction::decode_stored(bytes, schema).map_err(classify_io_error)?;
     let flow = match decoded {
         StoredDocument::Flat(doc) => {
-            let pk_col = &table.columns[table.primary_key_index];
-            let verified_pk = verify_pk_value(table, id, decode_flat_col(&doc, pk_col)?)?;
+            let verified_pk = verify_row_key(table, id, |index| {
+                decode_flat_col(&doc, &table.columns[index])
+            })?;
             if eval_where_flat(filter, table, &doc, params)? {
                 if let Some(cap) = stream_cap {
                     *cap = cap.saturating_sub(1);
@@ -5892,8 +5893,76 @@ pub(super) fn verify_doc_pk_id(
     doc_id: &str,
     obj: &Map<String, Value>,
 ) -> Result<Option<i64>, SqlError> {
-    let pk_col = &table.columns[table.primary_key_index];
-    verify_pk_value(table, doc_id, decode_col_ref(obj, pk_col)?)
+    verify_row_key(table, doc_id, |index| {
+        decode_col_ref(obj, &table.columns[index])
+    })
+}
+
+fn verify_row_key<'a>(
+    table: &TableDef,
+    id: &str,
+    mut value: impl FnMut(usize) -> Result<SqlValueRef<'a>, SqlError>,
+) -> Result<Option<i64>, SqlError> {
+    if table.has_scalar_pk() {
+        verify_pk_value(table, id, value(table.primary_key_index)?)
+    } else if compound_row_id(table, value).is_ok_and(|key| key == id) {
+        Ok(None)
+    } else {
+        Err(SqlError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "row ID does not match its primary key in table '{}'",
+                table.name
+            ),
+        )))
+    }
+}
+
+/// Ordered UTF-8 document ID for a typed SQL tuple. A text terminator sorts
+/// before the hexadecimal alphabet, keeping shorter prefixes first.
+pub(super) fn append_compound_key(id: &mut String, value: SqlValueRef<'_>) -> Result<(), SqlError> {
+    const MAX_ID_BYTES: usize = 256;
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let exceeds = || SqlError::Bounds("encoded composite PRIMARY KEY exceeds 256 bytes".into());
+    match value {
+        SqlValueRef::Integer(n) => {
+            if id.len() + 17 > MAX_ID_BYTES {
+                return Err(exceeds());
+            }
+            let mut buf = [0; 18];
+            encode_i64_pk_bytes(n, &mut buf);
+            id.push('i');
+            id.push_str(std::str::from_utf8(&buf[2..]).expect("ASCII integer key"));
+        }
+        SqlValueRef::Text(text) => {
+            if id.len().saturating_add(2 + text.len().saturating_mul(2)) > MAX_ID_BYTES {
+                return Err(exceeds());
+            }
+            id.push('t');
+            for &byte in text.as_bytes() {
+                id.push(char::from(HEX[(byte >> 4) as usize]));
+                id.push(char::from(HEX[(byte & 15) as usize]));
+            }
+            id.push('!');
+        }
+        _ => {
+            return Err(SqlError::Constraint(
+                "PRIMARY KEY requires non-NULL INTEGER or TEXT values".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn compound_row_id<'a>(
+    table: &TableDef,
+    mut value: impl FnMut(usize) -> Result<SqlValueRef<'a>, SqlError>,
+) -> Result<String, SqlError> {
+    let mut id = String::from("c:");
+    for index in table.primary_key_columns() {
+        append_compound_key(&mut id, value(index)?)?;
+    }
+    Ok(id)
 }
 
 /// Checks that a row's primary-key value encodes to its document ID.

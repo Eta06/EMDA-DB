@@ -100,7 +100,7 @@ statement      := (create_table | create_index | drop_index | insert | select | 
 
 create_table   := CREATE TABLE [IF NOT EXISTS] ident "(" table_item ("," table_item)* ")"
 table_item     := col_def
-                | PRIMARY KEY "(" ident ")"
+                | PRIMARY KEY "(" ident ("," ident)* ")"
                 | UNIQUE "(" ident ("," ident)* ")"
                 | FOREIGN KEY "(" ident ")" fk_ref
                 | CHECK "(" expr ")"
@@ -401,6 +401,16 @@ Bounded, **uncorrelated** subqueries are supported in `WHERE` (`SELECT`, `UPDATE
 - **Foreign keys.** Dropping a table referenced by another table's foreign key is refused with `Constraint` (drop the referencing child table first); self-referencing tables can be dropped directly, and dropping a child table detaches its references from its parent tables in the same transaction.
 - `DROP TABLE` is rejected inside `SqlDatabase::transaction` with `Unsupported`, because a large table is dropped in several transactions.
 
+## Composite primary keys
+
+Table-level `PRIMARY KEY (a, b, ...)` supports two to four INTEGER or TEXT
+columns. Every component is required and non-NULL. The engine stores the
+ordered tuple as the document ID and rejects encodings above 256 bytes.
+A complete equality tuple performs one point lookup. Leading equalities
+can restrict a primary-key range. Inserts and updates enforce tuple
+uniqueness atomically, including moves that change only one component.
+Scalar primary-key encodings remain compatible with existing stores.
+
 ## Foreign keys
 
 - **Implemented syntax**:
@@ -552,4 +562,4 @@ Every DML statement (`INSERT`, `UPDATE`, `DELETE`, `SELECT`) and small DDL state
 ## Implemented vs planned
 
 - **Implemented**: `CREATE TABLE [IF NOT EXISTS]` (including column-level `UNIQUE`, table-level `UNIQUE (col, ...)`, and single-column `FOREIGN KEY` / `REFERENCES` constraints with `NO ACTION`/`RESTRICT` and self-references), `CREATE [UNIQUE] INDEX [IF NOT EXISTS]` (single-tx for small tables and bounded resumable online build for large populated tables), `DROP INDEX [IF EXISTS] name ON table`, `INSERT`, `SELECT` (`*`, column list, `COUNT(*)` / `COUNT(col)` / `COUNT(DISTINCT col)` / `SUM(col)` / `AVG(col)` / `MIN(col)` / `MAX(col)`, `AS` aliases, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY` with `ASC`/`DESC`/`NULLS FIRST`/`NULLS LAST` over columns/aliases/aggregates, `LIMIT`/`OFFSET`), `UPDATE`, `DELETE`, `SqlValue`/`SqlLimits`/`SqlError`/`SqlStatement` prepared reuse, `SqlDatabase::transaction` / `SqlDatabase::transaction_with_retry` / `SqlTransaction` multi-statement serializable transactions (with read-your-own-writes, transaction poisoning on caught statement errors, and conflict-only retries), per-`SqlDatabase` catalog/statement/plan caching, compiled index templates, 3VL expressions, exact numeric comparisons, ascending PK order guarantee and streaming `ORDER BY pk ASC`, index-order `ORDER BY ... LIMIT` streaming, first-entry `MIN(pk)`/`MIN(index_leading_col)` optimization, bounded `ORDER BY pk DESC` and top-K / full sort, bounded `GROUP BY` and `COUNT(DISTINCT)`, primary-key point (`=`) and range (`>`, `>=`, `<`, `<=`) access paths, single and compound secondary index equality/range access via `DocumentTransaction::query_index`, bounded full-collection scan fallback via `DocumentTransaction::scan_documents`, `ReadSet` optimistic concurrency, and row PK/document-ID integrity verification, and `INNER`/`LEFT [OUTER] JOIN` of up to eight tables (see [Joins](#joins)); bounded uncorrelated subqueries (`[NOT] IN (SELECT ...)`, `[NOT] EXISTS (SELECT ...)`, scalar `(SELECT ...)`, including single-table and `JOIN` subquery bodies, nesting up to depth 4, bounded `IN` set materialization, 3VL `NULL` semantics, PK point-lookup optimization on `pk IN (...)`, and single-tx `ReadSet` evaluation — see [Subqueries](#subqueries)); `DROP TABLE [IF EXISTS] name` (see [Dropping tables](#dropping-tables)); `ALTER TABLE name ADD [COLUMN]` (see [Adding columns](#adding-columns)); `EXPLAIN SELECT` (see [`EXPLAIN`](#explain)).
-- **Planned (later slices)**: broader correlated subqueries and recursive-query grammar, `IN (val1, ...)` value lists, `UNION`, composite primary and foreign keys, `DEFERRABLE` constraints, table rename, dependent column migrations, and `ALTER COLUMN`, and cost-based access-path selection. Textual session-state `BEGIN`/`COMMIT`/`ROLLBACK` remain intentionally unsupported in favor of the closure API.
+- **Planned (later slices)**: broader correlated subqueries and recursive-query grammar, `IN (val1, ...)` value lists, `UNION`, composite foreign keys, `DEFERRABLE` constraints, table rename, dependent column migrations, and `ALTER COLUMN`, and cost-based access-path selection. Textual session-state `BEGIN`/`COMMIT`/`ROLLBACK` remain intentionally unsupported in favor of the closure API.

@@ -93,7 +93,7 @@ pub(crate) fn prepare_create_table_foreign_keys(
     tx: &DocumentTransaction<'_, '_>,
     child_name: &str,
     child_columns: &[catalog::ColumnDef],
-    child_pk_index: usize,
+    child_pk_index: Option<usize>,
     child_indexes: &[IndexDef],
     specs: &[ForeignKeySpec],
     cache: &TableCache,
@@ -133,14 +133,18 @@ pub(crate) fn prepare_create_table_foreign_keys(
                         table: child_name.to_owned(),
                         column: name.clone(),
                     })?,
-                None => child_pk_index,
+                None => child_pk_index.ok_or_else(|| {
+                    SqlError::Constraint(
+                        "single-column REFERENCES needs a single-column parent key".into(),
+                    )
+                })?,
             };
             validate_fk_target(
                 child_name,
                 child_col,
                 child_name,
                 &child_columns[ref_col_idx],
-                ref_col_idx == child_pk_index,
+                Some(ref_col_idx) == child_pk_index,
                 child_indexes,
                 ref_col_idx,
             )?;
@@ -190,14 +194,19 @@ pub(crate) fn prepare_create_table_foreign_keys(
                             column: name.clone(),
                         })?
                 }
-                None => parent_def.primary_key_index,
+                None if parent_def.has_scalar_pk() => parent_def.primary_key_index,
+                None => {
+                    return Err(SqlError::Constraint(
+                        "single-column REFERENCES needs a single-column parent key".into(),
+                    ));
+                }
             };
             validate_fk_target(
                 child_name,
                 child_col,
                 &parent_def.name,
                 &parent_def.columns[ref_col_idx],
-                ref_col_idx == parent_def.primary_key_index,
+                parent_def.has_scalar_pk() && ref_col_idx == parent_def.primary_key_index,
                 &parent_def.indexes,
                 ref_col_idx,
             )?;
@@ -332,7 +341,7 @@ pub(crate) fn ensure_index_not_fk_target(
         return Ok(());
     }
     let col_idx = index.columns[0];
-    if col_idx == table.primary_key_index {
+    if table.has_scalar_pk() && col_idx == table.primary_key_index {
         return Ok(());
     }
     let col_name = &table.columns[col_idx].name;
@@ -658,7 +667,7 @@ fn collect_child_rows(
             Ok(())
         };
     let column = &child.columns[child_col_idx];
-    if child_col_idx == child.primary_key_index {
+    if child.has_scalar_pk() && child_col_idx == child.primary_key_index {
         for key in keys.to_vec() {
             let doc_id = match (column.col_type, &key) {
                 (SqlType::Integer, FkKey::Integer(n)) => {
@@ -939,7 +948,7 @@ impl<'a> UpdateActions<'a> {
                         child,
                         id,
                         obj,
-                        child_col == child.primary_key_index,
+                        child.primary_key_columns().any(|key| key == child_col),
                     )?;
                     self.changed
                         .entry(child.name.clone())
@@ -1051,7 +1060,7 @@ fn parent_has_key(
     ref_col_idx: usize,
     key: &FkKey,
 ) -> Result<bool, SqlError> {
-    if ref_col_idx == parent.primary_key_index {
+    if parent.has_scalar_pk() && ref_col_idx == parent.primary_key_index {
         let pk_type = parent.columns[ref_col_idx].col_type;
         match (pk_type, key) {
             (SqlType::Integer, FkKey::Integer(n)) => {
@@ -1165,7 +1174,7 @@ fn child_has_any_key(
     visited: &mut usize,
 ) -> Result<bool, SqlError> {
     // 1. Child column is PRIMARY KEY -> O(1) point lookups.
-    if child_col_idx == child.primary_key_index {
+    if child.has_scalar_pk() && child_col_idx == child.primary_key_index {
         let pk_type = child.columns[child_col_idx].col_type;
         for key in keys.to_vec() {
             match (pk_type, &key) {
