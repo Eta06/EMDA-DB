@@ -105,7 +105,10 @@ extendedKeyUsage=serverAuth
     }
 
     fn start(&self) -> Running {
-        let mut child = launch(&self.dir.path().join("server.json"));
+        Self::wait_ready(launch(&self.dir.path().join("server.json")))
+    }
+
+    fn wait_ready(mut child: Child) -> Running {
         let mut line = String::new();
         BufReader::new(child.stdout.take().unwrap())
             .read_line(&mut line)
@@ -933,5 +936,129 @@ fn sigterm_closes_the_listener_and_drains_an_admitted_mutation() {
     assert_eq!(
         fixture.send(&server, "alpha", "admin", ADMIN, get)["result"],
         "12"
+    );
+}
+
+#[test]
+fn credential_reloads_rotate_revoke_and_reject_invalid_snapshots_atomically() {
+    use rustix::process::{Pid, Signal, kill_process};
+
+    const ROTATED: &str = "0606060606060606060606060606060606060606060606060606060606060606";
+    let fixture = Fixture::new();
+    let root = fixture.dir.path();
+    let config_path = root.join("server.json");
+    let credentials_path = root.join("credentials.json");
+    let stderr_path = root.join("server.stderr");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    config["credentials_file"] = json!(credentials_path);
+    let mut auth = json!({"projects":[]});
+    for project in config["projects"].as_array_mut().unwrap() {
+        let credentials = project
+            .as_object_mut()
+            .unwrap()
+            .remove("credentials")
+            .unwrap();
+        auth["projects"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id":project["id"], "credentials":credentials}));
+    }
+    fs::write(&config_path, config.to_string()).unwrap();
+    let publish = |value: &Value| {
+        let temporary = root.join("credentials.tmp");
+        fs::write(&temporary, value.to_string()).unwrap();
+        fs::rename(temporary, &credentials_path).unwrap();
+    };
+    publish(&auth);
+    let server = Fixture::wait_ready(
+        Command::new(env!("CARGO_BIN_EXE_emda-server"))
+            .arg(&config_path)
+            .stdout(Stdio::piped())
+            .stderr(fs::File::create(&stderr_path).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+
+    let get = |project, identity, token| {
+        fixture.send(
+            &server,
+            project,
+            identity,
+            token,
+            json!({"op":"kv_get","key":"durable"}),
+        )
+    };
+    assert_eq!(
+        fixture.send(
+            &server,
+            "alpha",
+            "admin",
+            ADMIN,
+            json!({"op":"kv_put","key":"durable","value_hex":"ab"})
+        )["ok"],
+        true
+    );
+    let reload = |message: &str| {
+        kill_process(
+            Pid::from_raw(server.child.id() as i32).unwrap(),
+            Signal::HUP,
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let log = fs::read_to_string(&stderr_path).unwrap();
+            if log.contains(message) {
+                assert!(!log.contains(ROTATED));
+                assert!(!log.contains(ADMIN));
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "missing reload result"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+
+    let mut next = auth.clone();
+    next["projects"][0]["credentials"] = json!([credential("admin", ROTATED, "read", u64::MAX)]);
+    let mut invalid = next.clone();
+    invalid["projects"][1]["credentials"] =
+        json!([credential("other", ROTATED, "admin", u64::MAX)]);
+    publish(&invalid);
+    reload("rejected credential reload");
+    assert_eq!(get("alpha", "admin", ADMIN)["result"], "ab");
+    assert_eq!(get("alpha", "admin", ROTATED), error("unauthorized"));
+    assert_eq!(get("beta", "admin", OTHER)["ok"], true);
+
+    next["projects"][1]["credentials"] = json!([]);
+    publish(&next);
+    reload("credential policy reloaded");
+    assert_eq!(get("alpha", "admin", ADMIN), error("unauthorized"));
+    assert_eq!(get("alpha", "reader", READER), error("unauthorized"));
+    assert_eq!(get("beta", "admin", OTHER), error("unauthorized"));
+    assert_eq!(get("alpha", "admin", ROTATED)["result"], "ab");
+    assert_eq!(
+        fixture.send(
+            &server,
+            "alpha",
+            "admin",
+            ROTATED,
+            json!({"op":"kv_put","key":"durable","value_hex":"ff"})
+        ),
+        error("forbidden")
+    );
+
+    drop(server);
+    let server = fixture.start();
+    assert_eq!(
+        fixture.send(
+            &server,
+            "alpha",
+            "admin",
+            ROTATED,
+            json!({"op":"kv_get","key":"durable"})
+        )["result"],
+        "ab"
     );
 }

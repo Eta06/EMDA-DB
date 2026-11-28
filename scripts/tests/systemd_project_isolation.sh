@@ -32,6 +32,7 @@ sed -e "s|/usr/local/bin/emda-server|$scratch/emda-server|" \
 # Keep both stores and the generated TLS credentials in private directories.
 for project in "$alpha" "$beta"; do
     sudo -n install -d -m 0700 "$scratch/$project"
+    sudo -n install -d -m 0755 "$scratch/$project/live"
     sudo -n openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
         -subj /CN=localhost -addext subjectAltName=DNS:localhost \
         -keyout "$scratch/$project/tls-key.pem" -out "$scratch/$project/tls-cert.pem" 2>/dev/null
@@ -51,20 +52,25 @@ config = {
     "require_hybrid_kex": False,
     "max_connections": 8,
     "timeout_ms": 5000,
+    "credentials_file": "/run/emda-live/credentials.json",
     "projects": [{
         "id": "app",
         "max_in_flight": 2,
         "data_log_bytes": 8192,
         "sql_log_bytes": 8192,
         "max_live_keys_per_store": 128,
-        "credentials": [{
-            "id": "operator", "role": "admin", "expires_unix_seconds": 4102444800,
-            "token_sha256": hashlib.sha256(test_token).hexdigest(),
-        }],
     }],
 }
+auth = {"projects": [{"id": "app", "credentials": [{
+    "id": "operator", "role": "admin", "expires_unix_seconds": 4102444800,
+    "token_sha256": hashlib.sha256(test_token).hexdigest(),
+}]}]}
+project_dir = pathlib.Path(scratch) / project
 os.umask(0o077)
-(pathlib.Path(scratch) / project / "server.json").write_text(json.dumps(config))
+(project_dir / "server.json").write_text(json.dumps(config))
+policy = project_dir / "live" / "credentials.json"
+policy.write_text(json.dumps(auth))
+policy.chmod(0o644)
 PY
 done
 sudo -n systemctl daemon-reload
@@ -90,14 +96,17 @@ wait_ready() {
 
 alpha_port=$(wait_ready "$alpha_unit")
 beta_port=$(wait_ready "$beta_unit")
-sudo -n python3 - "$scratch" "$alpha" "$alpha_port" "$beta" "$beta_port" <<'PY'
+sudo -n python3 - "$scratch" "$alpha" "$alpha_port" "$beta" "$beta_port" "$alpha_unit" <<'PY'
+import hashlib
 import json
 import pathlib
 import socket
 import ssl
 import struct
+import subprocess
 import sys
-scratch, alpha, alpha_port, beta, beta_port = sys.argv[1:]
+import time
+scratch, alpha, alpha_port, beta, beta_port, alpha_unit = sys.argv[1:]
 
 def send(project, port, token, operation):
     ctx = ssl.create_default_context(cafile=str(pathlib.Path(scratch) / project / "tls-cert.pem"))
@@ -120,6 +129,20 @@ assert send(alpha, alpha_port, "01" * 32, put) == {"ok": True, "result": None}
 assert send(beta, beta_port, "02" * 32, key) == {"ok": True, "result": None}
 assert send(beta, beta_port, "01" * 32, key) == {"ok": False, "error": "unauthorized"}
 assert send(alpha, alpha_port, "01" * 32, key) == {"ok": True, "result": "abcd"}
+policy = pathlib.Path(scratch) / alpha / "live" / "credentials.json"
+auth = json.loads(policy.read_text())
+auth["projects"][0]["credentials"][0]["token_sha256"] = hashlib.sha256(bytes([3]) * 32).hexdigest()
+new_policy = policy.with_suffix(".tmp")
+new_policy.write_text(json.dumps(auth))
+new_policy.chmod(0o644)
+new_policy.replace(policy)
+subprocess.run(["systemctl", "reload", alpha_unit], check=True)
+deadline = time.monotonic() + 3
+while send(alpha, alpha_port, "03" * 32, key) != {"ok": True, "result": "abcd"}:
+    assert time.monotonic() < deadline, "systemd reload did not publish the new key"
+    time.sleep(0.02)
+assert send(alpha, alpha_port, "01" * 32, key) == {"ok": False, "error": "unauthorized"}
+assert send(beta, beta_port, "02" * 32, key) == {"ok": True, "result": None}
 PY
 
 alpha_pid=$(sudo -n systemctl show -p MainPID --value "$alpha_unit")
@@ -147,6 +170,11 @@ for tuple in     "$alpha_pid:$alpha_uid:$alpha_gid:$alpha_store:$beta_store:$alp
     runner=(sudo -n nsenter --mount="/proc/$pid/ns/mnt" -- setpriv
         --reuid="$uid" --regid="$gid" --clear-groups /bin/test)
     "${runner[@]}" -r "$own"
+    "${runner[@]}" -r /run/emda-live/credentials.json
+    if "${runner[@]}" -w /run/emda-live/credentials.json; then
+        echo "Project UID $uid can modify its operator-owned credentials" >&2
+        exit 1
+    fi
     "${runner[@]}" -r "/run/credentials/$own_unit/tls-key.pem"
     for path in "$neighbor" "/run/credentials/$neighbor_unit/tls-key.pem" "/run/credentials/$neighbor_unit/server.json"; do
         if "${runner[@]}" -r "$path"; then
@@ -155,4 +183,4 @@ for tuple in     "$alpha_pid:$alpha_uid:$alpha_gid:$alpha_store:$beta_store:$alp
         fi
     done
 done
-printf 'Distinct project UIDs, store and credential access boundaries, and cgroup limits verified\n'
+printf 'Verified project UIDs, access boundaries, cgroup limits and credential reload\n'

@@ -21,8 +21,8 @@ projects and binding successfully.
 Generate a separate random 32-byte secret for each credential. Give the client
 the 64-character lowercase hexadecimal encoding of the secret and store the
 SHA-256 digest of the **raw 32 bytes** as lowercase hex in the server config.
-Choose an explicit Unix expiry time. Reloading credentials requires restarting
-the server with the changed configuration.
+Choose an explicit Unix expiry time. Put credentials in the server
+configuration or use a separate live credentials file.
 
 ```json
 {
@@ -91,10 +91,48 @@ on rows within allowed datasets. SQL scopes cover standalone SELECT, INSERT,
 UPDATE and DELETE on the named table. Joins, CTEs, subqueries, schema changes,
 and writes to tables with foreign-key relationships require project-wide
 credentials. The engine checks these restrictions in the same transaction
-as the statement. Creating collections also requires a project-wide key. Self-hosted
-operators issue, rotate and revoke credentials by updating the server
-configuration and restarting it. End-user account lifecycle and online
-key management are planned for Harbor.
+as the statement. Creating collections also requires a project-wide key.
+
+### Live credential updates
+
+Set `credentials_file` in `server.json` to enable live updates and remove the
+inline `credentials` arrays from the project entries. The file lists every
+configured project exactly once. It uses the same credential fields and scopes
+as the inline form. Use an empty array for a project with no active keys.
+
+```json
+{
+  "projects": [
+    {
+      "id": "example",
+      "credentials": [
+        {
+          "id": "public-site",
+          "token_sha256": "<64 lowercase hex digits>",
+          "expires_unix_seconds": 1900000000,
+          "role": "read"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Write the complete replacement file beside the current one, atomically
+rename it into place, and send `SIGHUP` to the server. Under systemd use
+`systemctl reload emda-server@example.service`. Check the service log for
+the validation result. The command signals the process and can return before
+validation finishes. A malformed file, wrong project set or duplicate digest
+rejects the entire reload and leaves the current policy active. Restore the
+valid file before a restart, which loads the file from disk.
+
+Each successful update takes effect for subsequent authentication. Requests
+which already authenticated can finish under their original grants. To rotate
+without interrupting clients, publish a new credential ID and digest, migrate
+clients, then remove the old credential in a second update. Removing an ID
+revokes it for subsequent requests. The server's reload log records success or
+failure without token material. Harbor's end-user accounts and managed key
+issuance and revocation remain separate work.
 
 ## Rust client
 
@@ -253,6 +291,14 @@ in `/etc/emda/projects/example/`. Configure the following values in
 sudo systemctl daemon-reload
 sudo systemctl enable --now emda-server@example.service
 ```
+
+For live credentials in this Linux deployment, put the operator-owned file at
+`/etc/emda/projects/example/live/credentials.json` and set `credentials_file` to
+`/run/emda-live/credentials.json`. The template mounts the `live/` directory
+read-only in the project's mount namespace. Keep the project configuration
+directory root-only. Give the service read access to the mounted directory and
+digest file, and keep write access with the operator. Since the directory is
+mounted, atomic file replacements become visible at the same service path.
 
 With `--single-project`, relative TLS paths are resolved alongside
 `server.json`. The data root is relative to the service working directory.

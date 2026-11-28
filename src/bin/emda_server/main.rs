@@ -3,14 +3,13 @@
 mod project;
 mod protocol;
 
-use project::{Admission, Config, Project};
+use project::{Admission, Config, HostedProjects, Project};
 use protocol::Failure;
 use rustix::event::{PollFd, PollFlags, poll};
 use rustls::crypto::aws_lc_rs;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
-use signal_hook::consts::{SIGINT, SIGTERM};
-use std::collections::HashMap;
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -22,7 +21,7 @@ use std::time::{Duration, Instant};
 
 struct Server {
     tls: Arc<ServerConfig>,
-    projects: HashMap<String, Project>,
+    hosted: HostedProjects,
     connections: Arc<Admission>,
     timeout: Duration,
 }
@@ -45,7 +44,7 @@ impl Server {
         tls.send_tls13_tickets = 0;
         Ok(Self {
             tls: Arc::new(tls),
-            projects: config.open_projects()?,
+            hosted: config.open_projects()?,
             connections: Arc::new(Admission::new(config.max_connections)),
             timeout: Duration::from_millis(config.timeout_ms),
         })
@@ -53,6 +52,7 @@ impl Server {
 
     fn start_idle_reaper(self: &Arc<Self>) -> io::Result<()> {
         let Some(shortest) = self
+            .hosted
             .projects
             .values()
             .filter_map(Project::idle_timeout)
@@ -71,7 +71,7 @@ impl Server {
                         break;
                     };
                     let now = Instant::now();
-                    for project in server.projects.values() {
+                    for project in server.hosted.projects.values() {
                         project.reap_idle(now);
                     }
                 }
@@ -107,6 +107,7 @@ impl Server {
                 return Err(Failure::UnsupportedVersion);
             }
             let project = self
+                .hosted
                 .projects
                 .get(&request.project)
                 .ok_or(Failure::Unauthorized)?;
@@ -157,12 +158,21 @@ impl Write for DeadlineSocket {
     }
 }
 
-fn read_config(path: &Path) -> Result<Config, Box<dyn std::error::Error>> {
+fn read_json_file<T: serde::de::DeserializeOwned>(
+    path: &Path,
+) -> Result<T, Box<dyn std::error::Error>> {
     const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
     let mut bytes = Vec::new();
-    File::open(path)?
-        .take(MAX_CONFIG_BYTES + 1)
-        .read_to_end(&mut bytes)?;
+    use rustix::fs::{Mode, OFlags};
+    let file = File::from(rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?);
+    if !file.metadata()?.is_file() {
+        return Err("configuration must be a regular file".into());
+    }
+    file.take(MAX_CONFIG_BYTES + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_CONFIG_BYTES {
         return Err("configuration exceeds 1 MiB".into());
     }
@@ -173,7 +183,9 @@ fn run(path: &Path, single_project: bool) -> Result<(), Box<dyn std::error::Erro
     let (signal, notify) = UnixStream::pair()?;
     signal_hook::low_level::pipe::register(SIGTERM, notify.try_clone()?)?;
     signal_hook::low_level::pipe::register(SIGINT, notify)?;
-    let mut config = read_config(path)?;
+    let (mut reload, notify_reload) = UnixStream::pair()?;
+    signal_hook::low_level::pipe::register(SIGHUP, notify_reload)?;
+    let mut config: Config = read_json_file(path)?;
     if single_project {
         if config.projects.len() != 1 {
             return Err("--single-project requires exactly one configured project".into());
@@ -190,7 +202,13 @@ fn run(path: &Path, single_project: bool) -> Result<(), Box<dyn std::error::Erro
     println!("READY {}", listener.local_addr()?);
     io::stdout().flush()?;
 
-    let result = accept_until_signal(&server, &listener, &signal);
+    let result = accept_until_signal(
+        &server,
+        &listener,
+        &signal,
+        &mut reload,
+        config.credentials_file.as_deref(),
+    );
     drop(listener);
     // Keep owning the stores until every admitted request releases its slot,
     // including a committed write still sending its response.
@@ -204,10 +222,13 @@ fn accept_until_signal(
     server: &Arc<Server>,
     listener: &TcpListener,
     signal: &UnixStream,
+    reload: &mut UnixStream,
+    credentials_file: Option<&Path>,
 ) -> io::Result<()> {
     loop {
         let mut fds = [
             PollFd::new(signal, PollFlags::IN),
+            PollFd::new(reload, PollFlags::IN),
             PollFd::new(listener, PollFlags::IN),
         ];
         match poll(&mut fds, None) {
@@ -217,6 +238,24 @@ fn accept_until_signal(
         }
         if !fds[0].revents().is_empty() {
             return Ok(());
+        }
+        let flush_reload = !fds[1].revents().is_empty();
+        let accept = !fds[2].revents().is_empty();
+        if flush_reload {
+            let mut bytes = [0; 256];
+            let _ = reload.read(&mut bytes)?;
+            match credentials_file {
+                None => eprintln!("emda-server ignored SIGHUP without a credentials file"),
+                Some(path) => match server.hosted.reload_credentials(path) {
+                    Ok(()) => eprintln!("emda-server credential policy reloaded"),
+                    Err(_) => eprintln!(
+                        "emda-server rejected credential reload; previous policy retained"
+                    ),
+                },
+            }
+        }
+        if !accept {
+            continue;
         }
         match listener.accept() {
             Ok((socket, _)) => {

@@ -4,6 +4,10 @@ Notable changes are recorded here. See [the versioning policy](docs/VERSIONING.m
 
 ## [Unreleased]
 
+- Allow self-hosted operators to replace the API key policy with `SIGHUP`.
+  Validate and publish all project grants atomically, and keep the current
+  policy when validation fails.
+
 - Add a Rust remote client with hybrid TLS and scoped self-hosted API keys.
   A scoped key is limited to its allowed KV prefixes and document
   collections, single SQL tables and its configured role.

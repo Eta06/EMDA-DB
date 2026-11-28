@@ -26,7 +26,9 @@ Any future support for developer-supplied executable code needs a separate sandb
 ## Credential lifecycle
 
 Self-hosted credentials belong to one project and carry their own expiry,
-role and optional dataset scope. Operators control them in configuration.
+role and optional dataset scope. Operators can publish a complete replacement
+policy without restarting and rotate or revoke keys for new requests. The Linux
+service mounts the operator-owned live policy directory read-only.
 For Harbor, keep human membership and service identities separate from their
 keys. Bind each grant to the tenant, project, role and dataset scope. Define
 delegation, issuance, rotation and revocation with an audit record, and

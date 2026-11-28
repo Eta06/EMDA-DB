@@ -4,7 +4,7 @@ use database_engine::{
     DocumentDatabase, DocumentTransaction, DocumentTransactionMode, SqlDatabase, SqlError,
     SqlLimits, Store, TransactionFailure, is_transaction_conflict,
 };
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -29,6 +29,7 @@ pub struct Config {
     pub require_hybrid_kex: bool,
     pub max_connections: usize,
     pub timeout_ms: u64,
+    pub credentials_file: Option<PathBuf>,
     #[serde(default = "default_concurrent_wakes")]
     max_concurrent_wakes: usize,
     pub projects: Vec<ProjectConfig>,
@@ -51,6 +52,7 @@ pub struct ProjectConfig {
     data_log_bytes: u64,
     sql_log_bytes: u64,
     max_live_keys_per_store: usize,
+    #[serde(default)]
     credentials: Vec<CredentialConfig>,
 }
 
@@ -159,10 +161,105 @@ struct Credential {
     scope: Option<CredentialScope>,
 }
 
+type ProjectCredentials = HashMap<String, Arc<Credential>>;
+type CredentialBook = HashMap<String, ProjectCredentials>;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CredentialFile {
+    projects: Vec<CredentialProject>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CredentialProject {
+    id: String,
+    credentials: Vec<CredentialConfig>,
+}
+
+pub struct HostedProjects {
+    pub projects: HashMap<String, Project>,
+    credentials: Arc<RwLock<CredentialBook>>,
+}
+
 pub struct Project {
+    id: String,
     storage: ProjectStorage,
-    credentials: HashMap<String, Credential>,
+    credentials: Arc<RwLock<CredentialBook>>,
     admission: Arc<Admission>,
+}
+
+impl HostedProjects {
+    pub fn reload_credentials(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let book = load_credential_file(path, self.projects.keys().map(String::as_str))?;
+        // Publish all projects at once after validating the complete candidate.
+        let previous = std::mem::replace(&mut *self.credentials.write(), book);
+        drop(previous);
+        Ok(())
+    }
+}
+
+fn load_credential_file<'a>(
+    path: &Path,
+    project_ids: impl Iterator<Item = &'a str>,
+) -> Result<CredentialBook, Box<dyn std::error::Error>> {
+    let mut expected: HashSet<_> = project_ids.collect();
+    let source: CredentialFile = super::read_json_file(path)?;
+    if source.projects.len() != expected.len() {
+        return Err(
+            config_error("credentials file must list every configured project once").into(),
+        );
+    }
+    let mut book = HashMap::with_capacity(expected.len());
+    let mut digests = HashSet::new();
+    for project in source.projects {
+        if !expected.remove(project.id.as_str()) {
+            return Err(
+                config_error("credentials file has an unknown or duplicate project").into(),
+            );
+        }
+        book.insert(
+            project.id,
+            build_credentials(&project.credentials, &mut digests)?,
+        );
+    }
+    Ok(book)
+}
+
+fn build_credentials(
+    specs: &[CredentialConfig],
+    digests: &mut HashSet<[u8; 32]>,
+) -> io::Result<ProjectCredentials> {
+    if specs.len() > 64 {
+        return Err(config_error("too many project credentials"));
+    }
+    let mut credentials = HashMap::with_capacity(specs.len());
+    for spec in specs {
+        validate_id(&spec.id)?;
+        if let Some(scope) = &spec.scope {
+            scope.validate()?;
+        }
+        let digest = decode_secret(&spec.token_sha256)
+            .ok_or_else(|| config_error("credential digest must be 64 lowercase hex digits"))?;
+        if !digests.insert(digest)
+            || credentials.contains_key(&spec.id)
+            || spec.expires_unix_seconds == 0
+        {
+            return Err(config_error(
+                "invalid or duplicate credential configuration",
+            ));
+        }
+        credentials.insert(
+            spec.id.clone(),
+            Arc::new(Credential {
+                digest,
+                expires_unix_seconds: spec.expires_unix_seconds,
+                role: spec.role,
+                scope: spec.scope.clone(),
+            }),
+        );
+    }
+    Ok(credentials)
 }
 
 struct ProjectStorage {
@@ -335,19 +432,17 @@ fn check_wake_deadline(deadline: Option<Instant>) -> io::Result<()> {
 }
 
 impl Config {
-    pub fn open_projects(&self) -> io::Result<HashMap<String, Project>> {
+    pub fn open_projects(&self) -> Result<HostedProjects, Box<dyn std::error::Error>> {
         if !(1..=128).contains(&self.max_connections)
             || !(100..=60_000).contains(&self.timeout_ms)
             || !(1..=128).contains(&self.max_concurrent_wakes)
             || !(1..=128).contains(&self.projects.len())
         {
-            return Err(config_error("invalid server limits"));
+            return Err(config_error("invalid server limits").into());
         }
         ensure_private_directory(&self.data_root)?;
 
         let mut project_ids = HashSet::new();
-        let mut digests = HashSet::new();
-        let mut settings = Vec::with_capacity(self.projects.len());
         for spec in &self.projects {
             validate_id(&spec.id)?;
             if !project_ids.insert(&spec.id)
@@ -355,7 +450,8 @@ impl Config {
                 || spec
                     .idle_timeout_ms
                     .is_some_and(|ms| !(100..=86_400_000).contains(&ms))
-                || !(1..=64).contains(&spec.credentials.len())
+                || (self.credentials_file.is_some() && !spec.credentials.is_empty())
+                || (self.credentials_file.is_none() && spec.credentials.is_empty())
                 || spec.data_log_bytes < 4096
                 || spec.sql_log_bytes < 4096
                 || spec
@@ -364,40 +460,28 @@ impl Config {
                     .is_none()
                 || !(1..=1_000_000).contains(&spec.max_live_keys_per_store)
             {
-                return Err(config_error("invalid or duplicate project configuration"));
+                return Err(config_error("invalid or duplicate project configuration").into());
             }
-            let mut credentials = HashMap::new();
-            for credential in &spec.credentials {
-                validate_id(&credential.id)?;
-                if let Some(scope) = &credential.scope {
-                    scope.validate()?;
-                }
-                let digest = decode_secret(&credential.token_sha256).ok_or_else(|| {
-                    config_error("credential digest must be 64 lowercase hex digits")
-                })?;
-                if !digests.insert(digest)
-                    || credentials.contains_key(&credential.id)
-                    || credential.expires_unix_seconds == 0
-                {
-                    return Err(config_error(
-                        "invalid or duplicate credential configuration",
-                    ));
-                }
-                credentials.insert(
-                    credential.id.clone(),
-                    Credential {
-                        digest,
-                        expires_unix_seconds: credential.expires_unix_seconds,
-                        role: credential.role,
-                        scope: credential.scope.clone(),
-                    },
-                );
-            }
-            settings.push((spec, credentials));
         }
+
+        let book = if let Some(path) = &self.credentials_file {
+            load_credential_file(path, project_ids.into_iter().map(String::as_str))?
+        } else {
+            let mut digests = HashSet::new();
+            self.projects
+                .iter()
+                .map(|spec| {
+                    Ok((
+                        spec.id.clone(),
+                        build_credentials(&spec.credentials, &mut digests)?,
+                    ))
+                })
+                .collect::<io::Result<_>>()?
+        };
+        let credentials = Arc::new(RwLock::new(book));
         let mut opened = HashMap::new();
         let waking = Arc::new(Admission::new(self.max_concurrent_wakes));
-        for (spec, credentials) in settings {
+        for spec in &self.projects {
             let directory = self.data_root.join(&spec.id);
             create_private_directory(&directory)?;
             for name in ["data", "sql"] {
@@ -424,13 +508,17 @@ impl Config {
             opened.insert(
                 spec.id.clone(),
                 Project {
+                    id: spec.id.clone(),
                     storage,
-                    credentials,
+                    credentials: Arc::clone(&credentials),
                     admission: Arc::new(Admission::new(spec.max_in_flight)),
                 },
             );
         }
-        Ok(opened)
+        Ok(HostedProjects {
+            projects: opened,
+            credentials,
+        })
     }
 }
 
@@ -574,7 +662,7 @@ impl Project {
             return Err(Failure::Timeout);
         }
         if let Operation::Sql { statement, params } = request.operation {
-            return self.sql(&statement, params, credential, deadline);
+            return self.sql(&statement, params, &credential, deadline);
         }
 
         let required = match &request.operation {
@@ -606,10 +694,16 @@ impl Project {
         .map_err(transaction_failure)
     }
 
-    fn authenticate(&self, id: &str, token: &str) -> Result<&Credential, Failure> {
+    fn authenticate(&self, id: &str, token: &str) -> Result<Arc<Credential>, Failure> {
         let token = decode_secret(token).ok_or(Failure::Unauthorized)?;
         let actual: [u8; 32] = Sha256::digest(token).into();
-        let credential = self.credentials.get(id).ok_or(Failure::Unauthorized)?;
+        let credential = self
+            .credentials
+            .read()
+            .get(&self.id)
+            .and_then(|project| project.get(id))
+            .cloned()
+            .ok_or(Failure::Unauthorized)?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| Failure::Internal)?
@@ -813,9 +907,10 @@ mod tests {
             max_connections: 2,
             max_concurrent_wakes: 1,
             timeout_ms: 1000,
+            credentials_file: None,
             projects: vec![project("alpha", 1), project("beta", 2)],
         };
-        let projects = config.open_projects().unwrap();
+        let projects = config.open_projects().unwrap().projects;
         let request = |id: &str, secret| Request {
             version: protocol::VERSION,
             project: id.into(),
